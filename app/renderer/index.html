@@ -4,20 +4,48 @@
     <meta charset="UTF-8" />
     <title>Leutheria — dev log</title>
     <style>
+      html, body {
+        height: 100%;
+        margin: 0;
+      }
       body {
         background: #111;
         color: #0f0;
         font-family: monospace;
         font-size: 12px;
-        margin: 0;
+        display: flex;
+        flex-direction: column;
+      }
+      #log {
+        flex: 1;
+        overflow-y: auto;
         padding: 8px;
         white-space: pre-wrap;
         word-break: break-all;
+      }
+      #input-row {
+        display: flex;
+        border-top: 1px solid #333;
+      }
+      #command-input {
+        flex: 1;
+        background: #000;
+        color: #0f0;
+        font-family: monospace;
+        font-size: 12px;
+        border: none;
+        padding: 8px;
+      }
+      #command-input:focus {
+        outline: none;
       }
     </style>
   </head>
   <body>
     <div id="log"></div>
+    <div id="input-row">
+      <input id="command-input" type="text" placeholder="type a command and press enter…" autofocus />
+    </div>
     <script src="renderer.js"></script>
   </body>
 </html>

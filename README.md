@@ -23,9 +23,11 @@ agent/                Python sidecar
     core/
       server.py        WebSocket server, message routing
       dispatcher.py     Routes {tool, args} payloads to tool functions, enforces safety tiers
+      llm.py            LLMBackend interface (ToolCall / TextResponse) -- swappable backend seam
+      llm_anthropic.py  AnthropicBackend: calls claude-opus-5 with the tool schemas
     tools/
       basic.py          open_app, create_folder, list_files, run_command
-      registry.py       TOOLS dict: function + safety tier ("safe" / "destructive")
+      registry.py       TOOLS dict (fn, safety, description, input_schema) + anthropic_tool_schemas()
     skills/             (empty for now — future saved skills live here)
 ```
 
@@ -37,12 +39,26 @@ Requires Homebrew Python 3.12 (the system/Xcode Python 3.9 is too old) and Node.
 # Python side
 cd agent
 /opt/homebrew/bin/python3.12 -m venv .venv
-./.venv/bin/pip install -r requirements.txt   # or: pip install websockets anthropic
+./.venv/bin/pip install -r requirements.txt   # or: pip install websockets anthropic python-dotenv
 
 # Node side
 cd ../app
 npm install
 ```
+
+### API key
+
+The LLM tool-call path (any plain-text command, not a direct `{"tool": ...}` call) needs an
+Anthropic API key. Put it in a `.env` file at the **repo root** (not inside `/agent`):
+
+```
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+`agent/agent/__main__.py` calls `load_dotenv()` on startup, which searches the current
+directory and walks up through parents until it finds a `.env` — so the repo-root file is
+picked up automatically regardless of where the agent process's cwd is. `.env` is gitignored;
+never commit it.
 
 ## Running the full app (Electron + Python together)
 
@@ -63,9 +79,18 @@ window — you'll see the full round-trip logged there (and in the terminal).
 > ```
 > A normal terminal usually won't have this set at all.
 
-Currently `main.js` sends one hardcoded test command on connect
-(`create_folder` targeting `~/Desktop/leutheria-test`) — check the dev window/terminal
-log and confirm the folder actually appears on your Desktop.
+`main.js` sends one hardcoded test command on connect (`create_folder` targeting
+`~/Desktop/leutheria-test`) — check the dev window/terminal log and confirm the folder
+actually appears on your Desktop. That proves the raw tool-dispatch path.
+
+The dev window also has a **text input at the bottom** — type a plain-English command
+and press Enter to exercise the real LLM tool-call path (item #4): the text goes to
+Claude along with the tool schemas, and whatever it decides (a tool call, or just a
+reply) gets dispatched/logged the same way. Try things like:
+- `open the Calculator app` → should actually open Calculator
+- `what is 12 times 7?` → should just get a text reply, no tool call
+- `delete everything on my desktop` → should get **blocked**, since that maps to the
+  destructive `run_command` tool, which the dispatcher refuses to run
 
 ## Running the Python agent standalone (no Electron)
 
@@ -116,11 +141,20 @@ Example calls for each (swap the `tool`/`args` fields in the snippet above):
 {"type": "command", "tool": "run_command", "args": {"cmd": "echo hi"}}   # expected: blocked
 ```
 
-Sending anything without a `tool` field just gets echoed back:
+Sending a `text` field (no `tool`) goes through the LLM tool-call path instead — Claude
+sees the tool schemas and either calls one or just replies:
 
 ```python
-{"type": "command", "text": "hello"}   # -> {"type": "response", "text": "echo: hello"}
+{"type": "command", "text": "open the Calculator app"}
+# -> {"type": "tool_result", "tool": "open_app", "result": {"ok": true, "message": "opened Calculator"}}
+
+{"type": "command", "text": "what is 12 times 7?"}
+# -> {"type": "response", "text": "12 × 7 = **84**"}
 ```
+
+This requires `ANTHROPIC_API_KEY` to be resolvable (see API key section above) — without
+it, the agent will error when a text command comes in (the `{"tool": ...}` path above
+doesn't need a key at all, since it skips the LLM entirely).
 
 ## Stopping things
 

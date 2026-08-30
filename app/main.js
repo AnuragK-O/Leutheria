@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, nativeImage } = require("electron");
+const { app, BrowserWindow, Tray, nativeImage, ipcMain } = require("electron");
 const { spawn, execSync } = require("child_process");
 const path = require("path");
 const WebSocket = require("ws");
@@ -100,6 +100,16 @@ function connectToAgent() {
     log(`[bridge:err] ${err.message}`);
   });
 }
+
+ipcMain.on("user-command", (_event, text) => {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    log("[bridge:err] not connected to agent yet");
+    return;
+  }
+  const message = { type: "command", text };
+  log(`[bridge] sending: ${JSON.stringify(message)}`);
+  ws.send(JSON.stringify(message));
+});
 
 app.whenReady().then(() => {
   createTray();

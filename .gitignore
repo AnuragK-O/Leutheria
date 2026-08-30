@@ -1,5 +1,6 @@
 plans/
 .claude/
+.env
 
 # Node
 app/node_modules/
