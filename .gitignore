@@ -1,1 +1,10 @@
 plans/
+.claude/
+
+# Node
+app/node_modules/
+
+# Python
+agent/.venv/
+__pycache__/
+*.pyc
