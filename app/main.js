@@ -16,6 +16,7 @@ let devWindow;
 let tray;
 let agentProcess;
 let ws;
+let pendingIsChat = false; // true only while waiting on a reply to a user-typed chat message
 
 function log(line) {
   console.log(line);
@@ -24,10 +25,29 @@ function log(line) {
   }
 }
 
+function chat(role, text) {
+  if (devWindow) {
+    devWindow.webContents.send("chat", { role, text });
+  }
+}
+
+function formatAgentReply(payload) {
+  if (payload.type === "tool_result") {
+    return `🔧 ${payload.tool}(${JSON.stringify(payload.result)})`;
+  }
+  if (payload.type === "response") {
+    const traceLines = (payload.trace || []).map(
+      (step) => `🔧 ${step.tool}(${JSON.stringify(step.args)}) → ${JSON.stringify(step.result)}`
+    );
+    return [...traceLines, payload.text].filter(Boolean).join("\n");
+  }
+  return `⚠️ ${payload.text || JSON.stringify(payload)}`;
+}
+
 function createDevWindow() {
   devWindow = new BrowserWindow({
-    width: 640,
-    height: 480,
+    width: 480,
+    height: 640,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
     },
@@ -94,6 +114,14 @@ function connectToAgent() {
 
   ws.on("message", (data) => {
     log(`[bridge] received: ${data.toString()}`);
+    if (pendingIsChat) {
+      pendingIsChat = false;
+      try {
+        chat("assistant", formatAgentReply(JSON.parse(data.toString())));
+      } catch (_err) {
+        chat("assistant", data.toString());
+      }
+    }
   });
 
   ws.on("error", (err) => {
@@ -103,11 +131,13 @@ function connectToAgent() {
 
 ipcMain.on("user-command", (_event, text) => {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
-    log("[bridge:err] not connected to agent yet");
+    chat("assistant", "⚠️ not connected to agent yet");
     return;
   }
+  chat("user", text);
   const message = { type: "command", text };
   log(`[bridge] sending: ${JSON.stringify(message)}`);
+  pendingIsChat = true;
   ws.send(JSON.stringify(message));
 });
 

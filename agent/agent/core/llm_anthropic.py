@@ -1,6 +1,6 @@
 import anthropic
 
-from agent.core.llm import LLMBackend, TextResponse, ToolCall
+from agent.core.llm import LLMBackend, LLMTurn, ToolCall
 
 MODEL = "claude-opus-5"
 MAX_TOKENS = 16000
@@ -10,7 +10,7 @@ class AnthropicBackend(LLMBackend):
     def __init__(self):
         self._client = anthropic.Anthropic()
 
-    def generate(self, messages: list, tools: list):
+    def generate(self, messages: list, tools: list) -> LLMTurn:
         response = self._client.messages.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,
@@ -18,9 +18,11 @@ class AnthropicBackend(LLMBackend):
             messages=messages,
         )
 
-        tool_use = next((b for b in response.content if b.type == "tool_use"), None)
-        if tool_use is not None:
-            return ToolCall(name=tool_use.name, args=tool_use.input)
+        tool_calls = [
+            ToolCall(id=b.id, name=b.name, args=b.input)
+            for b in response.content
+            if b.type == "tool_use"
+        ]
+        text = "".join(b.text for b in response.content if b.type == "text")
 
-        text = next((b.text for b in response.content if b.type == "text"), "")
-        return TextResponse(text=text)
+        return LLMTurn(content=response.content, tool_calls=tool_calls, text=text)
