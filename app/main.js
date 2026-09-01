@@ -31,6 +31,12 @@ function chat(role, text) {
   }
 }
 
+function confirmRequest(id, tool, args) {
+  if (devWindow) {
+    devWindow.webContents.send("confirm-request", { id, tool, args });
+  }
+}
+
 function formatAgentReply(payload) {
   if (payload.type === "tool_result") {
     return `🔧 ${payload.tool}(${JSON.stringify(payload.result)})`;
@@ -114,13 +120,35 @@ function connectToAgent() {
 
   ws.on("message", (data) => {
     log(`[bridge] received: ${data.toString()}`);
-    if (pendingIsChat) {
-      pendingIsChat = false;
-      try {
-        chat("assistant", formatAgentReply(JSON.parse(data.toString())));
-      } catch (_err) {
+
+    let payload;
+    try {
+      payload = JSON.parse(data.toString());
+    } catch (_err) {
+      if (pendingIsChat) {
+        pendingIsChat = false;
         chat("assistant", data.toString());
       }
+      return;
+    }
+
+    if (payload.type === "confirmation_required") {
+      // Mid-flight pause -- don't clear pendingIsChat, the real final
+      // reply is still coming once this is answered.
+      confirmRequest(payload.id, payload.tool, payload.args);
+      return;
+    }
+
+    if (payload.type === "transcript") {
+      // What Whisper heard -- shown as the user's own message. The real
+      // final reply is still coming, so pendingIsChat stays true.
+      chat("user", `🎤 ${payload.text}`);
+      return;
+    }
+
+    if (pendingIsChat) {
+      pendingIsChat = false;
+      chat("assistant", formatAgentReply(payload));
     }
   });
 
@@ -128,6 +156,25 @@ function connectToAgent() {
     log(`[bridge:err] ${err.message}`);
   });
 }
+
+ipcMain.on("confirm-response", (_event, { id, approved }) => {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const message = { type: "confirm", id, approved };
+  log(`[bridge] sending: ${JSON.stringify(message)}`);
+  chat("user", approved ? "✅ approved" : "❌ declined");
+  ws.send(JSON.stringify(message));
+});
+
+ipcMain.on("user-audio", (_event, { data, format }) => {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    chat("assistant", "⚠️ not connected to agent yet");
+    return;
+  }
+  const message = { type: "audio", data, format };
+  log(`[bridge] sending: {"type":"audio","format":"${format}","data":"<${data.length} b64 chars>"}`);
+  pendingIsChat = true;
+  ws.send(JSON.stringify(message));
+});
 
 ipcMain.on("user-command", (_event, text) => {
   if (!ws || ws.readyState !== WebSocket.OPEN) {

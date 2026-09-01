@@ -9,3 +9,4 @@ app/node_modules/
 agent/.venv/
 __pycache__/
 *.pyc
+agent/logs/

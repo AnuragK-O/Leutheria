@@ -43,6 +43,35 @@
         background: #333;
         color: #eee;
       }
+      .bubble.confirm {
+        border: 1px solid #a33;
+        background: #3a2222;
+      }
+      .confirm-buttons {
+        display: flex;
+        gap: 8px;
+        margin-top: 8px;
+      }
+      .confirm-buttons button {
+        flex: 1;
+        padding: 6px 0;
+        border: none;
+        border-radius: 6px;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .confirm-buttons button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      .confirm-buttons .approve {
+        background: #2f8a3e;
+        color: white;
+      }
+      .confirm-buttons .decline {
+        background: #a33;
+        color: white;
+      }
 
       #input-row {
         display: flex;
@@ -59,6 +88,22 @@
       }
       #command-input:focus {
         outline: none;
+      }
+      #mic-button {
+        width: 44px;
+        border: none;
+        background: #111;
+        color: #eee;
+        font-size: 16px;
+        cursor: pointer;
+      }
+      #mic-button.recording {
+        background: #a33;
+        animation: pulse 1s infinite;
+      }
+      @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.6; }
       }
 
       #log-toggle {
@@ -93,6 +138,7 @@
     <div id="chat"></div>
     <div id="input-row">
       <input id="command-input" type="text" placeholder="type a command and press enter…" autofocus />
+      <button id="mic-button" title="click to start/stop recording">🎤</button>
     </div>
     <button id="log-toggle">▸ raw debug log</button>
     <div id="log" hidden></div>

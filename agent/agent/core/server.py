@@ -4,8 +4,10 @@ import json
 import websockets
 
 from agent.core import agent_loop
+from agent.core.audio_input import transcribe_payload
 from agent.core.dispatcher import dispatch
 from agent.core.llm_anthropic import AnthropicBackend
+from agent.core.logging_util import log_event
 
 HOST = "127.0.0.1"
 PORT = 8765
@@ -20,24 +22,46 @@ def get_backend():
     return _backend
 
 
-async def handle_message(payload: dict) -> dict:
+async def handle_message(payload: dict, websocket, pending: dict) -> dict:
     """A bare "tool" field routes straight to the manual dispatcher (step 3).
     Plain text drives the LLM agentic loop (step 4): the model can call
     tools, see their results, and call more tools before giving a final
     answer -- every tool call still runs through the same dispatcher, so
-    safety tiering applies either way."""
+    safety tiering applies either way. A destructive tool pauses mid-flight
+    for a live yes/no over the same connection (step 5) -- see dispatch()."""
     if "tool" in payload:
-        result = dispatch(payload["tool"], payload.get("args", {}))
+        result = await dispatch(payload["tool"], payload.get("args", {}), websocket, pending)
+        log_event("tool_call", tool=payload["tool"], args=payload.get("args", {}), result=result)
         return {"type": "tool_result", "tool": payload["tool"], "result": result}
+
+    if payload.get("type") == "audio":
+        text = await transcribe_payload(payload)
+        log_event("stt_transcript", text=text)
+        await websocket.send(json.dumps({"type": "transcript", "text": text}))
+        if not text:
+            return {"type": "response", "text": "(didn't catch that -- heard nothing)"}
+        return await agent_loop.run(get_backend(), text, websocket, pending)
 
     text = payload.get("text", "")
     if not text:
         return {"type": "response", "text": ""}
 
-    return await agent_loop.run(get_backend(), text)
+    return await agent_loop.run(get_backend(), text, websocket, pending)
+
+
+async def process_command(websocket, payload: dict, pending: dict) -> None:
+    response = await handle_message(payload, websocket, pending)
+    log_event("message_out", response=response)
+    await websocket.send(json.dumps(response))
 
 
 async def handler(websocket):
+    # Per-connection: maps a confirmation id to the Future its resolution
+    # unblocks. Commands are dispatched as background tasks (not awaited
+    # inline) specifically so this loop stays free to read an incoming
+    # "confirm" reply while a command is paused mid-flight waiting on one.
+    pending: dict = {}
+
     async for raw in websocket:
         try:
             payload = json.loads(raw)
@@ -45,8 +69,14 @@ async def handler(websocket):
             await websocket.send(json.dumps({"type": "error", "text": "invalid JSON"}))
             continue
 
-        response = await handle_message(payload)
-        await websocket.send(json.dumps(response))
+        if payload.get("type") == "confirm":
+            future = pending.get(payload.get("id"))
+            if future and not future.done():
+                future.set_result(bool(payload.get("approved")))
+            continue
+
+        log_event("message_in", payload=payload)
+        asyncio.create_task(process_command(websocket, payload, pending))
 
 
 async def main():
