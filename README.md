@@ -4,10 +4,68 @@ A voice-controlled AI assistant that controls your computer — opening apps, pu
 data, and executing tasks via natural speech.
 
 Architecture: a **Node/Electron shell** (`/app`) drives a **Python sidecar process**
-(`/agent`) that does the actual agent work (STT, tool execution, LLM tool-calling, and
-eventually TTS). The two talk over a local WebSocket.
+(`/agent`) that does the actual agent work (STT, TTS, tool execution, LLM tool-calling).
+The two talk over a local WebSocket.
 
 See `plans/ROADMAP.md` (gitignored, local-only) for the current build plan.
+
+## Architecture
+
+```
+Electron (app/)
+---------------
+main.js
+  - spawns the Python agent, owns the WebSocket connection
+renderer/
+  - chat UI, mic button (records + sends audio), confirm buttons, plays TTS audio
+
+        |
+        |  ws://127.0.0.1:8765 -- JSON messages, both directions
+        v
+
+Python Agent (agent/agent/)
+---------------------------
+server.py
+  - routes every message by type
+  - logs everything to logs/events.jsonl
+
+  "audio" message
+    -> audio_input.py -> stt.py (Whisper) -> transcript text
+                                                   |
+  "text" (typed, or a transcript from above) <-----+
+    |
+    v
+  agent_loop.py   (loop, up to 6 turns)
+    |                                 ^
+    v                                 | tool_result
+  llm_anthropic.py (claude-opus-5) ---+
+    |  tool_use
+    v
+  dispatcher.py
+    checks SKILLS first, then TOOLS
+    |                          |
+    v                          v
+  skills/registry.py      tools/registry.py
+    setup_project            open_app
+    (calls dispatch()        create_folder
+     again for its own       list_files
+     sub-steps)              run_command  (destructive)
+                                  |
+                                  v
+                         destructive? -> send "confirmation_required",
+                         pause until a "confirm" message answers it
+
+  once agent_loop gets a final text reply (no more tool calls):
+    |
+    v
+  tts.py (Piper) -> "speech" message -> Electron plays it
+```
+
+Key point the diagram is built around: **tools and skills look identical to Claude** — both
+are just entries in the `tools` list sent with each request. `dispatcher.py` is the one
+place that knows the difference, and a skill calling back into `dispatch()` for its own
+sub-steps is why skills can't bypass the confirmation gate — a destructive step inside a
+skill pauses exactly the same way a directly-called destructive tool would.
 
 ## Project structure
 
@@ -31,11 +89,16 @@ agent/                Python sidecar
                         results back until Claude gives a final answer (capped at 6 turns)
       audio_input.py    Decodes a base64 audio payload to a temp file, hands off to stt.py
       stt.py            Local Whisper ("base" model) transcription
+      tts.py            Local Piper ("en_US-amy-medium" voice) speech synthesis
       logging_util.py   Appends every message/decision/tool call to logs/events.jsonl
     tools/
       basic.py          open_app, create_folder, list_files, run_command
       registry.py       TOOLS dict (fn, safety, description, input_schema) + anthropic_tool_schemas()
-    skills/             (empty for now — future saved skills live here)
+    skills/
+      setup_project.py   First hand-written skill: create_folder + git init + open in VS Code
+                        as one multi-step procedure, exposed to the LLM as a single tool
+      registry.py       SKILLS dict + anthropic_skill_schemas() -- same shape as tools/registry.py
+    assets/voices/       Piper voice model (gitignored, auto-downloaded on first use)
   logs/                 events.jsonl (gitignored) -- see "Logs" section below
 ```
 
@@ -53,16 +116,19 @@ brew install ffmpeg
 # Python side
 cd agent
 /opt/homebrew/bin/python3.12 -m venv .venv
-./.venv/bin/pip install -r requirements.txt   # includes openai-whisper (pulls in torch, ~1GB)
+./.venv/bin/pip install -r requirements.txt   # includes openai-whisper (~1GB w/ torch) and piper-tts
 
 # Node side
 cd ../app
 npm install
 ```
 
-The first time Whisper actually transcribes something, it downloads its model (~140MB for
-the "base" model) to `~/.cache/whisper` — expect a one-time delay on the very first voice
-command.
+Both STT and TTS auto-download their models on first use, no manual steps needed:
+- Whisper's `"base"` model (~140MB) goes to `~/.cache/whisper`.
+- Piper's `"en_US-amy-medium"` voice (~60MB) goes to `agent/agent/assets/voices/` (gitignored).
+
+Expect a one-time delay the first time each is actually used (first voice command in,
+first spoken reply out).
 
 ### API key
 
@@ -130,6 +196,19 @@ runs on it exactly as if you'd typed it. There's no wake word or true "hold to t
 it's click-to-start/click-to-stop for now, which is simpler to get right than global hotkey
 hold-detection and matches the roadmap's "push-to-talk is fine for now" scope.
 
+### Voice output (TTS)
+
+Every final text reply is also spoken out loud automatically — no toggle needed. The
+agent synthesizes it locally with Piper right after sending the text response, and the
+audio plays as soon as it arrives in the renderer. This applies to typed, spoken, and
+tool-triggered replies alike, since it's wired in at the point where the final response
+is sent, not per input method. If synthesis fails for any reason, it's logged
+(`tts_error` in `agent/logs/events.jsonl`) but never blocks or delays the text reply
+itself — TTS is additive, not a dependency of the core loop.
+
+Note: `piper-tts` is GPL-3.0-or-later licensed. Fine for local development; worth
+revisiting the licensing implications before any public release/distribution.
+
 ## Running the Python agent standalone (no Electron)
 
 Useful for testing tools directly without going through Electron.
@@ -178,6 +257,40 @@ Example calls for each (swap the `tool`/`args` fields in the snippet above):
 {"type": "command", "tool": "list_files", "args": {"path": "~/Desktop"}}
 {"type": "command", "tool": "run_command", "args": {"cmd": "echo hi"}}   # pauses for confirmation
 ```
+
+### Skills
+
+A skill is a hand-written, multi-step procedure exposed to the LLM as if it were a single
+tool — the point is to collapse what would otherwise take several separate LLM reasoning
+turns (and round-trips) into one. `agent/skills/registry.py`'s `SKILLS` dict has the same
+shape as `tools/registry.py`'s `TOOLS`, and `dispatcher.dispatch()` checks it first: if the
+name matches a skill, it calls that skill's `run(args, websocket, pending)` directly
+instead of doing the usual single-function tool call.
+
+A skill's `run()` is free to call `dispatch()` itself for its own sub-steps — which means
+a skill isn't a way to bypass safety tiering: if it calls a destructive tool like
+`run_command` internally, that sub-step still pauses for its own confirmation prompt, same
+as if the LLM had called it directly. `setup_project` (the first one, in
+`agent/skills/setup_project.py`) demonstrates this: it runs `create_folder` (safe, no
+prompt) then two `run_command` calls (`git init`, then opening the folder in VS Code),
+each requiring its own approval.
+
+Try it: `create a project called sample, initialize a repo and open in vs code` — watch
+the trace show a single `setup_project` tool call (not three separate ones), with two
+confirmation prompts along the way for the `git init` and VS Code steps. This is also a
+good way to see the value directly: without the skill, the same request costs several
+back-and-forth LLM turns as the model composes `create_folder` → `run_command` →
+`run_command` on its own reasoning; with the skill, it costs one.
+
+**A caveat worth remembering**: the very first version of `setup_project` had a real bug —
+it built its shell commands with a `~`-prefixed path that `/bin/sh`'s `cd` doesn't expand
+inside quotes, so `git init` silently failed. Claude actually noticed the failure and
+worked around it live by issuing its own follow-up `run_command` calls with an absolute
+path — which shows the agentic loop's fallback reasoning works, but is not a substitute
+for the skill itself being correct. Fixed by expanding `~` via `Path(...).expanduser()`
+before building any shell string. The fix cut the request from 5 LLM turns down to 2
+(one to call the skill, one to summarize) — check `agent/logs/events.jsonl`'s `llm_turn`
+entries to see this kind of thing for yourself on any request.
 
 ### Confirmation flow
 
@@ -249,14 +362,29 @@ exact same agentic loop as a `text` command:
 that's what the browser's `MediaRecorder` produces by default). No API key needed for
 this part — Whisper runs fully locally.
 
+### Voice output protocol
+
+After any `{"type": "response", ...}` with non-empty text, a `speech` message follows
+automatically with the synthesized audio as base64 WAV:
+
+```python
+{"type": "response", "text": "12 × 7 = **84**", "trace": []}
+{"type": "speech", "data": "<base64-encoded WAV audio>"}
+```
+
+There's no request for this — it's always sent after a text reply, for every input
+method (typed, voice, or a tool result reached via either). No API key needed; Piper
+runs fully locally.
+
 ## Logs
 
 Every message received, every LLM decision, and every tool call (regardless of whether
 it came from the LLM loop or a direct `{"tool": ...}` message) is appended as one JSON
 line to `agent/logs/events.jsonl` (gitignored). Event types: `message_in`, `message_out`,
 `llm_turn` (what Claude decided that turn), `tool_call` (which tool ran, with what args
-and result), `stt_transcript` (what Whisper heard), `confirmation_requested`/`tool_declined`
-(the destructive-tool confirmation flow). Tail it live while testing:
+and result), `stt_transcript` (what Whisper heard), `tts_error` (a synthesis failure --
+non-fatal, just skipped), `confirmation_requested`/`tool_declined` (the destructive-tool
+confirmation flow). Tail it live while testing:
 
 ```bash
 tail -f agent/logs/events.jsonl

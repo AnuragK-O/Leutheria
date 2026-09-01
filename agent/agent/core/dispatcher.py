@@ -3,12 +3,16 @@ import json
 import uuid
 
 from agent.core.logging_util import log_event
+from agent.skills.registry import SKILLS
 from agent.tools.registry import TOOLS
 
 CONFIRMATION_TIMEOUT = 120  # seconds -- an unanswered prompt is treated as declined
 
 
 async def dispatch(tool_name: str, args: dict, websocket=None, pending: dict = None) -> dict:
+    if tool_name in SKILLS:
+        return await SKILLS[tool_name]["fn"](args, websocket, pending)
+
     tool = TOOLS.get(tool_name)
     if tool is None:
         return {"ok": False, "error": f"unknown tool: {tool_name}"}

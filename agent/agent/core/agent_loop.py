@@ -3,6 +3,7 @@ import json
 
 from agent.core.dispatcher import dispatch
 from agent.core.logging_util import log_event
+from agent.skills.registry import anthropic_skill_schemas
 from agent.tools.registry import anthropic_tool_schemas
 
 MAX_TURNS = 6  # hard cap so a confused model can't loop forever
@@ -18,7 +19,7 @@ async def run(backend, user_text: str, websocket=None, pending: dict = None) -> 
     confirmation round-trip without blocking the connection's read loop.
     """
     messages = [{"role": "user", "content": user_text}]
-    tools = anthropic_tool_schemas()
+    tools = anthropic_tool_schemas() + anthropic_skill_schemas()
     loop = asyncio.get_running_loop()
     trace = []
 

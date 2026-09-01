@@ -146,6 +146,13 @@ function connectToAgent() {
       return;
     }
 
+    if (payload.type === "speech") {
+      // Follows the "response" message, so pendingIsChat is already false
+      // by the time this arrives -- doesn't affect that flag either way.
+      if (devWindow) devWindow.webContents.send("speech", payload.data);
+      return;
+    }
+
     if (pendingIsChat) {
       pendingIsChat = false;
       chat("assistant", formatAgentReply(payload));

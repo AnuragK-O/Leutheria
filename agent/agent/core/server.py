@@ -1,9 +1,10 @@
 import asyncio
+import base64
 import json
 
 import websockets
 
-from agent.core import agent_loop
+from agent.core import agent_loop, tts
 from agent.core.audio_input import transcribe_payload
 from agent.core.dispatcher import dispatch
 from agent.core.llm_anthropic import AnthropicBackend
@@ -53,6 +54,22 @@ async def process_command(websocket, payload: dict, pending: dict) -> None:
     response = await handle_message(payload, websocket, pending)
     log_event("message_out", response=response)
     await websocket.send(json.dumps(response))
+
+    if response.get("type") == "response" and response.get("text"):
+        await speak(websocket, response["text"])
+
+
+async def speak(websocket, text: str) -> None:
+    """Synthesize the final reply locally with Piper and send it as a
+    separate message so a TTS failure never blocks the actual response."""
+    try:
+        loop = asyncio.get_running_loop()
+        audio_bytes = await loop.run_in_executor(None, tts.synthesize, text)
+        await websocket.send(
+            json.dumps({"type": "speech", "data": base64.b64encode(audio_bytes).decode()})
+        )
+    except Exception as e:
+        log_event("tts_error", error=str(e))
 
 
 async def handler(websocket):

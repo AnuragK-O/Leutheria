@@ -50,6 +50,11 @@ function addConfirmBubble({ id, tool, args }) {
 
 window.leutheria.onChat(({ role, text }) => addBubble(role, text));
 window.leutheria.onConfirmRequest((request) => addConfirmBubble(request));
+window.leutheria.onSpeech((base64Wav) => {
+  new Audio(`data:audio/wav;base64,${base64Wav}`).play().catch((err) => {
+    addBubble("assistant", `⚠️ couldn't play speech: ${err.message}`);
+  });
+});
 
 window.leutheria.onLog((line) => {
   logEl.textContent += line + "\n";
