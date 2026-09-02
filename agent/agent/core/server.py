@@ -14,6 +14,12 @@ from agent.skills.registry import register_skill
 
 HOST = "127.0.0.1"
 PORT = 8765
+# websockets' default max_size (1 MiB) is easily exceeded by a "speech"
+# message's base64 WAV audio for anything but a very short reply -- e.g. a
+# ~500-character reply's synthesized audio hit ~1.2 MB and silently killed
+# the connection (found via testing -- see BUGS.md). Recorded audio clips
+# for STT could also approach this for a long push-to-talk recording.
+MAX_MESSAGE_SIZE = 20 * 1024 * 1024  # 20 MiB
 
 _backend = None
 
@@ -173,7 +179,7 @@ async def handler(websocket):
 
 
 async def main():
-    async with websockets.serve(handler, HOST, PORT):
+    async with websockets.serve(handler, HOST, PORT, max_size=MAX_MESSAGE_SIZE):
         print(f"AGENT_READY ws://{HOST}:{PORT}", flush=True)
         await asyncio.Future()  # run forever
 

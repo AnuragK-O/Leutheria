@@ -10,13 +10,11 @@ class AnthropicBackend(LLMBackend):
     def __init__(self):
         self._client = anthropic.Anthropic()
 
-    def generate(self, messages: list, tools: list) -> LLMTurn:
-        response = self._client.messages.create(
-            model=MODEL,
-            max_tokens=MAX_TOKENS,
-            tools=tools,
-            messages=messages,
-        )
+    def generate(self, messages: list, tools: list, system: str = None) -> LLMTurn:
+        kwargs = {"model": MODEL, "max_tokens": MAX_TOKENS, "tools": tools, "messages": messages}
+        if system:
+            kwargs["system"] = system
+        response = self._client.messages.create(**kwargs)
 
         tool_calls = [
             ToolCall(id=b.id, name=b.name, args=b.input)

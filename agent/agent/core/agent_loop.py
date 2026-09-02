@@ -1,5 +1,6 @@
 import asyncio
 import json
+from pathlib import Path
 
 from agent.core.dispatcher import dispatch
 from agent.core.logging_util import log_event
@@ -7,6 +8,9 @@ from agent.skills.registry import anthropic_skill_schemas
 from agent.tools.registry import anthropic_tool_schemas
 
 MAX_TURNS = 6  # hard cap so a confused model can't loop forever
+
+SYSTEM_PROMPT_PATH = Path(__file__).resolve().parent.parent.parent / "SYSTEM_PROMPT.md"
+SYSTEM_PROMPT = SYSTEM_PROMPT_PATH.read_text() if SYSTEM_PROMPT_PATH.exists() else None
 
 
 async def run(backend, user_text: str, websocket=None, pending: dict = None) -> dict:
@@ -24,7 +28,7 @@ async def run(backend, user_text: str, websocket=None, pending: dict = None) -> 
     trace = []
 
     for _ in range(MAX_TURNS):
-        turn = await loop.run_in_executor(None, backend.generate, messages, tools)
+        turn = await loop.run_in_executor(None, backend.generate, messages, tools, SYSTEM_PROMPT)
         log_event(
             "llm_turn",
             text=turn.text,

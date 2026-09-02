@@ -87,10 +87,14 @@ app/                  Electron shell
                         collapsible raw log
 
 agent/                Python sidecar
+  SYSTEM_PROMPT.md     Persona/tone/behavior -- loaded once, passed as `system` on every
+                       conversational LLM call. Hand-editable, no restart-the-world needed
+                       beyond restarting the agent process.
   .venv/              Virtualenv (gitignored)
   agent/
     core/
-      server.py        WebSocket server, message routing
+      server.py        WebSocket server, message routing (max_size=20MB -- a long spoken
+                       reply's audio can exceed the 1MB library default, see BUGS.md #7)
       dispatcher.py     Routes {tool, args} payloads to tool functions; destructive tools
                         pause for a live confirmation round-trip before running
       llm.py            LLMBackend interface (LLMTurn) -- swappable backend seam
@@ -167,6 +171,30 @@ ANTHROPIC_API_KEY=sk-ant-...
 directory and walks up through parents until it finds a `.env` — so the repo-root file is
 picked up automatically regardless of where the agent process's cwd is. `.env` is gitignored;
 never commit it.
+
+### Persona / behavior (`SYSTEM_PROMPT.md`)
+
+`agent/SYSTEM_PROMPT.md` is a plain markdown file that shapes how Claude behaves — it's
+loaded once at startup (`agent_loop.py`) and passed as the `system` parameter on every
+conversational LLM call. It's genuinely meant to be hand-edited: change the persona, the
+tone, the behavioral rules, whatever — it's not buried in Python. Currently covers:
+- **Identity**: the assistant is "Leutheria," with real tool access, not just advice.
+- **Tone**: terse, conversational, spoken-style — since every reply gets read aloud via
+  TTS. Explicitly told not to use markdown (`**bold**`, bullet points, backticks, etc.),
+  since that gets synthesized as literal punctuation and sounds broken out loud.
+- **Behavioral rules**: prefer an existing skill over re-deriving the same steps, explain
+  destructive actions briefly before the confirmation prompt gates them, ask one short
+  clarifying question rather than guess on genuinely ambiguous requests, prefer official
+  APIs over scraping when building new capabilities.
+
+Deliberately **not** applied to every LLM call — only `agent_loop.py`'s conversational
+loop gets it. `skill_learning.py`'s calls (which must return strict JSON, nothing else)
+pass no `system` at all, so persona/tone instructions never bleed into and corrupt a
+structured-output call. See `LLMBackend.generate()`'s docstring in `agent/core/llm.py`
+for this reasoning where it's implemented.
+
+Changes to this file take effect on the next agent restart (it's read once at import
+time, not hot-reloaded).
 
 ## Running the full app (Electron + Python together)
 
