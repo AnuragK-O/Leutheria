@@ -37,6 +37,18 @@ function confirmRequest(id, tool, args) {
   }
 }
 
+function skillProposed(id, name, description, steps, uncertainParams) {
+  if (devWindow) {
+    devWindow.webContents.send("skill-proposed", {
+      id,
+      name,
+      description,
+      steps,
+      uncertain_params: uncertainParams,
+    });
+  }
+}
+
 function formatAgentReply(payload) {
   if (payload.type === "tool_result") {
     return `🔧 ${payload.tool}(${JSON.stringify(payload.result)})`;
@@ -153,6 +165,17 @@ function connectToAgent() {
       return;
     }
 
+    if (payload.type === "skill_proposed") {
+      // Arrives after the real response -- purely additive, doesn't touch pendingIsChat.
+      skillProposed(payload.id, payload.name, payload.description, payload.steps, payload.uncertain_params);
+      return;
+    }
+
+    if (payload.type === "skill_saved") {
+      chat("assistant", `✅ Saved "${payload.name}" as a new skill.`);
+      return;
+    }
+
     if (pendingIsChat) {
       pendingIsChat = false;
       chat("assistant", formatAgentReply(payload));
@@ -169,6 +192,13 @@ ipcMain.on("confirm-response", (_event, { id, approved }) => {
   const message = { type: "confirm", id, approved };
   log(`[bridge] sending: ${JSON.stringify(message)}`);
   chat("user", approved ? "✅ approved" : "❌ declined");
+  ws.send(JSON.stringify(message));
+});
+
+ipcMain.on("skill-response", (_event, { id, approved, resolutions }) => {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const message = { type: "skill_response", id, approved, resolutions };
+  log(`[bridge] sending: ${JSON.stringify(message)}`);
   ws.send(JSON.stringify(message));
 });
 

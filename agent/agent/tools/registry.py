@@ -1,4 +1,7 @@
-from agent.tools.basic import create_folder, list_files, open_app, run_command
+from agent.tools.create_folder import create_folder
+from agent.tools.list_files import list_files
+from agent.tools.open_app import open_app
+from agent.tools.run_command import run_command
 
 # run_command is marked destructive, not "safe", because it executes
 # arbitrary shell input -- unlike the other three, its blast radius isn't

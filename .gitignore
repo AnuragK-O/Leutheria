@@ -11,3 +11,4 @@ __pycache__/
 *.pyc
 agent/logs/
 agent/agent/assets/voices/
+agent/agent/skills/generated/

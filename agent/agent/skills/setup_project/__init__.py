@@ -9,7 +9,7 @@ async def run(args: dict, websocket, pending: dict) -> dict:
     from pathlib import Path
 
     from agent.core.dispatcher import dispatch
-    from agent.tools.basic import create_folder
+    from agent.tools.create_folder import create_folder
 
     name = args["name"]
     base_dir = args.get("base_dir", "~/Projects")

@@ -47,6 +47,10 @@
         border: 1px solid #a33;
         background: #3a2222;
       }
+      .bubble.skill-proposal {
+        border: 1px solid #7a5cff;
+        background: #2a2440;
+      }
       .confirm-buttons {
         display: flex;
         gap: 8px;
@@ -71,6 +75,14 @@
       .confirm-buttons .decline {
         background: #a33;
         color: white;
+      }
+      .confirm-buttons button.toggle:not(.selected) {
+        opacity: 0.35;
+      }
+      .skill-question {
+        margin-top: 8px;
+        font-size: 12px;
+        color: #ccc;
       }
 
       #input-row {

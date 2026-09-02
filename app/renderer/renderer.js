@@ -48,8 +48,85 @@ function addConfirmBubble({ id, tool, args }) {
   chatEl.scrollTop = chatEl.scrollHeight;
 }
 
+function addSkillProposalBubble({ id, name, description, steps, uncertain_params }) {
+  const bubble = document.createElement("div");
+  bubble.className = "bubble assistant skill-proposal";
+
+  const stepList = steps.map((s) => s.tool).join(" → ");
+  const label = document.createElement("div");
+  label.textContent = `💡 New skill idea — "${name}"\n${description}\nSteps: ${stepList}`;
+  bubble.appendChild(label);
+
+  // resolutions[param] = true means "it varies, keep as a parameter" (the
+  // default if a question is never answered -- fail toward flexibility).
+  const resolutions = {};
+
+  (uncertain_params || []).forEach((item) => {
+    resolutions[item.name] = true;
+
+    const question = document.createElement("div");
+    question.className = "skill-question";
+    question.textContent = `❓ ${item.question}`;
+    bubble.appendChild(question);
+
+    const row = document.createElement("div");
+    row.className = "confirm-buttons";
+
+    const variesBtn = document.createElement("button");
+    variesBtn.textContent = "It varies";
+    variesBtn.className = "toggle approve selected";
+
+    const fixedBtn = document.createElement("button");
+    fixedBtn.textContent = `Always "${item.guessed_value}"`;
+    fixedBtn.className = "toggle decline";
+
+    variesBtn.addEventListener("click", () => {
+      resolutions[item.name] = true;
+      variesBtn.classList.add("selected");
+      fixedBtn.classList.remove("selected");
+    });
+    fixedBtn.addEventListener("click", () => {
+      resolutions[item.name] = false;
+      fixedBtn.classList.add("selected");
+      variesBtn.classList.remove("selected");
+    });
+
+    row.appendChild(variesBtn);
+    row.appendChild(fixedBtn);
+    bubble.appendChild(row);
+  });
+
+  const buttonRow = document.createElement("div");
+  buttonRow.className = "confirm-buttons";
+
+  const saveBtn = document.createElement("button");
+  saveBtn.textContent = "Save skill";
+  saveBtn.className = "approve";
+
+  const noBtn = document.createElement("button");
+  noBtn.textContent = "No thanks";
+  noBtn.className = "decline";
+
+  const respond = (approved) => {
+    bubble.querySelectorAll("button").forEach((btn) => (btn.disabled = true));
+    label.textContent += approved ? "\n— saved" : "\n— declined";
+    window.leutheria.sendSkillResponse(id, approved, resolutions);
+  };
+
+  saveBtn.addEventListener("click", () => respond(true));
+  noBtn.addEventListener("click", () => respond(false));
+
+  buttonRow.appendChild(saveBtn);
+  buttonRow.appendChild(noBtn);
+  bubble.appendChild(buttonRow);
+
+  chatEl.appendChild(bubble);
+  chatEl.scrollTop = chatEl.scrollHeight;
+}
+
 window.leutheria.onChat(({ role, text }) => addBubble(role, text));
 window.leutheria.onConfirmRequest((request) => addConfirmBubble(request));
+window.leutheria.onSkillProposed((proposal) => addSkillProposalBubble(proposal));
 window.leutheria.onSpeech((base64Wav) => {
   new Audio(`data:audio/wav;base64,${base64Wav}`).play().catch((err) => {
     addBubble("assistant", `⚠️ couldn't play speech: ${err.message}`);

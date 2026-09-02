@@ -59,6 +59,16 @@ server.py
     |
     v
   tts.py (Piper) -> "speech" message -> Electron plays it
+
+  meanwhile, if the trace had >= 2 tool calls and no skill covers it yet
+  (skill_learning.py, checked against logs/events.jsonl BEFORE this
+  request logs its own entry):
+    -> a past matching run exists: LLM diffs both into a confident definition
+    -> first time seen: LLM generalizes from one example, flags anything
+       uncertain as a clarifying question instead of guessing
+    -> "skill_proposed" message -> Electron shows any questions + Save/Decline
+    -> on approve: answers get baked in, written to skills/generated/*.json,
+       live immediately
 ```
 
 Key point the diagram is built around: **tools and skills look identical to Claude** — both
@@ -90,14 +100,28 @@ agent/                Python sidecar
       audio_input.py    Decodes a base64 audio payload to a temp file, hands off to stt.py
       stt.py            Local Whisper ("base" model) transcription
       tts.py            Local Piper ("en_US-amy-medium" voice) speech synthesis
+      skill_learning.py Checks logs/events.jsonl for a matching past run, then asks
+                        Claude to generalize into a skill definition -- confidently
+                        from two examples if repeated, or from one example (flagging
+                        uncertain params as clarifying questions) if this is the first
       logging_util.py   Appends every message/decision/tool call to logs/events.jsonl
     tools/
-      basic.py          open_app, create_folder, list_files, run_command
       registry.py       TOOLS dict (fn, safety, description, input_schema) + anthropic_tool_schemas()
+      open_app/          Each tool is its own package -- implementation lives in __init__.py
+      create_folder/
+      list_files/
+      run_command/
     skills/
-      setup_project.py   First hand-written skill: create_folder + git init + open in VS Code
-                        as one multi-step procedure, exposed to the LLM as a single tool
-      registry.py       SKILLS dict + anthropic_skill_schemas() -- same shape as tools/registry.py
+      registry.py       SKILLS dict + anthropic_skill_schemas(); loads generated/*.json at
+                        startup, plus register_skill() to add a new one at runtime
+      template_skill.py The one reviewed interpreter every generated skill runs through --
+                        a generated skill is data (steps + {param} placeholders), never
+                        new code
+      setup_project/     First hand-written skill (its own package, same pattern as tools/):
+                        create_folder + git init + open in VS Code as one multi-step
+                        procedure, exposed to the LLM as a single tool
+      generated/         Agent-proposed, user-approved skills as JSON (gitignored --
+                        local learned state, not source code)
     assets/voices/       Piper voice model (gitignored, auto-downloaded on first use)
   logs/                 events.jsonl (gitignored) -- see "Logs" section below
 ```
@@ -271,9 +295,9 @@ A skill's `run()` is free to call `dispatch()` itself for its own sub-steps — 
 a skill isn't a way to bypass safety tiering: if it calls a destructive tool like
 `run_command` internally, that sub-step still pauses for its own confirmation prompt, same
 as if the LLM had called it directly. `setup_project` (the first one, in
-`agent/skills/setup_project.py`) demonstrates this: it runs `create_folder` (safe, no
-prompt) then two `run_command` calls (`git init`, then opening the folder in VS Code),
-each requiring its own approval.
+`agent/skills/setup_project/__init__.py`) demonstrates this: it runs `create_folder`
+(safe, no prompt) then two `run_command` calls (`git init`, then opening the folder in
+VS Code), each requiring its own approval.
 
 Try it: `create a project called sample, initialize a repo and open in vs code` — watch
 the trace show a single `setup_project` tool call (not three separate ones), with two
@@ -291,6 +315,54 @@ for the skill itself being correct. Fixed by expanding `~` via `Path(...).expand
 before building any shell string. The fix cut the request from 5 LLM turns down to 2
 (one to call the skill, one to summarize) — check `agent/logs/events.jsonl`'s `llm_turn`
 entries to see this kind of thing for yourself on any request.
+
+### Automatic skill learning
+
+`setup_project` above is hand-written. The agent can also **propose its own skills** —
+this is scoped to skills only for now, not brand-new tools (see `plans/NOTES.md` for why
+that distinction matters: a skill can only ever recombine tools a human already reviewed
+and safety-tagged, whereas a wholly new tool would be unreviewed code with nobody having
+assigned it a safety tier — a meaningfully bigger trust step, deliberately deferred).
+
+**Proposes on the very first success, not just on repeats** — but a first-time proposal
+generalizes from a single example, so anything genuinely ambiguous gets asked as a
+clarifying question instead of silently guessed:
+
+1. Any request that finishes with 2+ tool calls and isn't already covered by an existing
+   skill is a candidate. `agent/core/skill_learning.py` checks `agent/logs/events.jsonl`
+   for a *past* run with the same ordered tool-name sequence — this check runs **before**
+   the current request logs its own entry (a real bug caught during testing, see
+   `plans/BUGS.md` #6: checking after would trivially match the request against itself).
+2. **If a past match exists** (a genuine repeat): Claude diffs the two concrete runs —
+   confident, since two data points show what actually varied vs. stayed constant.
+3. **If this is the first time** the sequence has been seen: Claude generalizes from the
+   one example it has. Anything it's confident about (like a name you explicitly said,
+   e.g. "foo1") becomes a real parameter immediately. Anything it can't be sure of from
+   one example (like a location that only appeared once, e.g. "~/Desktop") comes back as
+   an `uncertain_params` entry with a plain-language question instead of a guess.
+4. Either way, the result is a skill *definition* — just JSON, never new Python. A
+   `skill_proposed` message goes to the chat UI: any clarifying questions render as
+   "It varies" / `Always "<value>"` toggles (defaulting to "it varies" if never touched —
+   fails toward flexibility, not toward silently hardcoding something that might change),
+   followed by Save/Decline for the whole proposal. Entirely non-blocking throughout —
+   never delays or affects the response you already got, same principle as TTS.
+5. On Save, `agent/core/skill_learning.py`'s `finalize_definition()` applies your answers
+   (baking any "always this value" choice into the steps as a literal and dropping it from
+   the schema; leaving "it varies" answers as real parameters), then the result is written
+   to `agent/skills/generated/<name>.json` and registered immediately — no restart needed.
+   It runs through the one shared `template_skill.run_template()` interpreter, which just
+   substitutes parameter values and calls `dispatch()` per step — a generated skill is
+   structurally incapable of doing anything a hand-written skill couldn't, and any
+   destructive step inside it still pauses for its own confirmation.
+
+Try it: ask `create a folder called foo1 on my desktop and list what's in it` — you should
+get a proposal immediately, with a clarifying question about whether new folders always
+go on the Desktop. Answer it either way and save, then try a *differently-phrased* new
+request (`make me a folder named testxyz and show its contents`) — it should match
+semantically and run as a single tool call using the generated skill.
+
+**Known limitation**: declining a proposal isn't remembered, so the same pattern gets
+proposed again next time it comes up. Worth revisiting if it gets annoying in practice.
 
 ### Confirmation flow
 
@@ -375,6 +447,37 @@ automatically with the synthesized audio as base64 WAV:
 There's no request for this — it's always sent after a text reply, for every input
 method (typed, voice, or a tool result reached via either). No API key needed; Piper
 runs fully locally.
+
+### Skill proposal protocol
+
+May follow a `response` (after any `speech` message) whenever a multi-step (2+ tool call)
+success isn't already covered by an existing skill -- on the first occurrence as well as
+repeats, not just repeats. Fully independent of the request/response cycle -- nothing is
+waiting on this, so it can arrive or not without affecting anything else:
+
+```python
+{"type": "response", "text": "...", "trace": [...]}          # the actual answer, unaffected
+{"type": "speech", "data": "..."}                              # if any
+{"type": "skill_proposed", "id": "<uuid>", "name": "...", "description": "...",
+ "steps": [{"tool": "...", "args": {...}}, ...],
+ "uncertain_params": [
+   {"name": "...", "guessed_value": "...", "question": "..."}   # empty list if confident
+ ]}
+
+# for each uncertain_params entry, optionally answer whether it's a real
+# parameter (true) or should be baked in as a fixed constant (false) --
+# anything unanswered defaults to true (stays a parameter) on save:
+# you respond independently, whenever (or never):
+{"type": "skill_response", "id": "<uuid>", "approved": true,
+ "resolutions": {"<param_name>": false}}   # or "approved": false, no resolutions needed
+
+# only on approval:
+{"type": "skill_saved", "name": "..."}
+```
+
+A decline is just logged (`skill_declined` in `agent/logs/events.jsonl`) -- no reply is
+sent back for it, since there's nothing further to report. `uncertain_params` is always
+present (possibly empty) so the client doesn't need to special-case a missing key.
 
 ## Logs
 
