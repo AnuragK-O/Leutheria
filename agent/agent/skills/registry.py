@@ -2,7 +2,7 @@ import functools
 import json
 from pathlib import Path
 
-from agent.skills import setup_project
+from agent.skills import backup_folder, quick_note, setup_project
 from agent.skills.template_skill import run_template
 
 GENERATED_DIR = Path(__file__).resolve().parent / "generated"
@@ -38,6 +38,38 @@ SKILLS = {
                 },
             },
             "required": ["name"],
+        },
+    },
+    "quick_note": {
+        "fn": quick_note.run,
+        "description": (
+            "Jot down a quick timestamped note and confirm it with a notification. "
+            "Use this whenever the user wants to remember or note something down."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "The note content."},
+                "notes_path": {
+                    "type": "string",
+                    "description": "Where to save notes. Defaults to '~/Notes/notes.txt' if omitted.",
+                },
+            },
+            "required": ["text"],
+        },
+    },
+    "backup_folder": {
+        "fn": backup_folder.run,
+        "description": (
+            "Create a timestamped backup copy of a file or folder, alongside the original. "
+            "Use this whenever the user wants to back up or duplicate something before changing it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Path of the file or folder to back up."},
+            },
+            "required": ["path"],
         },
     },
 }

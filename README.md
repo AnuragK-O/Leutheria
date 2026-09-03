@@ -115,6 +115,10 @@ agent/                Python sidecar
       create_folder/
       list_files/
       run_command/
+      get_clipboard/     set_clipboard/    open_url/          show_notification/
+      take_screenshot/   read_file/        append_text/       trash_file/
+      move_file/         copy_file/        list_running_apps/
+      get_battery_status/  get_disk_space/  get_current_datetime/
     skills/
       registry.py       SKILLS dict + anthropic_skill_schemas(); loads generated/*.json at
                         startup, plus register_skill() to add a new one at runtime
@@ -124,6 +128,8 @@ agent/                Python sidecar
       setup_project/     First hand-written skill (its own package, same pattern as tools/):
                         create_folder + git init + open in VS Code as one multi-step
                         procedure, exposed to the LLM as a single tool
+      quick_note/         append_text + show_notification: jot down a timestamped note
+      backup_folder/      copy_file with a generated timestamped destination name
       generated/         Agent-proposed, user-approved skills as JSON (gitignored --
                         local learned state, not source code)
     assets/voices/       Piper voice model (gitignored, auto-downloaded on first use)
@@ -300,6 +306,20 @@ asyncio.run(main())
 | `create_folder` | `{"path": "~/Desktop/test"}` | safe | `mkdir -p` equivalent |
 | `list_files` | `{"path": "~/Desktop"}` | safe | lists directory contents |
 | `run_command` | `{"cmd": "echo hi"}` | **destructive** | pauses for a live user confirmation before it runs — see "Confirmation flow" below |
+| `get_clipboard` | `{}` | safe | reads clipboard text |
+| `set_clipboard` | `{"text": "..."}` | safe | copies text to clipboard |
+| `open_url` | `{"url": "https://..."}` | safe | opens in default browser |
+| `show_notification` | `{"title": "...", "message": "..."}` | safe | macOS notification banner |
+| `take_screenshot` | `{"save_path": "..."}` (optional) | safe | defaults to a timestamped file on the Desktop |
+| `read_file` | `{"path": "..."}` | safe | text content, capped at 20,000 chars |
+| `append_text` | `{"path": "...", "text": "..."}` | safe | append-only — can't overwrite, so no confirmation needed |
+| `trash_file` | `{"path": "..."}` | safe | moves to the system Trash — recoverable, unlike `rm` |
+| `move_file` | `{"source": "...", "destination": "..."}` | safe | refuses rather than overwriting an existing destination |
+| `copy_file` | `{"source": "...", "destination": "..."}` | safe | same overwrite guard as `move_file`; handles files and folders |
+| `list_running_apps` | `{}` | safe | visible, foreground application names |
+| `get_battery_status` | `{}` | safe | percent + charging state, if this Mac has a battery |
+| `get_disk_space` | `{}` | safe | total/used/free GB on the main disk |
+| `get_current_datetime` | `{}` | safe | current date and time |
 
 Example calls for each (swap the `tool`/`args` fields in the snippet above):
 
@@ -309,6 +329,8 @@ Example calls for each (swap the `tool`/`args` fields in the snippet above):
 {"type": "command", "tool": "list_files", "args": {"path": "~/Desktop"}}
 {"type": "command", "tool": "run_command", "args": {"cmd": "echo hi"}}   # pauses for confirmation
 ```
+
+Notice how many of these are "safe" despite touching the filesystem or running something — that's deliberate, not an oversight. Each one is designed so it structurally *can't* destroy data: `trash_file` uses the recoverable system Trash instead of a real delete, `move_file`/`copy_file` refuse outright rather than silently overwriting an existing destination, and `append_text` can only add content, never truncate or replace it. `run_command` is the one tool that's genuinely unbounded (arbitrary shell), which is exactly why it's the only one gated behind confirmation.
 
 ### Skills
 
@@ -343,6 +365,13 @@ for the skill itself being correct. Fixed by expanding `~` via `Path(...).expand
 before building any shell string. The fix cut the request from 5 LLM turns down to 2
 (one to call the skill, one to summarize) — check `agent/logs/events.jsonl`'s `llm_turn`
 entries to see this kind of thing for yourself on any request.
+
+Two more hand-written skills exist, added deliberately rather than waiting for
+self-learning to invent them: `quick_note` (append a timestamped note, confirm with a
+notification -- try `remember that I need to renew my passport`) and `backup_folder`
+(copy something to a timestamped backup next to itself -- try `back up my project folder
+before I change anything`). Both compose only safe tools, so unlike `setup_project`
+they run in a single shot with no confirmation prompts along the way.
 
 ### Automatic skill learning
 
