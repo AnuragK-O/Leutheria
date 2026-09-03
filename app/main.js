@@ -131,17 +131,26 @@ function connectToAgent() {
   });
 
   ws.on("message", (data) => {
-    log(`[bridge] received: ${data.toString()}`);
-
     let payload;
     try {
       payload = JSON.parse(data.toString());
     } catch (_err) {
+      log(`[bridge] received: ${data.toString()}`);
       if (pendingIsChat) {
         pendingIsChat = false;
         chat("assistant", data.toString());
       }
       return;
+    }
+
+    // Don't dump a base64 audio blob into the log verbatim -- it can be
+    // over a megabyte of text for a single reply and drowns out everything
+    // else. Log a summary instead; the audio itself still gets played.
+    if (payload.data) {
+      const { data: _omitted, ...summary } = payload;
+      log(`[bridge] received: ${JSON.stringify(summary)} <audio ${payload.data.length} b64 chars>`);
+    } else {
+      log(`[bridge] received: ${JSON.stringify(payload)}`);
     }
 
     if (payload.type === "confirmation_required") {
