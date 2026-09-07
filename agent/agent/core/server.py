@@ -5,7 +5,7 @@ import uuid
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-from agent.core import agent_loop, skill_learning
+from agent.core import agent_loop, control, skill_learning
 from agent.core.audio_input import transcribe_payload
 from agent.core.dispatcher import dispatch
 from agent.core.llm_anthropic import AnthropicBackend
@@ -63,6 +63,19 @@ async def handle_message(payload: dict, websocket, pending: dict) -> dict:
                 if not future.done():
                     future.set_result({"approved": resolution, "remember": None})
                     log_event("confirmation_answered_by_voice", id=confirmation_id, approved=resolution)
+                    # Tell the UI too, so the on-screen card settles into its
+                    # answered state instead of sitting there with live
+                    # buttons for a question that's already been answered.
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "type": "confirmation_resolved",
+                                "id": confirmation_id,
+                                "approved": resolution,
+                                "by": "voice",
+                            }
+                        )
+                    )
                 return {"type": "response", "text": ""}
 
         if not text:
@@ -166,6 +179,18 @@ async def handler(websocket):
             payload = json.loads(raw)
         except json.JSONDecodeError:
             await websocket.send(json.dumps({"type": "error", "text": "invalid JSON"}))
+            continue
+
+        if payload.get("type") in control.CONTROL_TYPES:
+            # Management traffic from the UI (read the catalog, toggle a
+            # capability, delete a skill). Answered synchronously and tagged
+            # with the caller's request_id so the Electron side can resolve
+            # the right promise -- these interleave freely with a command
+            # that's still mid-flight.
+            result = control.handle(payload)
+            await websocket.send(
+                json.dumps({"type": "control_result", "request_id": payload.get("request_id"), **result})
+            )
             continue
 
         if payload.get("type") == "confirm":

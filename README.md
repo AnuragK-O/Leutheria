@@ -16,8 +16,14 @@ Electron (app/)
 ---------------
 main.js
   - spawns the Python agent, owns the WebSocket connection
+  - event stream one way (chat/confirm/speech), request/response the other
+    (inventory reads + preference writes, matched by request_id)
 renderer/
-  - chat UI, mic button (records + sends audio), confirm buttons, plays TTS audio
+  - Assistant     chat, mic, confirmation + skill-proposal cards, plays TTS audio
+  - Library       every tool and skill: inspect, enable/disable, ask-first, delete
+  - Activity      skill history + what actually gets used
+  - Permissions   standing approvals and customized capabilities
+  - Logs          the raw bridge stream
 
         |
         |  ws://127.0.0.1:8765 -- JSON messages, both directions
@@ -28,6 +34,12 @@ Python Agent (agent/agent/)
 server.py
   - routes every message by type
   - logs everything to logs/events.jsonl
+
+  "inventory" / "set_preference" / "delete_skill" / "revoke_trust"
+    -> control.py -> inventory.py (catalog + usage + history)
+                     preferences.py (enabled / ask-first, per capability)
+                     trust.py, skills/registry.py
+    answered inline -- never touches the LLM, never blocks a command
 
   "audio" message
     -> audio_input.py -> stt.py (Whisper) -> transcript text
@@ -42,7 +54,9 @@ server.py
     |  tool_use
     v
   dispatcher.py
-    checks SKILLS first, then TOOLS
+    resolves the name against SKILLS then TOOLS, and applies preferences.py:
+    a disabled capability is refused outright, and "ask before running" can be
+    turned on for anything (or off for a destructive tool) from the Library
     |                          |
     v                          v
   skills/registry.py      tools/registry.py
@@ -83,12 +97,24 @@ skill pauses exactly the same way a directly-called destructive tool would.
 
 ```
 app/                  Electron shell
-  main.js             Spawns the Python agent, connects to it over WebSocket, hosts the dev window
-  preload.js           Bridges main-process logs/chat/confirmations/audio into the renderer safely
-  renderer/            Chat UI: message bubbles, confirm Approve/Decline buttons, mic button,
-                        collapsible raw log
+  main.js             Spawns the Python agent, connects to it over WebSocket, hosts the window
+  preload.js           Bridges the agent event stream + the management request/response calls
+                       into the renderer safely (contextBridge, no node access in the page)
+  renderer/
+    index.html         Shell markup: sidebar, topbar, one <section> per view
+    styles.css         Design tokens (dark + light) and every component style
+    js/
+      util.js          DOM helper, the inline SVG icon set, formatters, toasts
+      app.js           Navigation, the shared inventory snapshot, theme, topbar wiring
+      chat.js          Assistant view: transcript, confirmation + skill-proposal cards, mic
+      library.js       Library view: master/detail over every tool and skill
+      activity.js      Activity view: skill history timeline + usage stats
+      permissions.js   Permissions view: standing approvals, customized capabilities
+      logs.js          Logs view: the raw bridge stream
 
 agent/                Python sidecar
+  preferences.json     Per-capability enabled / ask-first overrides set from the Library
+                       (gitignored -- local state, not source)
   SYSTEM_PROMPT.md     Persona/tone/behavior -- loaded once, passed as `system` on every
                        conversational LLM call. Hand-editable, no restart-the-world needed
                        beyond restarting the agent process.
@@ -99,10 +125,22 @@ agent/                Python sidecar
     core/
       server.py        WebSocket server, message routing (max_size=20MB -- a long spoken
                        reply's audio can exceed the 1MB library default, see BUGS.md #7)
-      dispatcher.py     Routes {tool, args} payloads to tool functions; destructive tools
-                        pause for a live confirmation round-trip before running, unless
-                        trust.py says this exact (tool, args) pair is already trusted --
-                        the confirmation prompt is also spoken via tts.py's speak()
+      dispatcher.py     Routes {tool, args} payloads to tools and skills; refuses anything
+                        disabled in preferences.py, then pauses for a live confirmation
+                        round-trip when the capability asks first (destructive by default,
+                        overridable either way from the Library) -- unless trust.py says
+                        this exact (tool, args) pair is already trusted. The confirmation
+                        prompt is also spoken via tts.py's speak()
+      preferences.py    Per-capability `enabled` and `requires_confirmation` overrides,
+                        persisted to agent/preferences.json. Read by dispatcher.py and by
+                        both registries' schema builders, so a disabled capability is
+                        never even described to the model
+      control.py        Handles the UI's management messages (inventory / set_preference /
+                        delete_skill / revoke_trust) inline in the read loop -- no LLM, no
+                        blocking, answered with the caller's request_id
+      inventory.py      One snapshot of everything the UI renders: the tool + skill catalog
+                        with effective settings, per-capability usage counts scanned out of
+                        logs/events.jsonl, the skill-lifecycle history, and standing trust
       trust.py          Session (in-memory) and permanent (trusted_commands.json) trust,
                         keyed on the exact (tool, args) pair -- never on tool name alone
       voice_confirm.py  interpret_yes_no(): word-boundary regex match of a transcribed
@@ -222,8 +260,8 @@ cd app
 npm start
 ```
 
-This spawns the Python agent automatically, connects to it, and opens the dev log
-window — you'll see the full round-trip logged there (and in the terminal).
+This spawns the Python agent automatically, connects to it, and opens the app window.
+The sidebar's status dot goes green once the bridge is connected.
 
 > **Known quirk in some sandboxed/CI shells:** if `ELECTRON_RUN_AS_NODE=1` is set in
 > your environment, Electron silently runs as plain Node and the app APIs
@@ -234,15 +272,46 @@ window — you'll see the full round-trip logged there (and in the terminal).
 > ```
 > A normal terminal usually won't have this set at all.
 
-`main.js` sends one hardcoded test command on connect (`create_folder` targeting
-`~/Desktop/leutheria-test`) — check the dev window/terminal log and confirm the folder
-actually appears on your Desktop. That proves the raw tool-dispatch path.
+### The interface
 
-The dev window also has a **text input at the bottom** — type a plain-English command
+Five views in the left sidebar:
+
+| view | what it's for |
+|---|---|
+| **Assistant** | The conversation. Type or talk; confirmations and skill proposals appear inline as cards. |
+| **Library** | Every tool and skill in one master/detail list. Select one to read its description and parameters, see how often it's actually been used, turn it off, make it always ask first, or (for a learned skill) inspect its steps and delete it. |
+| **Activity** | How the skill set has grown: every skill proposed, saved, or turned down, plus a most-used breakdown. |
+| **Permissions** | Standing approvals (the `remember: session/always` ones) with a revoke button, and every capability whose settings differ from its default, with a reset. |
+| **Logs** | The raw bridge stream, out of the way of the conversation. Copy or clear it. |
+
+Light and dark themes both ship; toggle at the bottom of the sidebar (the choice sticks).
+
+**Library controls, and what they actually do:**
+- **Available to Leutheria** — off means the capability isn't included in the tool schemas
+  sent to Claude at all, so it can't be used *or planned around*. `dispatcher.dispatch()`
+  also refuses it independently, which covers a stale plan or a learned skill with that
+  tool baked into one of its steps.
+- **Ask before running** — overrides the built-in policy in either direction. Turn it on
+  for a safe tool you'd rather supervise; turn it off for `run_command` if you really want
+  to (it's the one genuinely unbounded tool, so that's your call to make deliberately).
+  Skills default to off because each of their *steps* dispatches back through the same
+  gate and confirms on its own.
+- **Delete** — learned skills only. A hand-written skill is code, not data, so it can be
+  disabled from here but not deleted; the UI hides the button rather than failing after
+  the fact.
+
+Both settings live in `agent/preferences.json` and survive restarts. Deleting a learned
+skill also clears its overrides, so a later skill that happens to reuse the name doesn't
+silently inherit the dead one's settings.
+
+### Testing the agentic loop
+
+The Assistant view's **input at the bottom** — type a plain-English command
 and press Enter to exercise the real LLM agentic loop (item #4): the text goes to Claude
 along with the tool schemas, and Claude can call a tool, see the result, and call
 another tool before giving a final answer — it's a loop, not a single shot. Each tool
-call in the chain shows as its own `🔧` line in the chat, followed by the final reply.
+call in the chain shows as its own row above the reply, with a green dot for success and
+a red one for a failure or decline.
 Try things like:
 - `open the Calculator app` → should actually open Calculator
 - `what is 12 times 7?` → should just get a text reply, no tool calls
@@ -259,10 +328,10 @@ Try things like:
 
 ### Voice input (push-to-talk)
 
-Click the 🎤 button next to the input to start recording, click it again (now showing ⏹,
-pulsing red) to stop. macOS will prompt for microphone access the first time — grant it to
+Click the mic button next to the input to start recording, click it again (now a stop
+square, pulsing red) to stop. macOS will prompt for microphone access the first time — grant it to
 Electron. On stop, the clip is sent to the agent, transcribed locally with Whisper, and the
-transcript appears as your own chat bubble (prefixed `🎤`) before the normal agentic loop
+transcript appears as your own message (labelled `you · voice`) before the normal agentic loop
 runs on it exactly as if you'd typed it. There's no wake word or true "hold to talk" yet —
 it's click-to-start/click-to-stop for now, which is simpler to get right than global hotkey
 hold-detection and matches the roadmap's "push-to-talk is fine for now" scope.
@@ -460,9 +529,11 @@ counts as a decline):
 This works identically whether the destructive tool was called directly or picked mid-loop
 by Claude — in the LLM path, a decline gets fed back to Claude as a failed tool result, so
 it can explain what happened instead of the connection just hanging. In the Electron app,
-this whole exchange is automatic: the confirmation shows up as a chat bubble with four
-buttons — Approve once / Approve (session) / Approve (always) / Decline
-(`app/renderer/`) — and clicking one sends the `confirm` message for you.
+this whole exchange is automatic: the confirmation shows up in the transcript as an
+"Approval needed" card with four buttons — Approve / Approve for this session / Always
+approve / Decline (`app/renderer/js/chat.js`) — and clicking one sends the `confirm`
+message for you. Once answered the buttons are replaced by a line saying what was
+decided, including when it was answered by voice instead of clicked.
 
 **Trust (`agent/core/trust.py`)**: `remember: "session"` or `"always"` tells
 `dispatcher.dispatch()` to skip the confirmation prompt entirely next time — but only for
@@ -584,6 +655,44 @@ A decline is just logged (`skill_declined` in `agent/logs/events.jsonl`) -- no r
 sent back for it, since there's nothing further to report. `uncertain_params` is always
 present (possibly empty) so the client doesn't need to special-case a missing key.
 
+### Management protocol (what the Library and Permissions views use)
+
+Everything else in the protocol is an event stream. These four are request/response: each
+carries a `request_id` that comes back on the reply, so several can be in flight at once
+and interleave freely with a command that's mid-confirmation. They're handled inline in
+`server.py`'s read loop via `control.py` — no LLM call, nothing that can block.
+
+```python
+{"type": "inventory", "request_id": "1"}
+# -> {"type": "control_result", "request_id": "1", "ok": true,
+#     "tools":   [{name, kind, description, input_schema, safety, enabled,
+#                  requires_confirmation, default_requires_confirmation,
+#                  is_overridden, runs, failures, last_used}, ...],
+#     "skills":  [{...same, plus origin, steps, source_signature,
+#                  created_at, deletable}, ...],
+#     "history": [{ts, event: "proposed"|"saved"|"declined", name, ...}, ...],
+#     "trusted": [{tool, args, scope: "always"|"session", key}, ...]}
+
+{"type": "set_preference", "name": "run_command", "enabled": false, "request_id": "2"}
+{"type": "set_preference", "name": "open_url", "requires_confirmation": true, "request_id": "3"}
+{"type": "set_preference", "name": "open_url", "reset": true, "request_id": "4"}
+# -> {"type": "control_result", "request_id": "...", "ok": true, "name": "...", ...}
+
+{"type": "delete_skill", "name": "archive_downloads", "request_id": "5"}
+# -> ok:false with an explanation for a hand-written skill -- only generated ones delete
+
+{"type": "revoke_trust", "key": "<the `key` field from an inventory `trusted` entry>", "request_id": "6"}
+```
+
+`is_overridden` means the *effective* behaviour differs from the built-in default, not
+merely that a stored entry exists — an override that happens to restate the default isn't
+something you'd want offered as a customization to undo.
+
+One more event, on the stream side: `{"type": "confirmation_resolved", "id", "approved",
+"by": "voice"}` is sent when a pending confirmation is answered out-of-band by a spoken
+yes/no, so the on-screen card settles instead of sitting there with live buttons for a
+question that's already been answered.
+
 ## Logs
 
 Every message received, every LLM decision, and every tool call (regardless of whether
@@ -592,7 +701,11 @@ line to `agent/logs/events.jsonl` (gitignored). Event types: `message_in`, `mess
 `llm_turn` (what Claude decided that turn), `tool_call` (which tool ran, with what args
 and result), `stt_transcript` (what Whisper heard), `tts_error` (a synthesis failure --
 non-fatal, just skipped), `confirmation_requested`/`tool_declined` (the destructive-tool
-confirmation flow). Tail it live while testing:
+confirmation flow), `confirmation_answered_by_voice`, `preference_changed`/
+`preference_reset`/`skill_deleted`/`trust_revoked` (management actions taken from the UI),
+and `dispatch_blocked_disabled` (something tried to run a capability you turned off).
+The Library's usage counts and the Activity view's history are both derived from this
+file, so it's the single source of truth for both. Tail it live while testing:
 
 ```bash
 tail -f agent/logs/events.jsonl

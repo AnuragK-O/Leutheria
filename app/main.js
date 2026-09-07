@@ -6,17 +6,35 @@ const WebSocket = require("ws");
 const AGENT_DIR = path.join(__dirname, "..", "agent");
 const AGENT_PYTHON = path.join(AGENT_DIR, ".venv", "bin", "python");
 const AGENT_URL = "ws://127.0.0.1:8765";
-
-// 1x1 transparent PNG so Tray doesn't need an external asset yet.
-const TRAY_ICON = nativeImage.createFromDataURL(
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
-);
+const ASSETS_DIR = path.join(__dirname, "..", "assets");
 
 let devWindow;
 let tray;
 let agentProcess;
 let ws;
 let pendingIsChat = false; // true only while waiting on a reply to a user-typed chat message
+
+// Control requests (inventory reads, preference writes) are request/response,
+// unlike the rest of the protocol which is a stream of events. Each one gets
+// an id and parks its resolver here until the matching control_result lands.
+const controlRequests = new Map();
+let nextControlId = 1;
+
+function sendControlRequest(payload) {
+  return new Promise((resolve) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      resolve({ ok: false, error: "not connected to agent" });
+      return;
+    }
+    const requestId = String(nextControlId++);
+    controlRequests.set(requestId, resolve);
+    ws.send(JSON.stringify({ ...payload, request_id: requestId }));
+    // Never leave the UI spinning forever if the agent dies mid-request.
+    setTimeout(() => {
+      if (controlRequests.delete(requestId)) resolve({ ok: false, error: "agent timed out" });
+    }, 10000);
+  });
+}
 
 function log(line) {
   console.log(line);
@@ -25,9 +43,23 @@ function log(line) {
   }
 }
 
-function chat(role, text) {
+function chat(role, text, extra) {
   if (devWindow) {
-    devWindow.webContents.send("chat", { role, text });
+    devWindow.webContents.send("chat", { role, text, ...extra });
+  }
+}
+
+function setStatus(status) {
+  if (devWindow) {
+    devWindow.webContents.send("status", status);
+  }
+}
+
+// Tells the renderer its cached catalog is stale (a skill was saved, a
+// preference changed) so the Library view refetches instead of drifting.
+function invalidateInventory() {
+  if (devWindow) {
+    devWindow.webContents.send("inventory-changed");
   }
 }
 
@@ -49,33 +81,56 @@ function skillProposed(id, name, description, steps, uncertainParams) {
   }
 }
 
-function formatAgentReply(payload) {
-  if (payload.type === "tool_result") {
-    return `🔧 ${payload.tool}(${JSON.stringify(payload.result)})`;
-  }
+// The renderer draws the tool trace itself (one row per step, with a
+// pass/fail marker), so pass it through structured rather than flattening
+// everything into a single string here.
+function sendAgentReply(payload) {
   if (payload.type === "response") {
-    const traceLines = (payload.trace || []).map(
-      (step) => `🔧 ${step.tool}(${JSON.stringify(step.args)}) → ${JSON.stringify(step.result)}`
-    );
-    return [...traceLines, payload.text].filter(Boolean).join("\n");
+    chat("assistant", payload.text, { trace: payload.trace || [] });
+    return;
   }
-  return `⚠️ ${payload.text || JSON.stringify(payload)}`;
+  if (payload.type === "tool_result") {
+    chat("assistant", "", {
+      trace: [{ tool: payload.tool, args: {}, result: payload.result }],
+    });
+    return;
+  }
+  chat("assistant", payload.text || JSON.stringify(payload), { error: true });
 }
 
 function createDevWindow() {
   devWindow = new BrowserWindow({
-    width: 480,
-    height: 640,
+    width: 1180,
+    height: 780,
+    minWidth: 940,
+    minHeight: 600,
+    // Frameless-with-traffic-lights, so the sidebar can run the full height of
+    // the window instead of sitting under a stock title bar.
+    titleBarStyle: "hiddenInset",
+    trafficLightPosition: { x: 18, y: 22 },
+    backgroundColor: "#141119",
+    show: false,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
     },
   });
   devWindow.loadFile(path.join(__dirname, "renderer", "index.html"));
+  // Avoid the white flash between window creation and first paint.
+  devWindow.once("ready-to-show", () => devWindow.show());
 }
 
 function createTray() {
-  tray = new Tray(TRAY_ICON);
+  // Template image: macOS recolors it to match the menu bar (light or dark)
+  // instead of showing a purple blob that fights the system appearance.
+  const icon = nativeImage
+    .createFromPath(path.join(ASSETS_DIR, "1.png"))
+    .resize({ width: 18, height: 18 });
+  icon.setTemplateImage(true);
+  tray = new Tray(icon);
   tray.setToolTip("Leutheria");
+  tray.on("click", () => {
+    if (devWindow) devWindow.isVisible() ? devWindow.focus() : devWindow.show();
+  });
 }
 
 function killStaleAgent() {
@@ -121,13 +176,7 @@ function connectToAgent() {
 
   ws.on("open", () => {
     log("[bridge] connected to agent");
-    const testMessage = {
-      type: "command",
-      tool: "create_folder",
-      args: { path: "~/Desktop/leutheria-test" },
-    };
-    log(`[bridge] sending: ${JSON.stringify(testMessage)}`);
-    ws.send(JSON.stringify(testMessage));
+    setStatus("connected");
   });
 
   ws.on("message", (data) => {
@@ -149,8 +198,24 @@ function connectToAgent() {
     if (payload.data) {
       const { data: _omitted, ...summary } = payload;
       log(`[bridge] received: ${JSON.stringify(summary)} <audio ${payload.data.length} b64 chars>`);
+    } else if (payload.type === "control_result" && payload.tools) {
+      // An inventory snapshot is the whole capability catalog -- summarize it
+      // for the same reason audio is summarized above.
+      log(
+        `[bridge] received: {"type":"control_result","request_id":"${payload.request_id}"} ` +
+          `<inventory: ${payload.tools.length} tools, ${payload.skills.length} skills>`
+      );
     } else {
       log(`[bridge] received: ${JSON.stringify(payload)}`);
+    }
+
+    if (payload.type === "control_result") {
+      const resolve = controlRequests.get(payload.request_id);
+      if (resolve) {
+        controlRequests.delete(payload.request_id);
+        resolve(payload);
+      }
+      return;
     }
 
     if (payload.type === "confirmation_required") {
@@ -160,10 +225,16 @@ function connectToAgent() {
       return;
     }
 
+    if (payload.type === "confirmation_resolved") {
+      // Answered out-of-band (by voice) -- settle the on-screen card.
+      if (devWindow) devWindow.webContents.send("confirm-resolved", payload);
+      return;
+    }
+
     if (payload.type === "transcript") {
       // What Whisper heard -- shown as the user's own message. The real
       // final reply is still coming, so pendingIsChat stays true.
-      chat("user", `🎤 ${payload.text}`);
+      chat("user", payload.text, { voice: true });
       return;
     }
 
@@ -182,32 +253,57 @@ function connectToAgent() {
 
     if (payload.type === "skill_saved") {
       chat("assistant", `✅ Saved "${payload.name}" as a new skill.`);
+      invalidateInventory();
       return;
     }
 
     if (pendingIsChat) {
       pendingIsChat = false;
-      chat("assistant", formatAgentReply(payload));
+      sendAgentReply(payload);
     }
   });
 
   ws.on("error", (err) => {
     log(`[bridge:err] ${err.message}`);
+    setStatus("error");
+  });
+
+  ws.on("close", () => {
+    log("[bridge] disconnected from agent");
+    setStatus("disconnected");
   });
 }
+
+ipcMain.handle("get-inventory", () => sendControlRequest({ type: "inventory" }));
+
+ipcMain.handle("set-preference", async (_event, { name, enabled, requiresConfirmation, reset }) => {
+  const result = await sendControlRequest({
+    type: "set_preference",
+    name,
+    enabled,
+    requires_confirmation: requiresConfirmation,
+    reset,
+  });
+  if (result.ok) invalidateInventory();
+  return result;
+});
+
+ipcMain.handle("delete-skill", async (_event, name) => {
+  const result = await sendControlRequest({ type: "delete_skill", name });
+  if (result.ok) invalidateInventory();
+  return result;
+});
+
+ipcMain.handle("revoke-trust", async (_event, key) => {
+  const result = await sendControlRequest({ type: "revoke_trust", key });
+  if (result.ok) invalidateInventory();
+  return result;
+});
 
 ipcMain.on("confirm-response", (_event, { id, approved, remember }) => {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   const message = { type: "confirm", id, approved, remember };
   log(`[bridge] sending: ${JSON.stringify(message)}`);
-  const label = !approved
-    ? "❌ declined"
-    : remember === "always"
-      ? "✅ approved (always)"
-      : remember === "session"
-        ? "✅ approved (this session)"
-        : "✅ approved";
-  chat("user", label);
   ws.send(JSON.stringify(message));
 });
 

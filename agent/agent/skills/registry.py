@@ -82,6 +82,13 @@ def _load_generated_skill(path: Path) -> None:
         "description": definition["description"],
         "input_schema": definition["input_schema"],
         "source_signature": definition.get("source_signature"),
+        # Everything below is inspection metadata for the Library UI. "origin"
+        # is also what makes a skill deletable -- a generated skill is just a
+        # JSON file we can remove, a hand-written one is code.
+        "origin": "generated",
+        "steps": definition.get("steps", []),
+        "created_at": path.stat().st_mtime,
+        "path": str(path),
     }
 
 
@@ -107,8 +114,33 @@ def register_skill(definition: dict) -> None:
     _load_generated_skill(path)
 
 
+def delete_skill(name: str) -> dict:
+    """Remove a generated skill for good: unregister it, delete its JSON file,
+    and drop any Library overrides attached to its name. Hand-written skills
+    are code, not data -- they can be disabled, but not deleted from here."""
+    from agent.core import preferences
+
+    skill = SKILLS.get(name)
+    if skill is None:
+        return {"ok": False, "error": f"no such skill: {name}"}
+    if skill.get("origin") != "generated":
+        return {"ok": False, "error": f"{name} is a built-in skill and can only be disabled"}
+
+    path = Path(skill["path"])
+    if path.exists():
+        path.unlink()
+    SKILLS.pop(name, None)
+    preferences.clear(name)
+    return {"ok": True, "name": name}
+
+
 def anthropic_skill_schemas() -> list:
+    """Only enabled skills are described to the model -- see the matching note
+    in tools/registry.anthropic_tool_schemas()."""
+    from agent.core import preferences
+
     return [
         {"name": name, "description": skill["description"], "input_schema": skill["input_schema"]}
         for name, skill in SKILLS.items()
+        if preferences.is_enabled(name)
     ]

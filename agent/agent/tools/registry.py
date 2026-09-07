@@ -217,7 +217,12 @@ TOOLS = {
 
 
 def anthropic_tool_schemas() -> list:
+    """Only enabled tools are described to the model -- a tool switched off in
+    the Library is invisible to it, not merely refused after the fact."""
+    from agent.core import preferences
+
     return [
         {"name": name, "description": tool["description"], "input_schema": tool["input_schema"]}
         for name, tool in TOOLS.items()
+        if preferences.is_enabled(name)
     ]

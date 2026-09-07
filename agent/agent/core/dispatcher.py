@@ -2,7 +2,7 @@ import asyncio
 import json
 import uuid
 
-from agent.core import trust
+from agent.core import preferences, trust
 from agent.core.logging_util import log_event
 from agent.core.tts import speak
 from agent.skills.registry import SKILLS
@@ -14,14 +14,26 @@ CONFIRMATION_TIMEOUT = 120  # seconds -- an unanswered prompt is treated as decl
 async def dispatch(
     tool_name: str, args: dict, websocket=None, pending: dict = None, intro_text: str = ""
 ) -> dict:
-    if tool_name in SKILLS:
-        return await SKILLS[tool_name]["fn"](args, websocket, pending)
-
+    skill = SKILLS.get(tool_name)
     tool = TOOLS.get(tool_name)
-    if tool is None:
+    if skill is None and tool is None:
         return {"ok": False, "error": f"unknown tool: {tool_name}"}
 
-    if tool["safety"] == "destructive" and not trust.is_trusted(tool_name, args):
+    # A capability the user switched off in the Library isn't offered to the
+    # model in the first place, so this is belt-and-braces: it also catches a
+    # stale plan, a generated skill's hardcoded step, or a direct dispatch.
+    if not preferences.is_enabled(tool_name):
+        log_event("dispatch_blocked_disabled", tool=tool_name, args=args)
+        return {"ok": False, "error": f"{tool_name} is currently disabled by the user"}
+
+    # Built-in policy: destructive tools ask, everything else doesn't. Skills
+    # default to not asking because each of their *steps* dispatches back
+    # through here and confirms on its own. Either default can be overridden
+    # per capability from the Library ("always ask before using this one").
+    default_confirm = tool is not None and tool["safety"] == "destructive"
+    if preferences.requires_confirmation(tool_name, default_confirm) and not trust.is_trusted(
+        tool_name, args
+    ):
         approved, remember = await _confirm(tool_name, args, websocket, pending, intro_text)
 
         if remember == "session":
@@ -35,6 +47,9 @@ async def dispatch(
                 "ok": False,
                 "error": f"{tool_name} was declined by the user (or the confirmation prompt timed out)",
             }
+
+    if skill is not None:
+        return await skill["fn"](args, websocket, pending)
 
     try:
         return tool["fn"](**args)
