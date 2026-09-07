@@ -52,8 +52,10 @@ server.py
      sub-steps)              run_command  (destructive)
                                   |
                                   v
-                         destructive? -> send "confirmation_required",
-                         pause until a "confirm" message answers it
+                         destructive? -> send "confirmation_required" AND
+                         speak the prompt, pause until a "confirm" message
+                         answers it -- which the next transcribed voice
+                         reply can supply directly (voice_confirm.py)
 
   once agent_loop gets a final text reply (no more tool calls):
     |
@@ -99,16 +101,22 @@ agent/                Python sidecar
                        reply's audio can exceed the 1MB library default, see BUGS.md #7)
       dispatcher.py     Routes {tool, args} payloads to tool functions; destructive tools
                         pause for a live confirmation round-trip before running, unless
-                        trust.py says this exact (tool, args) pair is already trusted
+                        trust.py says this exact (tool, args) pair is already trusted --
+                        the confirmation prompt is also spoken via tts.py's speak()
       trust.py          Session (in-memory) and permanent (trusted_commands.json) trust,
                         keyed on the exact (tool, args) pair -- never on tool name alone
+      voice_confirm.py  interpret_yes_no(): word-boundary regex match of a transcribed
+                        reply against approve/decline phrasings, for answering a pending
+                        confirmation entirely by voice
       llm.py            LLMBackend interface (LLMTurn) -- swappable backend seam
       llm_anthropic.py  AnthropicBackend: calls claude-opus-5 with the tool schemas
       agent_loop.py     The Claude <-> tool-dispatch loop: keeps calling tools and feeding
                         results back until Claude gives a final answer (capped at 6 turns)
       audio_input.py    Decodes a base64 audio payload to a temp file, hands off to stt.py
       stt.py            Local Whisper ("base" model) transcription
-      tts.py            Local Piper ("en_US-amy-medium" voice) speech synthesis
+      tts.py            Local Piper ("en_US-amy-medium" voice) speech synthesis; speak()
+                        is shared by server.py (final replies) and dispatcher.py
+                        (spoken confirmation prompts)
       skill_learning.py Checks logs/events.jsonl for a matching past run, then asks
                         Claude to generalize into a skill definition -- confidently
                         from two examples if repeated, or from one example (flagging
@@ -465,6 +473,30 @@ agent restarts; `"always"` additionally persists to `agent/trusted_commands.json
 deliberately narrow: trusting one specific `git init` in one specific directory can never
 blanket-trust a *different* `rm` command elsewhere just because both happen to be
 `run_command` calls — only a genuinely identical repeated invocation skips the prompt.
+
+### Voice-only confirmation
+
+A confirmation can be answered by voice alone, with nothing to click — `_confirm()` in
+`dispatcher.py` speaks the prompt as soon as it's sent, using `agent/core/tts.py`'s
+shared `speak()` helper (the same one `server.py` uses for final replies). It prefers
+Claude's own accompanying explanation for that turn (`SYSTEM_PROMPT.md` already asks it
+to briefly explain a destructive action before taking it) and falls back to a generic
+"I want to run `<tool>`. Should I go ahead?" if the model didn't say anything alongside
+the tool call.
+
+On the input side: when a confirmation is pending on a connection, the next transcribed
+voice message is checked with `agent/core/voice_confirm.py`'s `interpret_yes_no()` — a
+word-boundary regex match against common approve/decline phrasings ("yeah go ahead",
+"nope", "cancel that", etc.) — *before* it's treated as a new command. A clear match
+resolves the confirmation directly; anything ambiguous (neither/both matched, or clearly
+an unrelated request like "open Safari") falls through to the normal command path
+instead, leaving the confirmation open rather than guessing. This is what makes
+"speak the whole way through, no clicking" actually work, not just the reply half of it.
+
+Verified with real speech, not just injected text: a genuine `say`-generated "yeah go
+ahead" clip, converted to webm and sent through the real audio pipeline, was correctly
+transcribed by Whisper and resolved a pending confirmation — the original destructive
+request then completed and spoke its own result, entirely hands-free end to end.
 
 **Why the server needed restructuring for this:** the old handler processed one command,
 waited for its full response, then read the next message — but if a command needs to

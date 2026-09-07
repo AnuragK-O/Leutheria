@@ -42,7 +42,12 @@ async def run(backend, user_text: str, websocket=None, pending: dict = None) -> 
 
         tool_results = []
         for call in turn.tool_calls:
-            result = await dispatch(call.name, call.args, websocket, pending)
+            # turn.text is whatever Claude said alongside this tool call --
+            # SYSTEM_PROMPT.md asks it to briefly explain a destructive
+            # action before taking it, so if this call needs confirmation,
+            # dispatch() speaks that explanation as the prompt instead of a
+            # generic fallback. Otherwise it's simply unused.
+            result = await dispatch(call.name, call.args, websocket, pending, turn.text)
             log_event("tool_call", tool=call.name, args=call.args, result=result)
             trace.append({"tool": call.name, "args": call.args, "result": result})
             tool_results.append(

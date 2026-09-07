@@ -1,16 +1,17 @@
 import asyncio
-import base64
 import json
 import uuid
 
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-from agent.core import agent_loop, skill_learning, tts
+from agent.core import agent_loop, skill_learning
 from agent.core.audio_input import transcribe_payload
 from agent.core.dispatcher import dispatch
 from agent.core.llm_anthropic import AnthropicBackend
 from agent.core.logging_util import log_event
+from agent.core.tts import speak
+from agent.core.voice_confirm import interpret_yes_no
 from agent.skills.registry import register_skill
 
 HOST = "127.0.0.1"
@@ -48,6 +49,22 @@ async def handle_message(payload: dict, websocket, pending: dict) -> dict:
         text = await transcribe_payload(payload)
         log_event("stt_transcript", text=text)
         await websocket.send(json.dumps({"type": "transcript", "text": text}))
+
+        # If a confirmation is already waiting on this connection, a clear
+        # yes/no answer resolves it directly instead of being treated as a
+        # brand-new command -- this is what makes voice-only approval
+        # possible (the prompt itself is spoken by _confirm() in
+        # dispatcher.py). An ambiguous reply falls through to the normal
+        # command path below, leaving the confirmation open.
+        if pending:
+            resolution = interpret_yes_no(text)
+            if resolution is not None:
+                confirmation_id, future = next(reversed(pending.items()))
+                if not future.done():
+                    future.set_result({"approved": resolution, "remember": None})
+                    log_event("confirmation_answered_by_voice", id=confirmation_id, approved=resolution)
+                return {"type": "response", "text": ""}
+
         if not text:
             return {"type": "response", "text": "(didn't catch that -- heard nothing)"}
         return await agent_loop.run(get_backend(), text, websocket, pending)
@@ -82,19 +99,6 @@ async def process_command(websocket, payload: dict, pending: dict, pending_skill
     if should_propose:
         user_text = payload.get("text", "")
         await propose_skill(websocket, response["trace"], past_trace, user_text, pending_skills)
-
-
-async def speak(websocket, text: str) -> None:
-    """Synthesize the final reply locally with Piper and send it as a
-    separate message so a TTS failure never blocks the actual response."""
-    try:
-        loop = asyncio.get_running_loop()
-        audio_bytes = await loop.run_in_executor(None, tts.synthesize, text)
-        await websocket.send(
-            json.dumps({"type": "speech", "data": base64.b64encode(audio_bytes).decode()})
-        )
-    except Exception as e:
-        log_event("tts_error", error=str(e))
 
 
 async def propose_skill(websocket, trace: list, past_trace, user_text: str, pending_skills: dict) -> None:
