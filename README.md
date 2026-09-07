@@ -1,15 +1,35 @@
 # Leutheria
 
-A voice-controlled AI assistant that controls your computer — opening apps, pulling live
-data, and executing tasks via natural speech.
+A self-improving desktop agent that learns how you work. When users guide or correct it through a task, Leutheria converts successful workflows into reusable skills that can be safely validated and shared, allowing the agent to improve from collective usage rather than relearning every task from scratch.
 
-Architecture: a **Node/Electron shell** (`/app`) drives a **Python sidecar process**
-(`/agent`) that does the actual agent work (STT, TTS, tool execution, LLM tool-calling).
-The two talk over a local WebSocket.
+The core flywheel:
+```
+USER INTENT
+  → AGENT OBSERVES
+  → PROPOSES / EXECUTES STRUCTURED ACTION
+  → HUMAN MAY APPROVE OR CORRECT
+  → CORRECTION IS RECORDED IN TRACE
+  → SUCCESSFUL TRACE BECOMES PARAMETERIZED DECLARATIVE SKILL
+  → SKILL IS RETRIEVED & REUSED ON FUTURE REQUESTS
+  → RELIABILITY TRACKED (Guide → Copilot → Autopilot)
+```
 
-See `plans/ROADMAP.md` (gitignored, local-only) for the current build plan.
+Architecture: an **Electron shell** (`/app`) with a transparent **Ghost Cursor Overlay** drives a **Python sidecar process** (`/agent`) over a local WebSocket (`ws://127.0.0.1:8765`).
 
-## Architecture
+## Core Innovations
+
+1. **Provider Abstraction**: Decoupled from Claude alone; supports Anthropic Claude, OpenAI, and local OpenAI-compatible endpoints (LM Studio, Ollama, MLX) without modifying the agent loop.
+2. **Three Supervision Modes**:
+   - **Guide**: Agent observes and visually indicates targets with the ghost cursor; executes no real actions directly.
+   - **Copilot**: Proposes actions, executes safe steps, and pauses for user confirmation or human corrections on risky steps.
+   - **Autopilot**: High-reliability skills (>90% success, proven track record) run with progressive autonomy while respecting permission boundaries.
+3. **Ghost Cursor & Visual Guidance Overlay**: Transparent always-on-top Electron overlay providing an animated AI pointer, bounding-box highlights, and target labels.
+4. **Structured Action Protocol & Granular Risk Model**: Low, Medium, and High risk classifications with iOS-style capability permissions.
+5. **Persistent Task Traces & SQLite Telemetry**: Tasks, observations, actions, and human corrections are saved to a local SQLite database (`data/leutheria.db`) for reliability scoring and analytics.
+6. **Declarative Skill Learning & Community Portability**: Extracts parameters, permissions, requirements, and validation steps into `.leutheria-skill` portable packages with import/export support.
+7. **Semantic Skill Retrieval**: Matches user requests against known workflows before open-ended multi-turn LLM planning.
+
+## Architecture Overview
 
 ```
 Electron (app/)
@@ -215,19 +235,32 @@ Both STT and TTS auto-download their models on first use, no manual steps needed
 Expect a one-time delay the first time each is actually used (first voice command in,
 first spoken reply out).
 
-### API key
+### API Keys and Provider Setup
 
-The LLM tool-call path (any plain-text command, not a direct `{"tool": ...}` call) needs an
-Anthropic API key. Put it in a `.env` file at the **repo root** (not inside `/agent`):
+Leutheria supports multiple LLM providers:
+- **Anthropic Claude** (default)
+- **OpenAI** (or Azure OpenAI)
+- **OpenAI-Compatible Local Endpoints** (e.g. LM Studio at `http://127.0.0.1:1234/v1`, Ollama at `http://127.0.0.1:11434/v1`, MLX)
 
-```
+Configure in `.env` or `config.json` at the repo root:
+```env
+# For Anthropic:
 ANTHROPIC_API_KEY=sk-ant-...
+
+# Or for OpenAI / Local LLMs:
+LLM_PROVIDER=openai_compatible
+OPENAI_BASE_URL=http://127.0.0.1:1234/v1
+OPENAI_API_KEY=not-needed
+LLM_MODEL=qwen2.5-coder-7b
 ```
 
-`agent/agent/__main__.py` calls `load_dotenv()` on startup, which searches the current
-directory and walks up through parents until it finds a `.env` — so the repo-root file is
-picked up automatically regardless of where the agent process's cwd is. `.env` is gitignored;
-never commit it.
+### Running Automated Tests
+
+Run the full Python test suite with standard unittest:
+
+```bash
+python -m unittest discover -s agent/tests -t agent
+```
 
 ### Persona / behavior (`SYSTEM_PROMPT.md`)
 

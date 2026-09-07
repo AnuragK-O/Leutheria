@@ -110,6 +110,20 @@
     setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark")
   );
 
+  // --- execution mode selector ---
+  LX.state.executionMode = "copilot";
+  const modeSelector = document.getElementById("mode-selector");
+  if (modeSelector) {
+    modeSelector.addEventListener("click", (e) => {
+      const btn = e.target.closest(".mode-btn");
+      if (!btn) return;
+      modeSelector.querySelectorAll(".mode-btn").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      LX.state.executionMode = btn.dataset.mode || "copilot";
+      LX.toast(`Execution mode: ${btn.dataset.mode.toUpperCase()}`);
+    });
+  }
+
   // --- boot --------------------------------------------------------------
 
   LX.app = { renderActions, currentView: () => current, refresh };

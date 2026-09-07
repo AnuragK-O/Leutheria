@@ -1,22 +1,34 @@
-const { app, BrowserWindow, Tray, nativeImage, ipcMain } = require("electron");
+const { app, BrowserWindow, Tray, nativeImage, ipcMain, screen } = require("electron");
 const { spawn, execSync } = require("child_process");
+const fs = require("fs");
 const path = require("path");
 const WebSocket = require("ws");
 
 const AGENT_DIR = path.join(__dirname, "..", "agent");
-const AGENT_PYTHON = path.join(AGENT_DIR, ".venv", "bin", "python");
+const isWin = process.platform === "win32";
+
+function getPythonPath() {
+  if (isWin) {
+    const venvPython = path.join(AGENT_DIR, ".venv", "Scripts", "python.exe");
+    if (fs.existsSync(venvPython)) return venvPython;
+    return process.env.PYTHON_PATH || "python";
+  }
+  const venvPython = path.join(AGENT_DIR, ".venv", "bin", "python");
+  if (fs.existsSync(venvPython)) return venvPython;
+  return process.env.PYTHON_PATH || "python3";
+}
+
+const AGENT_PYTHON = getPythonPath();
 const AGENT_URL = "ws://127.0.0.1:8765";
 const ASSETS_DIR = path.join(__dirname, "..", "assets");
 
 let devWindow;
+let overlayWindow;
 let tray;
 let agentProcess;
 let ws;
-let pendingIsChat = false; // true only while waiting on a reply to a user-typed chat message
+let pendingIsChat = false;
 
-// Control requests (inventory reads, preference writes) are request/response,
-// unlike the rest of the protocol which is a stream of events. Each one gets
-// an id and parks its resolver here until the matching control_result lands.
 const controlRequests = new Map();
 let nextControlId = 1;
 
@@ -29,7 +41,6 @@ function sendControlRequest(payload) {
     const requestId = String(nextControlId++);
     controlRequests.set(requestId, resolve);
     ws.send(JSON.stringify({ ...payload, request_id: requestId }));
-    // Never leave the UI spinning forever if the agent dies mid-request.
     setTimeout(() => {
       if (controlRequests.delete(requestId)) resolve({ ok: false, error: "agent timed out" });
     }, 10000);
@@ -55,38 +66,32 @@ function setStatus(status) {
   }
 }
 
-// Tells the renderer its cached catalog is stale (a skill was saved, a
-// preference changed) so the Library view refetches instead of drifting.
 function invalidateInventory() {
   if (devWindow) {
     devWindow.webContents.send("inventory-changed");
   }
 }
 
-function confirmRequest(id, tool, args) {
+function confirmRequest(req) {
   if (devWindow) {
-    devWindow.webContents.send("confirm-request", { id, tool, args });
+    devWindow.webContents.send("confirm-request", req);
   }
 }
 
-function skillProposed(id, name, description, steps, uncertainParams) {
+function skillProposed(proposal) {
   if (devWindow) {
-    devWindow.webContents.send("skill-proposed", {
-      id,
-      name,
-      description,
-      steps,
-      uncertain_params: uncertainParams,
-    });
+    devWindow.webContents.send("skill-proposed", proposal);
   }
 }
 
-// The renderer draws the tool trace itself (one row per step, with a
-// pass/fail marker), so pass it through structured rather than flattening
-// everything into a single string here.
 function sendAgentReply(payload) {
   if (payload.type === "response") {
-    chat("assistant", payload.text, { trace: payload.trace || [] });
+    chat("assistant", payload.text, {
+      trace: payload.trace || [],
+      skill_used: payload.skill_used,
+      task_id: payload.task_id,
+      mode: payload.mode,
+    });
     return;
   }
   if (payload.type === "tool_result") {
@@ -98,33 +103,70 @@ function sendAgentReply(payload) {
   chat("assistant", payload.text || JSON.stringify(payload), { error: true });
 }
 
+app.disableHardwareAcceleration();
+
 function createDevWindow() {
   devWindow = new BrowserWindow({
-    width: 1180,
-    height: 780,
+    title: "Leutheria - Self-Improving Desktop Agent",
+    width: 1240,
+    height: 820,
     minWidth: 940,
-    minHeight: 600,
-    // Frameless-with-traffic-lights, so the sidebar can run the full height of
-    // the window instead of sitting under a stock title bar.
-    titleBarStyle: "hiddenInset",
+    minHeight: 620,
+    center: true,
+    titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
     trafficLightPosition: { x: 18, y: 22 },
     backgroundColor: "#141119",
-    show: false,
+    show: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
     },
   });
   devWindow.loadFile(path.join(__dirname, "renderer", "index.html"));
-  // Avoid the white flash between window creation and first paint.
-  devWindow.once("ready-to-show", () => devWindow.show());
+  devWindow.webContents.on("did-finish-load", () => {
+    log("[electron] devWindow loaded index.html successfully");
+    if (devWindow) {
+      devWindow.show();
+      devWindow.focus();
+    }
+  });
+  devWindow.once("ready-to-show", () => {
+    if (devWindow) {
+      devWindow.show();
+      devWindow.focus();
+    }
+  });
+}
+
+function createOverlayWindow() {
+  const primaryDisplay = screen.getPrimaryDisplay();
+  const { width, height } = primaryDisplay.workAreaSize;
+
+  overlayWindow = new BrowserWindow({
+    title: "Leutheria Ghost Overlay",
+    width,
+    height,
+    x: 0,
+    y: 0,
+    transparent: true,
+    frame: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    hasShadow: false,
+    focusable: false,
+    show: false,
+    webPreferences: {
+      nodeIntegration: true,
+      contextIsolation: false,
+    },
+  });
+  overlayWindow.setIgnoreMouseEvents(true, { forward: true });
+  overlayWindow.loadFile(path.join(__dirname, "renderer", "overlay.html"));
 }
 
 function createTray() {
-  // Template image: macOS recolors it to match the menu bar (light or dark)
-  // instead of showing a purple blob that fights the system appearance.
-  const icon = nativeImage
-    .createFromPath(path.join(ASSETS_DIR, "1.png"))
-    .resize({ width: 18, height: 18 });
+  const iconPath = path.join(ASSETS_DIR, "1.png");
+  if (!fs.existsSync(iconPath)) return;
+  const icon = nativeImage.createFromPath(iconPath).resize({ width: 18, height: 18 });
   icon.setTemplateImage(true);
   tray = new Tray(icon);
   tray.setToolTip("Leutheria");
@@ -134,12 +176,11 @@ function createTray() {
 }
 
 function killStaleAgent() {
-  // If the app was force-quit or crashed last run, a previous "python -m agent"
-  // can be left holding port 8765, so the new one fails to bind on startup.
-  // pkill exits non-zero when nothing matches -- that's the expected common case.
   try {
-    execSync("pkill -if '[p]ython -m agent'");
-    log("[agent] killed a stale agent process from a previous run");
+    if (!isWin) {
+      execSync("pkill -if '[p]ython -m agent'");
+      log("[agent] killed a stale agent process from a previous run");
+    }
   } catch (_err) {
     // nothing to kill
   }
@@ -147,7 +188,6 @@ function killStaleAgent() {
 
 function startAgent() {
   killStaleAgent();
-  // Give the OS a moment to release the port after the kill above.
   setTimeout(spawnAgent, 300);
 }
 
@@ -192,15 +232,10 @@ function connectToAgent() {
       return;
     }
 
-    // Don't dump a base64 audio blob into the log verbatim -- it can be
-    // over a megabyte of text for a single reply and drowns out everything
-    // else. Log a summary instead; the audio itself still gets played.
     if (payload.data) {
       const { data: _omitted, ...summary } = payload;
       log(`[bridge] received: ${JSON.stringify(summary)} <audio ${payload.data.length} b64 chars>`);
     } else if (payload.type === "control_result" && payload.tools) {
-      // An inventory snapshot is the whole capability catalog -- summarize it
-      // for the same reason audio is summarized above.
       log(
         `[bridge] received: {"type":"control_result","request_id":"${payload.request_id}"} ` +
           `<inventory: ${payload.tools.length} tools, ${payload.skills.length} skills>`
@@ -218,41 +253,52 @@ function connectToAgent() {
       return;
     }
 
+    if (payload.type === "timeline_event") {
+      if (devWindow) devWindow.webContents.send("timeline-event", payload);
+      return;
+    }
+
+    if (payload.type === "ghost_guidance" || payload.tool === "ghost_guidance") {
+      const guidance = payload.guidance || payload.args || {};
+      if (overlayWindow) {
+        if (guidance.hide) {
+          overlayWindow.hide();
+        } else {
+          overlayWindow.showInactive();
+        }
+        overlayWindow.webContents.send("ghost-update", guidance);
+      }
+      if (devWindow) devWindow.webContents.send("ghost-target", guidance);
+      return;
+    }
+
     if (payload.type === "confirmation_required") {
-      // Mid-flight pause -- don't clear pendingIsChat, the real final
-      // reply is still coming once this is answered.
-      confirmRequest(payload.id, payload.tool, payload.args);
+      confirmRequest(payload);
       return;
     }
 
     if (payload.type === "confirmation_resolved") {
-      // Answered out-of-band (by voice) -- settle the on-screen card.
       if (devWindow) devWindow.webContents.send("confirm-resolved", payload);
       return;
     }
 
     if (payload.type === "transcript") {
-      // What Whisper heard -- shown as the user's own message. The real
-      // final reply is still coming, so pendingIsChat stays true.
       chat("user", payload.text, { voice: true });
       return;
     }
 
     if (payload.type === "speech") {
-      // Follows the "response" message, so pendingIsChat is already false
-      // by the time this arrives -- doesn't affect that flag either way.
       if (devWindow) devWindow.webContents.send("speech", payload.data);
       return;
     }
 
     if (payload.type === "skill_proposed") {
-      // Arrives after the real response -- purely additive, doesn't touch pendingIsChat.
-      skillProposed(payload.id, payload.name, payload.description, payload.steps, payload.uncertain_params);
+      skillProposed(payload);
       return;
     }
 
     if (payload.type === "skill_saved") {
-      chat("assistant", `✅ Saved "${payload.name}" as a new skill.`);
+      chat("assistant", `✅ Saved "${payload.name}" as a reusable skill.`);
       invalidateInventory();
       return;
     }
@@ -274,7 +320,12 @@ function connectToAgent() {
   });
 }
 
+// IPC Handlers
 ipcMain.handle("get-inventory", () => sendControlRequest({ type: "inventory" }));
+ipcMain.handle("get-metrics", () => sendControlRequest({ type: "get_metrics" }));
+ipcMain.handle("get-trace", (_event, taskId) => sendControlRequest({ type: "get_trace", task_id: taskId }));
+ipcMain.handle("export-skill", (_event, name) => sendControlRequest({ type: "export_skill", name }));
+ipcMain.handle("import-skill", (_event, packageStr) => sendControlRequest({ type: "import_skill", package: packageStr }));
 
 ipcMain.handle("set-preference", async (_event, { name, enabled, requiresConfirmation, reset }) => {
   const result = await sendControlRequest({
@@ -300,9 +351,9 @@ ipcMain.handle("revoke-trust", async (_event, key) => {
   return result;
 });
 
-ipcMain.on("confirm-response", (_event, { id, approved, remember }) => {
+ipcMain.on("confirm-response", (_event, { id, approved, remember, correction }) => {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  const message = { type: "confirm", id, approved, remember };
+  const message = { type: "confirm", id, approved, remember, correction };
   log(`[bridge] sending: ${JSON.stringify(message)}`);
   ws.send(JSON.stringify(message));
 });
@@ -314,24 +365,27 @@ ipcMain.on("skill-response", (_event, { id, approved, resolutions }) => {
   ws.send(JSON.stringify(message));
 });
 
-ipcMain.on("user-audio", (_event, { data, format }) => {
+ipcMain.on("user-audio", (_event, { data, format, mode }) => {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     chat("assistant", "⚠️ not connected to agent yet");
     return;
   }
-  const message = { type: "audio", data, format };
-  log(`[bridge] sending: {"type":"audio","format":"${format}","data":"<${data.length} b64 chars>"}`);
+  const message = { type: "audio", data, format, mode: mode || "copilot" };
+  log(`[bridge] sending: {"type":"audio","format":"${format}","mode":"${message.mode}"}`);
   pendingIsChat = true;
   ws.send(JSON.stringify(message));
 });
 
-ipcMain.on("user-command", (_event, text) => {
+ipcMain.on("user-command", (_event, payload) => {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     chat("assistant", "⚠️ not connected to agent yet");
     return;
   }
-  chat("user", text);
-  const message = { type: "command", text };
+  const text = typeof payload === "string" ? payload : payload.text;
+  const mode = (typeof payload === "object" && payload.mode) ? payload.mode : "copilot";
+
+  chat("user", text, { mode });
+  const message = { type: "command", text, mode };
   log(`[bridge] sending: ${JSON.stringify(message)}`);
   pendingIsChat = true;
   ws.send(JSON.stringify(message));
@@ -340,6 +394,7 @@ ipcMain.on("user-command", (_event, text) => {
 app.whenReady().then(() => {
   createTray();
   createDevWindow();
+  createOverlayWindow();
   startAgent();
 });
 

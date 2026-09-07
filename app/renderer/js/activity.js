@@ -117,19 +117,53 @@
     return card;
   }
 
-  function render() {
+  async function renderProductMetrics() {
+    try {
+      const res = await window.leutheria.getMetrics();
+      if (!res || !res.ok || !res.metrics) return null;
+      const m = res.metrics;
+      const card = el("div.card");
+      card.appendChild(
+        el(
+          "div.card-header",
+          {},
+          el("h2", { text: "Autonomy & Learning Telemetry" }),
+          el("p", { text: "Measuring the flywheel: tasks completed, human corrections, and autonomous execution." })
+        )
+      );
+      card.appendChild(
+        el(
+          "div.stat-grid",
+          {},
+          statCard(`${m.completion_rate_pct}%`, "task completion rate"),
+          statCard(m.total_tasks, "total tasks"),
+          statCard(m.total_interventions, "human interventions"),
+          statCard(m.total_corrections, "human corrections"),
+          statCard(`${m.skill_reuse_rate_pct}%`, "skill reuse rate"),
+          statCard(`${m.autonomous_completion_rate_pct}%`, "autonomous completions")
+        )
+      );
+      return card;
+    } catch (_err) {
+      return null;
+    }
+  }
+
+  async function render() {
     const inventory = LX.state.inventory;
     clear(bodyEl);
     if (!inventory) {
       bodyEl.appendChild(el("div.empty", { text: "Waiting for the agent…" }));
       return;
     }
+    const metricsCard = await renderProductMetrics();
+    if (metricsCard) bodyEl.appendChild(metricsCard);
     bodyEl.append(renderSummary(inventory), renderHistory(inventory.history), renderUsage(inventory));
   }
 
   LX.activity = {
     render,
     actions: () => [],
-    subtitle: () => "How Leutheria's skill set has grown",
+    subtitle: () => "Autonomy metrics and skill history",
   };
 })(window.LX);

@@ -12,7 +12,7 @@
           <img class="brand-mark" src="../../assets/1.png" alt="" />
           <div class="brand-text">
             <span class="brand-name">Leutheria</span>
-            <span class="brand-sub">voice assistant</span>
+            <span class="brand-sub">Self-Improving Agent</span>
           </div>
         </div>
 
@@ -32,6 +32,11 @@
           <div class="topbar-heading">
             <h1 id="view-title"></h1>
             <p id="view-subtitle"></p>
+          </div>
+          <div class="mode-selector" id="mode-selector">
+            <button class="mode-btn" data-mode="guide" title="Guide: AI guides visually, executes nothing directly">Guide</button>
+            <button class="mode-btn active" data-mode="copilot" title="Copilot: AI proposes actions, executes safe steps, asks for confirmation/corrections">Copilot</button>
+            <button class="mode-btn" data-mode="autopilot" title="Autopilot: Proven reliable skills run automatically">Autopilot</button>
           </div>
           <div class="topbar-actions" id="view-actions"></div>
         </header>
@@ -85,6 +90,7 @@
 
     <div class="toasts" id="toasts"></div>
 
+    <script src="js/web-adapter.js"></script>
     <script src="js/util.js"></script>
     <script src="js/chat.js"></script>
     <script src="js/library.js"></script>

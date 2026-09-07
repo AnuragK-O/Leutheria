@@ -111,24 +111,39 @@ def snapshot() -> dict:
         for name, tool in TOOLS.items()
     ]
 
-    skills = [
-        _entry(
-            name,
-            skill["description"],
-            skill["input_schema"],
-            "skill",
-            False,  # skills confirm per-step by default, not up front
-            usage,
-            {
-                "origin": skill.get("origin", "built-in"),
-                "steps": skill.get("steps", []),
-                "source_signature": skill.get("source_signature"),
-                "created_at": skill.get("created_at"),
-                "deletable": skill.get("origin") == "generated",
-            },
+    skills = []
+    for name, skill in SKILLS.items():
+        m = skill.get("manifest")
+        desc = m.description if m else skill.get("description", "")
+        schema = m.to_input_schema() if m else skill.get("input_schema", {})
+        runs = m.run_count if m else usage.get(name, {}).get("runs", 0)
+        successes = m.success_count if m else max(0, runs - usage.get(name, {}).get("failures", 0))
+        success_rate = (successes / runs * 100.0) if runs > 0 else 0.0
+
+        skills.append(
+            _entry(
+                name,
+                desc,
+                schema,
+                "skill",
+                False,
+                usage,
+                {
+                    "origin": skill.get("origin", "built-in"),
+                    "steps": m.steps if m else skill.get("steps", []),
+                    "source_signature": skill.get("source_signature"),
+                    "created_at": skill.get("created_at"),
+                    "deletable": skill.get("origin") == "generated",
+                    "autonomy_tier": m.autonomy_tier if m else "guide",
+                    "permissions": m.permissions if m else [],
+                    "risk_level": m.risk_level if m else "medium",
+                    "run_count": runs,
+                    "success_count": successes,
+                    "success_rate": round(success_rate, 1),
+                    "intervention_count": m.intervention_count if m else 0,
+                },
+            )
         )
-        for name, skill in SKILLS.items()
-    ]
 
     tools.sort(key=lambda entry: entry["name"])
     skills.sort(key=lambda entry: entry["name"])

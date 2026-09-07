@@ -14,3 +14,5 @@ agent/agent/assets/voices/
 agent/agent/skills/generated/
 agent/trusted_commands.json
 agent/preferences.json
+agent/data/
+*.db

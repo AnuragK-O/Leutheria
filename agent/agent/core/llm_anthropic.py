@@ -1,26 +1,5 @@
-import anthropic
+from agent.providers.anthropic_provider import AnthropicProvider
 
-from agent.core.llm import LLMBackend, LLMTurn, ToolCall
-
-MODEL = "claude-opus-5"
-MAX_TOKENS = 16000
-
-
-class AnthropicBackend(LLMBackend):
-    def __init__(self):
-        self._client = anthropic.Anthropic()
-
-    def generate(self, messages: list, tools: list, system: str = None) -> LLMTurn:
-        kwargs = {"model": MODEL, "max_tokens": MAX_TOKENS, "tools": tools, "messages": messages}
-        if system:
-            kwargs["system"] = system
-        response = self._client.messages.create(**kwargs)
-
-        tool_calls = [
-            ToolCall(id=b.id, name=b.name, args=b.input)
-            for b in response.content
-            if b.type == "tool_use"
-        ]
-        text = "".join(b.text for b in response.content if b.type == "text")
-
-        return LLMTurn(content=response.content, tool_calls=tool_calls, text=text)
+class AnthropicBackend(AnthropicProvider):
+    """Retained for backwards compatibility with existing imports."""
+    pass

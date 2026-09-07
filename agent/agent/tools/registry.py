@@ -8,6 +8,7 @@ from agent.tools.get_disk_space import get_disk_space
 from agent.tools.list_files import list_files
 from agent.tools.list_running_apps import list_running_apps
 from agent.tools.move_file import move_file
+from agent.tools.ghost_guidance import ghost_guidance
 from agent.tools.open_app import open_app
 from agent.tools.open_url import open_url
 from agent.tools.read_file import read_file
@@ -212,6 +213,23 @@ TOOLS = {
         "safety": "safe",
         "description": "Get the current date and time.",
         "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    "ghost_guidance": {
+        "fn": ghost_guidance,
+        "safety": "safe",
+        "description": "Provide visual ghost cursor highlight and label guidance on screen.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "integer", "description": "X screen coordinate"},
+                "y": {"type": "integer", "description": "Y screen coordinate"},
+                "width": {"type": "integer", "description": "Target width"},
+                "height": {"type": "integer", "description": "Target height"},
+                "label": {"type": "string", "description": "Text label describing the target"},
+                "action": {"type": "string", "description": "Action type (e.g. click, inspect)"},
+            },
+            "required": ["label"],
+        },
     },
 }
 
