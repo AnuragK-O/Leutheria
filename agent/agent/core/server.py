@@ -4,6 +4,7 @@ import json
 import uuid
 
 import websockets
+from websockets.exceptions import ConnectionClosed
 
 from agent.core import agent_loop, skill_learning, tts
 from agent.core.audio_input import transcribe_payload
@@ -119,18 +120,24 @@ async def propose_skill(websocket, trace: list, past_trace, user_text: str, pend
 
     proposal_id = str(uuid.uuid4())
     pending_skills[proposal_id] = definition
-    await websocket.send(
-        json.dumps(
-            {
-                "type": "skill_proposed",
-                "id": proposal_id,
-                "name": definition["name"],
-                "description": definition["description"],
-                "steps": definition["steps"],
-                "uncertain_params": definition.get("uncertain_params", []),
-            }
+    try:
+        await websocket.send(
+            json.dumps(
+                {
+                    "type": "skill_proposed",
+                    "id": proposal_id,
+                    "name": definition["name"],
+                    "description": definition["description"],
+                    "steps": definition["steps"],
+                    "uncertain_params": definition.get("uncertain_params", []),
+                }
+            )
         )
-    )
+    except ConnectionClosed:
+        # The connection closed before this fire-and-forget follow-up could
+        # be sent -- same "additive, never lets a background extra blow up
+        # the request" principle as speak()'s try/except below.
+        return
     log_event(
         "skill_proposed",
         id=proposal_id,

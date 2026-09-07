@@ -111,25 +111,25 @@ agent/                Python sidecar
       logging_util.py   Appends every message/decision/tool call to logs/events.jsonl
     tools/
       registry.py       TOOLS dict (fn, safety, description, input_schema) + anthropic_tool_schemas()
-      open_app/          Each tool is its own package -- implementation lives in __init__.py
-      create_folder/
-      list_files/
-      run_command/
-      get_clipboard/     set_clipboard/    open_url/          show_notification/
-      take_screenshot/   read_file/        append_text/       trash_file/
-      move_file/         copy_file/        list_running_apps/
-      get_battery_status/  get_disk_space/  get_current_datetime/
+      open_app.py        create_folder.py    list_files.py       run_command.py
+      get_clipboard.py   set_clipboard.py    open_url.py         show_notification.py
+      take_screenshot.py read_file.py        append_text.py      trash_file.py
+      move_file.py       copy_file.py        list_running_apps.py
+      get_battery_status.py  get_disk_space.py  get_current_datetime.py
+                        One flat .py file per tool -- no per-tool folders/__init__.py;
+                        that packaging turned out to be more annoying to navigate than
+                        it was worth for single-function tools, so it was reverted.
     skills/
       registry.py       SKILLS dict + anthropic_skill_schemas(); loads generated/*.json at
                         startup, plus register_skill() to add a new one at runtime
       template_skill.py The one reviewed interpreter every generated skill runs through --
                         a generated skill is data (steps + {param} placeholders), never
                         new code
-      setup_project/     First hand-written skill (its own package, same pattern as tools/):
-                        create_folder + git init + open in VS Code as one multi-step
-                        procedure, exposed to the LLM as a single tool
-      quick_note/         append_text + show_notification: jot down a timestamped note
-      backup_folder/      copy_file with a generated timestamped destination name
+      setup_project.py   First hand-written skill: create_folder + git init + open in
+                        VS Code as one multi-step procedure, exposed to the LLM as a
+                        single tool
+      quick_note.py       append_text + show_notification: jot down a timestamped note
+      backup_folder.py    copy_file with a generated timestamped destination name
       generated/         Agent-proposed, user-approved skills as JSON (gitignored --
                         local learned state, not source code)
     assets/voices/       Piper voice model (gitignored, auto-downloaded on first use)
@@ -345,7 +345,7 @@ A skill's `run()` is free to call `dispatch()` itself for its own sub-steps — 
 a skill isn't a way to bypass safety tiering: if it calls a destructive tool like
 `run_command` internally, that sub-step still pauses for its own confirmation prompt, same
 as if the LLM had called it directly. `setup_project` (the first one, in
-`agent/skills/setup_project/__init__.py`) demonstrates this: it runs `create_folder`
+`agent/skills/setup_project.py`) demonstrates this: it runs `create_folder`
 (safe, no prompt) then two `run_command` calls (`git init`, then opening the folder in
 VS Code), each requiring its own approval.
 
