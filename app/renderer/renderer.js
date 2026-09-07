@@ -23,25 +23,44 @@ function addConfirmBubble({ id, tool, args }) {
   buttonRow.className = "confirm-buttons";
 
   const approveBtn = document.createElement("button");
-  approveBtn.textContent = "Approve";
+  approveBtn.textContent = "Approve once";
   approveBtn.className = "approve";
+
+  const sessionBtn = document.createElement("button");
+  sessionBtn.textContent = "Approve (session)";
+  sessionBtn.className = "approve secondary";
+  sessionBtn.title = "Don't ask again for this exact command until the app restarts";
+
+  const alwaysBtn = document.createElement("button");
+  alwaysBtn.textContent = "Approve (always)";
+  alwaysBtn.className = "approve secondary";
+  alwaysBtn.title = "Never ask again for this exact command, even after restarting";
 
   const declineBtn = document.createElement("button");
   declineBtn.textContent = "Decline";
   declineBtn.className = "decline";
 
-  const respond = (approved) => {
-    approveBtn.disabled = true;
-    declineBtn.disabled = true;
-    label.textContent += approved ? " — approved" : " — declined";
-    window.leutheria.sendConfirmResponse(id, approved);
+  const allButtons = [approveBtn, sessionBtn, alwaysBtn, declineBtn];
+
+  const respond = (approved, remember) => {
+    allButtons.forEach((btn) => (btn.disabled = true));
+    const suffix = !approved
+      ? " — declined"
+      : remember === "always"
+        ? " — approved (always)"
+        : remember === "session"
+          ? " — approved (this session)"
+          : " — approved";
+    label.textContent += suffix;
+    window.leutheria.sendConfirmResponse(id, approved, remember);
   };
 
-  approveBtn.addEventListener("click", () => respond(true));
-  declineBtn.addEventListener("click", () => respond(false));
+  approveBtn.addEventListener("click", () => respond(true, null));
+  sessionBtn.addEventListener("click", () => respond(true, "session"));
+  alwaysBtn.addEventListener("click", () => respond(true, "always"));
+  declineBtn.addEventListener("click", () => respond(false, null));
 
-  buttonRow.appendChild(approveBtn);
-  buttonRow.appendChild(declineBtn);
+  allButtons.forEach((btn) => buttonRow.appendChild(btn));
   bubble.appendChild(buttonRow);
 
   chatEl.appendChild(bubble);

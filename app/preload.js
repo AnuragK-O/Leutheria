@@ -7,7 +7,8 @@ contextBridge.exposeInMainWorld("leutheria", {
   onSpeech: (callback) => ipcRenderer.on("speech", (_event, base64Wav) => callback(base64Wav)),
   onSkillProposed: (callback) => ipcRenderer.on("skill-proposed", (_event, proposal) => callback(proposal)),
   sendCommand: (text) => ipcRenderer.send("user-command", text),
-  sendConfirmResponse: (id, approved) => ipcRenderer.send("confirm-response", { id, approved }),
+  sendConfirmResponse: (id, approved, remember) =>
+    ipcRenderer.send("confirm-response", { id, approved, remember }),
   sendAudio: (base64Data, format) => ipcRenderer.send("user-audio", { data: base64Data, format }),
   sendSkillResponse: (id, approved, resolutions) =>
     ipcRenderer.send("skill-response", { id, approved, resolutions }),

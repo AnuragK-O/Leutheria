@@ -53,12 +53,14 @@
       }
       .confirm-buttons {
         display: flex;
+        flex-wrap: wrap;
         gap: 8px;
         margin-top: 8px;
       }
       .confirm-buttons button {
         flex: 1;
-        padding: 6px 0;
+        min-width: 90px;
+        padding: 6px 4px;
         border: none;
         border-radius: 6px;
         font-size: 12px;
@@ -75,6 +77,10 @@
       .confirm-buttons .decline {
         background: #a33;
         color: white;
+      }
+      .confirm-buttons .approve.secondary {
+        background: #235c2c;
+        font-size: 11px;
       }
       .confirm-buttons button.toggle:not(.selected) {
         opacity: 0.35;

@@ -167,7 +167,9 @@ async def handler(websocket):
         if payload.get("type") == "confirm":
             future = pending.get(payload.get("id"))
             if future and not future.done():
-                future.set_result(bool(payload.get("approved")))
+                future.set_result(
+                    {"approved": bool(payload.get("approved")), "remember": payload.get("remember")}
+                )
             continue
 
         if payload.get("type") == "skill_response":
@@ -178,7 +180,11 @@ async def handler(websocket):
                 log_event("skill_registered", name=finalized["name"])
                 await websocket.send(json.dumps({"type": "skill_saved", "name": finalized["name"]}))
             elif definition:
-                log_event("skill_declined", name=definition["name"])
+                log_event(
+                    "skill_declined",
+                    name=definition["name"],
+                    source_signature=definition.get("source_signature"),
+                )
             continue
 
         log_event("message_in", payload=payload)

@@ -196,11 +196,18 @@ function connectToAgent() {
   });
 }
 
-ipcMain.on("confirm-response", (_event, { id, approved }) => {
+ipcMain.on("confirm-response", (_event, { id, approved, remember }) => {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  const message = { type: "confirm", id, approved };
+  const message = { type: "confirm", id, approved, remember };
   log(`[bridge] sending: ${JSON.stringify(message)}`);
-  chat("user", approved ? "✅ approved" : "❌ declined");
+  const label = !approved
+    ? "❌ declined"
+    : remember === "always"
+      ? "✅ approved (always)"
+      : remember === "session"
+        ? "✅ approved (this session)"
+        : "✅ approved";
+  chat("user", label);
   ws.send(JSON.stringify(message));
 });
 

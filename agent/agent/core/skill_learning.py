@@ -44,7 +44,8 @@ def check_before_logging(response: dict):
     """Convenience wrapper for the server: given a just-produced response,
     decide whether a skill proposal should be considered at all. Returns:
       - NOT_APPLICABLE if no proposal should happen (not a multi-step
-        success, or already covered by an existing skill)
+        success, already covered by an existing skill, or previously
+        declined for this exact tool sequence)
       - a past matching trace if this is a confirmed repeat (confident,
         two-example generation)
       - None if this is the first time this sequence has been seen (still
@@ -58,7 +59,7 @@ def check_before_logging(response: dict):
     if response.get("type") != "response":
         return NOT_APPLICABLE
     trace = response.get("trace") or []
-    if len(trace) < 2 or has_matching_skill(trace):
+    if len(trace) < 2 or has_matching_skill(trace) or has_declined_signature(trace):
         return NOT_APPLICABLE
     return find_matching_past_trace(trace)
 
@@ -69,6 +70,25 @@ def has_matching_skill(trace: list) -> bool:
     already been turned into a skill."""
     sig = list(_signature(trace))
     return any(skill.get("source_signature") == sig for skill in SKILLS.values())
+
+
+def has_declined_signature(trace: list) -> bool:
+    """True if a proposal for this exact tool sequence was declined before --
+    keyed by signature (not name, which can vary per generation attempt) so
+    it holds regardless of what the model happened to call it each time."""
+    if not LOG_FILE.exists():
+        return False
+
+    sig = list(_signature(trace))
+    with LOG_FILE.open() as f:
+        for line in f:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if record.get("type") == "skill_declined" and record.get("source_signature") == sig:
+                return True
+    return False
 
 
 def _extract_json(text: str):

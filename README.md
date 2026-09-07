@@ -90,13 +90,18 @@ agent/                Python sidecar
   SYSTEM_PROMPT.md     Persona/tone/behavior -- loaded once, passed as `system` on every
                        conversational LLM call. Hand-editable, no restart-the-world needed
                        beyond restarting the agent process.
+  trusted_commands.json  Permanently-trusted (tool, args) pairs (gitignored -- local
+                       state, not source). See trust.py below.
   .venv/              Virtualenv (gitignored)
   agent/
     core/
       server.py        WebSocket server, message routing (max_size=20MB -- a long spoken
                        reply's audio can exceed the 1MB library default, see BUGS.md #7)
       dispatcher.py     Routes {tool, args} payloads to tool functions; destructive tools
-                        pause for a live confirmation round-trip before running
+                        pause for a live confirmation round-trip before running, unless
+                        trust.py says this exact (tool, args) pair is already trusted
+      trust.py          Session (in-memory) and permanent (trusted_commands.json) trust,
+                        keyed on the exact (tool, args) pair -- never on tool name alone
       llm.py            LLMBackend interface (LLMTurn) -- swappable backend seam
       llm_anthropic.py  AnthropicBackend: calls claude-opus-5 with the tool schemas
       agent_loop.py     The Claude <-> tool-dispatch loop: keeps calling tools and feeding
@@ -418,8 +423,9 @@ go on the Desktop. Answer it either way and save, then try a *differently-phrase
 request (`make me a folder named testxyz and show its contents`) — it should match
 semantically and run as a single tool call using the generated skill.
 
-**Known limitation**: declining a proposal isn't remembered, so the same pattern gets
-proposed again next time it comes up. Worth revisiting if it gets annoying in practice.
+Declining is remembered — a `skill_declined` event records the tool-sequence signature
+(not the generated name, which can vary between attempts), and that signature is checked
+before ever proposing again, so a declined pattern doesn't keep coming back.
 
 ### Confirmation flow
 
@@ -437,7 +443,7 @@ counts as a decline):
 {"type": "confirmation_required", "id": "<uuid>", "tool": "run_command", "args": {"cmd": "echo hi"}}
 
 # 3. you send back:
-{"type": "confirm", "id": "<uuid>", "approved": true}   # or false
+{"type": "confirm", "id": "<uuid>", "approved": true, "remember": null}   # or "session" / "always"
 
 # 4. only now does the agent send the real result:
 {"type": "tool_result", "tool": "run_command", "result": {"ok": true, "stdout": "hi", "stderr": ""}}
@@ -446,9 +452,19 @@ counts as a decline):
 This works identically whether the destructive tool was called directly or picked mid-loop
 by Claude — in the LLM path, a decline gets fed back to Claude as a failed tool result, so
 it can explain what happened instead of the connection just hanging. In the Electron app,
-this whole exchange is automatic: the confirmation shows up as a chat bubble with
-Approve/Decline buttons (`app/renderer/`), and clicking one sends the `confirm` message
-for you.
+this whole exchange is automatic: the confirmation shows up as a chat bubble with four
+buttons — Approve once / Approve (session) / Approve (always) / Decline
+(`app/renderer/`) — and clicking one sends the `confirm` message for you.
+
+**Trust (`agent/core/trust.py`)**: `remember: "session"` or `"always"` tells
+`dispatcher.dispatch()` to skip the confirmation prompt entirely next time — but only for
+the *exact same* `(tool, args)` pair, checked via `trust.is_trusted()` before a
+confirmation is even requested. `"session"` is an in-memory set that resets when the
+agent restarts; `"always"` additionally persists to `agent/trusted_commands.json`
+(gitignored — local state, not source) and is checked on every future startup. This is
+deliberately narrow: trusting one specific `git init` in one specific directory can never
+blanket-trust a *different* `rm` command elsewhere just because both happen to be
+`run_command` calls — only a genuinely identical repeated invocation skips the prompt.
 
 **Why the server needed restructuring for this:** the old handler processed one command,
 waited for its full response, then read the next message — but if a command needs to

@@ -2,6 +2,7 @@ import asyncio
 import json
 import uuid
 
+from agent.core import trust
 from agent.core.logging_util import log_event
 from agent.skills.registry import SKILLS
 from agent.tools.registry import TOOLS
@@ -17,8 +18,14 @@ async def dispatch(tool_name: str, args: dict, websocket=None, pending: dict = N
     if tool is None:
         return {"ok": False, "error": f"unknown tool: {tool_name}"}
 
-    if tool["safety"] == "destructive":
-        approved = await _confirm(tool_name, args, websocket, pending)
+    if tool["safety"] == "destructive" and not trust.is_trusted(tool_name, args):
+        approved, remember = await _confirm(tool_name, args, websocket, pending)
+
+        if remember == "session":
+            trust.trust_for_session(tool_name, args)
+        elif remember == "always":
+            trust.trust_always(tool_name, args)
+
         if not approved:
             log_event("tool_declined", tool=tool_name, args=args)
             return {
@@ -32,11 +39,11 @@ async def dispatch(tool_name: str, args: dict, websocket=None, pending: dict = N
         return {"ok": False, "error": str(e)}
 
 
-async def _confirm(tool_name: str, args: dict, websocket, pending: dict) -> bool:
+async def _confirm(tool_name: str, args: dict, websocket, pending: dict) -> tuple:
     if websocket is None or pending is None:
         # No interactive channel to confirm through (e.g. dispatch called
         # directly outside a live connection) -- fail closed, not open.
-        return False
+        return False, None
 
     confirmation_id = str(uuid.uuid4())
     future = asyncio.get_running_loop().create_future()
@@ -55,8 +62,9 @@ async def _confirm(tool_name: str, args: dict, websocket, pending: dict) -> bool
     log_event("confirmation_requested", id=confirmation_id, tool=tool_name, args=args)
 
     try:
-        return await asyncio.wait_for(future, timeout=CONFIRMATION_TIMEOUT)
+        result = await asyncio.wait_for(future, timeout=CONFIRMATION_TIMEOUT)
+        return bool(result.get("approved")), result.get("remember")
     except asyncio.TimeoutError:
-        return False
+        return False, None
     finally:
         pending.pop(confirmation_id, None)

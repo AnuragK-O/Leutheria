@@ -12,3 +12,4 @@ __pycache__/
 agent/logs/
 agent/agent/assets/voices/
 agent/agent/skills/generated/
+agent/trusted_commands.json
