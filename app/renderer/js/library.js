@@ -44,7 +44,22 @@
       );
     }
 
-    return [segmented, search];
+    const importBtn = el("button.btn.btn-sm", {
+      text: "Import Skill",
+      onclick: async () => {
+        const pkg = prompt("Paste exported .leutheria-skill JSON content:");
+        if (!pkg) return;
+        const res = await window.leutheria.importSkill(pkg);
+        if (res && res.ok) {
+          toast(`Imported skill "${res.name}" successfully!`, "success");
+          LX.app.refresh();
+        } else {
+          toast((res && res.error) || "Failed to import skill", "error");
+        }
+      },
+    });
+
+    return [segmented, search, importBtn];
   }
 
   // --- data --------------------------------------------------------------
@@ -129,6 +144,22 @@
           text: entry.origin === "generated" ? "learned" : "built-in",
         })
       );
+      if (entry.autonomy_tier) {
+        list.push(
+          el("span.badge", {
+            class: `badge-${entry.autonomy_tier}`,
+            text: entry.autonomy_tier.toUpperCase(),
+          })
+        );
+      }
+      if (entry.risk_level) {
+        list.push(
+          el("span.badge", {
+            class: `badge-${entry.risk_level}`,
+            text: `${entry.risk_level} risk`,
+          })
+        );
+      }
     } else if (entry.safety === "destructive") {
       list.push(el("span.badge.badge-warning", { text: "destructive" }));
     }
@@ -283,37 +314,70 @@
     }
 
     // --- usage ---
+    const statCards = [
+      el("div.stat", {}, el("div.stat-value", { text: String(entry.runs) }), el("div.stat-label", { text: "times run" })),
+      el(
+        "div.stat",
+        {},
+        el("div.stat-value", { text: String(entry.failures) }),
+        el("div.stat-label", { text: "failed or declined" })
+      ),
+    ];
+
+    if (entry.kind === "skill") {
+      statCards.push(
+        el("div.stat", {}, el("div.stat-value", { text: `${entry.success_rate || 100}%` }), el("div.stat-label", { text: "success rate" })),
+        el("div.stat", {}, el("div.stat-value", { text: String(entry.intervention_count || 0) }), el("div.stat-label", { text: "interventions" }))
+      );
+    }
+
+    statCards.push(
+      el(
+        "div.stat",
+        {},
+        el("div.stat-value", { text: relativeTime(entry.last_used) }),
+        el("div.stat-label", { text: "last used" })
+      )
+    );
+
     detail.appendChild(
       el(
         "section",
         {},
-        el("div.section-label", { text: "Usage" }),
-        el(
-          "div.stat-grid",
-          {},
-          el("div.stat", {}, el("div.stat-value", { text: String(entry.runs) }), el("div.stat-label", { text: "times run" })),
-          el(
-            "div.stat",
-            {},
-            el("div.stat-value", { text: String(entry.failures) }),
-            el("div.stat-label", { text: "failed or declined" })
-          ),
-          el(
-            "div.stat",
-            {},
-            el("div.stat-value", { text: relativeTime(entry.last_used) }),
-            el("div.stat-label", { text: "last used" })
-          ),
-          entry.created_at &&
-            el(
-              "div.stat",
-              {},
-              el("div.stat-value", { text: relativeTime(entry.created_at) }),
-              el("div.stat-label", { text: "learned" })
-            )
-        )
+        el("div.section-label", { text: "Usage & Reliability" }),
+        el("div.stat-grid", {}, ...statCards)
       )
     );
+
+    // --- export (for skills) ---
+    if (entry.kind === "skill") {
+      detail.appendChild(
+        el(
+          "section",
+          {},
+          el("div.section-label", { text: "Portability" }),
+          el(
+            "div.card",
+            {},
+            el(
+              "button.btn.btn-sm",
+              {
+                text: "Export .leutheria-skill Package",
+                onclick: async () => {
+                  const res = await window.leutheria.exportSkill(entry.name);
+                  if (res && res.ok && res.package) {
+                    navigator.clipboard.writeText(JSON.stringify(res.package, null, 2));
+                    toast(`Copied "${entry.name}" package JSON to clipboard!`, "success");
+                  } else {
+                    toast((res && res.error) || "Export failed", "error");
+                  }
+                },
+              }
+            )
+          )
+        )
+      );
+    }
 
     // --- delete ---
     if (entry.deletable) {
