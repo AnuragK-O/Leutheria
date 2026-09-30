@@ -24,6 +24,18 @@ const ASSETS_DIR = path.join(__dirname, "..", "assets");
 const OVERLAY_DIR = path.join(__dirname, "renderer", "overlay");
 const OVERLAY_ASSETS_DIR = path.join(OVERLAY_DIR, "assets");
 
+// Which activation overlay to use. Default: the Electron one below.
+// LEUTHERIA_OVERLAY=qt spawns the native C++/Qt overlay (overlay-qt/) instead;
+// it's a second client of the agent's WebSocket (it says hello as role
+// "overlay") and draws the same session. If its binary isn't built, this
+// falls back to the Electron overlay with a log line, so the app never ends
+// up with no overlay at all. LEUTHERIA_QT_OVERLAY_BIN overrides the path
+// (a debug build elsewhere, or a stand-in when testing this wiring).
+const OVERLAY_MODE = process.env.LEUTHERIA_OVERLAY === "qt" ? "qt" : "electron";
+const QT_OVERLAY_BIN =
+  process.env.LEUTHERIA_QT_OVERLAY_BIN ||
+  path.join(__dirname, "..", "overlay-qt", "build", "LeutheriaOverlay.app", "Contents", "MacOS", "LeutheriaOverlay");
+
 // Global shortcut that toggles a manual voice session (configurable later).
 const VOICE_SHORTCUT = "Alt+Space";
 
@@ -58,6 +70,8 @@ let overlayHideTimer = null;
 let overlayInteractive = false;
 let tray;
 let agentProcess;
+let qtOverlayProcess = null; // only ever the child this app spawned
+let quitting = false;
 let ws;
 let pendingIsChat = false; // true only while waiting on a reply to a user-typed chat message
 // Set when the agent reports a confirmation answered by voice: the push-to-talk
@@ -258,6 +272,62 @@ function createOverlayWindow() {
   overlayWindow.on("closed", () => {
     overlayWindow = null;
   });
+}
+
+// --- Qt overlay (LEUTHERIA_OVERLAY=qt) --------------------------------------
+
+function startOverlay() {
+  if (OVERLAY_MODE !== "qt") {
+    createOverlayWindow();
+    return;
+  }
+  let usable = false;
+  try {
+    fs.accessSync(QT_OVERLAY_BIN, fs.constants.X_OK);
+    usable = true;
+  } catch (_err) {
+    // reported below
+  }
+  if (!usable) {
+    log(
+      `[overlay] LEUTHERIA_OVERLAY=qt but the Qt overlay isn't built (${QT_OVERLAY_BIN} missing or not executable) ` +
+        "-- falling back to the Electron overlay. Build it with: cmake -S overlay-qt -B overlay-qt/build -G Ninja " +
+        "-DCMAKE_PREFIX_PATH=/opt/homebrew/opt/qt && cmake --build overlay-qt/build"
+    );
+    createOverlayWindow();
+    return;
+  }
+  spawnQtOverlay();
+}
+
+function spawnQtOverlay() {
+  // No overlay window of our own in this mode: every overlayWindow use goes
+  // through alive(), so the show/hide/interactive calls are simply no-ops,
+  // and the Qt overlay reacts to the agent's messages itself. The tray, the
+  // shortcut and the main window's voice pill don't depend on either overlay.
+  const args = ["--url", AGENT_URL, "--assets", OVERLAY_ASSETS_DIR];
+  log(`[overlay] LEUTHERIA_OVERLAY=qt -- spawning ${QT_OVERLAY_BIN} ${args.join(" ")}`);
+  const child = spawn(QT_OVERLAY_BIN, args, { stdio: ["ignore", "pipe", "pipe"] });
+  qtOverlayProcess = child;
+  child.stdout.on("data", (data) => log(`[overlay-qt] ${data.toString().trim()}`));
+  child.stderr.on("data", (data) => log(`[overlay-qt:err] ${data.toString().trim()}`));
+  // spawn() reports a failure to start (EACCES, a bad bundle) as "error",
+  // possibly without an "exit" -- both paths land in overlayGone().
+  child.on("error", (err) => overlayGone(child, `failed to start: ${err.message}`));
+  child.on("exit", (code, signal) => overlayGone(child, `exited (code ${code}, signal ${signal})`));
+}
+
+function overlayGone(child, why) {
+  if (qtOverlayProcess !== child) return; // already handled (error then exit)
+  qtOverlayProcess = null;
+  if (quitting) return;
+  // A crashed overlay would otherwise leave sessions with nothing on screen.
+  log(`[overlay] Qt overlay ${why} -- falling back to the Electron overlay`);
+  if (!alive(overlayWindow)) createOverlayWindow();
+}
+
+function stopQtOverlay() {
+  if (qtOverlayProcess) qtOverlayProcess.kill();
 }
 
 function positionOverlay() {
@@ -579,7 +649,10 @@ function connectToAgent() {
     }
 
     if (payload.type === "confirmation_resolved") {
-      // Answered out-of-band (by voice) -- settle the on-screen cards.
+      // Answered out-of-band -- by voice, or on the Qt overlay (by:"overlay")
+      // -- so settle the on-screen cards. Only a voice answer comes with an
+      // empty-response ack; an overlay click is a bare confirm, like a click
+      // here.
       if (payload.by === "voice") expectVoiceConfirmAck = true;
       broadcast("confirm-resolved", payload);
       return;
@@ -756,7 +829,7 @@ ipcMain.on("user-command", (_event, text) => {
 app.whenReady().then(() => {
   createTray();
   createDevWindow();
-  createOverlayWindow();
+  startOverlay();
   registerShortcut();
   startAgent();
 });
@@ -764,16 +837,23 @@ app.whenReady().then(() => {
 // Dock icon click with the main window closed.
 app.on("activate", showMainWindow);
 
-// The overlay window always exists, so this only fires at quit. Closing the
-// main window leaves the agent (and any voice session) running -- reopen it
-// from the tray.
+// Closing the main window leaves the agent (and any voice session) running --
+// reopen it from the tray. The children are killed in before-quit, not here:
+// this used to kill the agent on the assumption that the Electron overlay
+// window always exists, so "all closed" could only mean quitting. With the Qt
+// overlay there is no overlay window, and closing the main window alone would
+// have killed the agent out from under the tray.
 app.on("window-all-closed", () => {
-  if (agentProcess) agentProcess.kill();
   if (process.platform !== "darwin") app.quit();
 });
 
-app.on("will-quit", () => globalShortcut.unregisterAll());
+app.on("will-quit", () => {
+  globalShortcut.unregisterAll();
+  stopQtOverlay();
+});
 
 app.on("before-quit", () => {
+  quitting = true;
   if (agentProcess) agentProcess.kill();
+  stopQtOverlay();
 });

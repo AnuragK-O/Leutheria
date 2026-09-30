@@ -144,9 +144,10 @@
   function resolveConfirmCard({ id, approved, by }) {
     const settle = confirmCards.get(id);
     if (!settle) return;
-    settle(
-      `${approved ? "Approved" : "Declined"} ${by === "voice" ? "by voice" : by === "ui" ? "from the overlay" : "by you"}.`
-    );
+    // "ui" here means the Electron overlay's card (main.js relays its click);
+    // "overlay" is the native Qt overlay, answered over its own connection.
+    const how = by === "voice" ? "by voice" : by === "ui" || by === "overlay" ? "from the overlay" : "by you";
+    settle(`${approved ? "Approved" : "Declined"} ${how}.`);
   }
 
   // --- skill proposal card -----------------------------------------------

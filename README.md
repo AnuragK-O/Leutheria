@@ -136,6 +136,7 @@ app/                  Electron shell
       assets/          Drop-in visuals: manifest.json + README.md for the asset designer
   scripts/
     mock-agent.js      Scripted stand-in agent (port 8799) for testing the Electron side
+                       and the Qt overlay (understands `hello` / the overlay role)
 
 agent/                Python sidecar
   preferences.json     Per-capability enabled / ask-first overrides set from the Library
@@ -155,6 +156,9 @@ agent/                Python sidecar
                        migrate / reject, placeholder substitution (temp dirs only)
     tts_check.py       TTS backends against a fake ElevenLabs server: request shape, PCM
                        decoding, every fallback to Piper, settings validation (no key needed)
+    overlay_protocol_check.py  The overlay client role: real server on a side port,
+                       a UI and an overlay client in both orders -- never primary,
+                       mirrored messages, confirming from the overlay (no API key needed)
   .venv/              Virtualenv (gitignored)
   agent/
     core/
@@ -597,6 +601,22 @@ Answering in either place settles the other.
 The overlay follows the main window's light/dark choice (and the macOS appearance if none
 was made).
 
+**The native Qt overlay.** `overlay-qt/` is a C++/QML implementation of the same overlay
+(build: `cmake -S overlay-qt -B overlay-qt/build -G Ninja
+-DCMAKE_PREFIX_PATH=/opt/homebrew/opt/qt && cmake --build overlay-qt/build`). It's a separate process and a second client of the
+agent's WebSocket, not part of Electron. `LEUTHERIA_OVERLAY=qt` makes `main.js` skip its
+own overlay window and instead spawn
+`overlay-qt/build/LeutheriaOverlay.app/Contents/MacOS/LeutheriaOverlay --url <agent url>
+--assets app/renderer/overlay/assets`, and kill that child on quit. If the binary isn't
+built (or won't start, or exits early), it logs a line saying so and falls back to the
+Electron overlay, so you never end up with no overlay at all. `LEUTHERIA_QT_OVERLAY_BIN`
+overrides the binary path. The tray, ⌥Space and the header voice indicator don't depend
+on which overlay is in use. Unset, the Electron overlay is used, as before.
+
+```bash
+cd app && env -u ELECTRON_RUN_AS_NODE LEUTHERIA_OVERLAY=qt npm start
+```
+
 **Visual assets** live in `app/renderer/overlay/assets/`. `manifest.json` maps each state
 to a built-in CSS placeholder, an image (png/gif/svg/webp) or a video (transparent webm);
 swapping in real artwork is a file copy plus a manifest edit, no code change. The mic level
@@ -625,6 +645,8 @@ trip. Two environment variables point the app at it:
 | `LEUTHERIA_NO_SPAWN=1` | Don't start (or pkill) the Python agent; keep retrying the connection instead |
 | `LEUTHERIA_CAPTURE_DIR` | Debug only: write a PNG of the overlay and main window on every voice-state change, into this folder (which also gets its own `userdata/`, so a debug run never shares storage with a real one) |
 | `LEUTHERIA_CAPTURE_THEME` | With the above: force the overlay to `light` or `dark` |
+| `LEUTHERIA_OVERLAY=qt` | Use the native Qt overlay instead of the Electron one (see above); falls back if it isn't built |
+| `LEUTHERIA_QT_OVERLAY_BIN` | With the above: the Qt overlay binary to spawn, instead of the `overlay-qt/build/` one |
 
 ```bash
 cd app
@@ -634,6 +656,14 @@ env -u ELECTRON_RUN_AS_NODE LEUTHERIA_AGENT_URL=ws://127.0.0.1:8799 LEUTHERIA_NO
 
 `MOCK_LOOP=1` replays the session after each one ends; `MOCK_AUTOSTART=0` waits for
 ⌥Space or the menu instead; `MOCK_CONFIRM_TIMEOUT_MS` sets how long it waits for a click.
+
+The mock runs one session shared by every connection and routes messages the way the
+real agent does (see "Overlay clients" in the protocol section), so the Qt overlay can be
+developed against it, with or without Electron:
+`overlay-qt/build/LeutheriaOverlay.app/Contents/MacOS/LeutheriaOverlay --url ws://127.0.0.1:8799`.
+In one way it's more lenient than the real agent: with only an overlay connected, the
+scripted confirmation still shows up on the overlay. The real agent turns a confirmation
+down automatically when no UI is connected.
 
 ## Running the Python agent standalone (no Electron)
 
@@ -1216,7 +1246,58 @@ something you'd want offered as a customization to undo.
 One more event, on the stream side: `{"type": "confirmation_resolved", "id", "approved",
 "by": "voice"}` is sent when a pending confirmation is answered out-of-band by a spoken
 yes/no, so the on-screen card settles instead of sitting there with live buttons for a
-question that's already been answered.
+question that's already been answered. `"by": "overlay"` means an overlay client answered
+it (below).
+
+### Overlay clients (`hello` and roles)
+
+A client may send one optional message first:
+
+```python
+{"type": "hello", "role": "overlay"}
+```
+
+That makes it an **overlay**: a second *view* of the voice session (the native Qt overlay),
+not a place a conversation happens. A client that never sends `hello` (the Electron app,
+a debugging script), or says hello with any other role, behaves exactly as before.
+
+- **Never the primary.** Voice-session commands run on the newest *non-overlay*
+  connection, so replies, confirmations and skill proposals keep going to the Electron
+  window however the connections were ordered. The only gap is the moment between an
+  overlay's handshake and its `hello`, which on loopback is well under a millisecond.
+- **What an overlay receives:** every broadcast (`voice_state`, `session_started`,
+  `session_ended`, `audio_level`, and the current `voice_state` on connect), plus a copy
+  of these messages when they go to the primary:
+  - `confirmation_required`, for every confirmation (the overlay decides whether to
+    show it; the Electron overlay only shows one while a session is live);
+  - `confirmation_resolved` (`by`: `"voice"`, or `"ui"` when the Electron app answered);
+  - `speaking` started and ended, which carries the text of a spoken confirmation prompt;
+  - `transcript` and `response` for the voice session only (`"origin": "voice_session"`).
+    Typed commands, push-to-talk, tool results and skill proposals are not copied.
+
+  With no UI connected at all, voice-session transcripts and responses still reach
+  overlays. A confirmation in that state is turned down automatically, as before, so no card
+  ever appears.
+- **Confirming from an overlay:** send the ordinary
+  `{"type": "confirm", "id": "...", "approved": true}` (`remember` is passed through if
+  present). The overlay has no confirmations of its own, so the id is looked up among
+  the UI connections' pending confirmations. When it resolves one, **every** client gets
+  `{"type": "confirmation_resolved", "id": "...", "approved": true, "by": "overlay"}`
+  once, so both cards settle. An unknown or already-answered id is ignored.
+- **When the UI answers:** a `confirm` from a UI connection now also sends
+  `confirmation_resolved` with `"by": "ui"`, but only to overlays. The UI settles its own
+  cards when you click, and it still isn't sent one.
+- **What an overlay may send:** `hello`, `confirm`, and the control messages
+  (`voice_session`, `inventory`, …). Anything else (a command, audio, a `tool` dispatch,
+  `skill_response`) gets `{"type": "error", "text": "overlay connections can only send
+  hello, confirm and control messages"}` and is not run.
+
+For every client, a frame that parses as JSON but isn't an object (`5`, `[]`) gets
+`{"type": "error", "text": "expected a JSON object"}`. It used to close the connection
+(BUGS.md #28).
+
+`agent/scripts/overlay_protocol_check.py` checks all of this against the real server on a
+side port (`LEUTHERIA_VOICE_SOURCE=<wav> ./.venv/bin/python scripts/overlay_protocol_check.py`).
 
 ## Logs
 

@@ -286,7 +286,9 @@
 
   api.onConfirmResolved(({ id, approved, by }) => {
     if (!confirmation || confirmation.id !== id) return;
-    settleConfirm(approved, by === "voice" ? " by voice" : " in the main window");
+    // by:"overlay" is the Qt overlay (only both run if it was started by hand).
+    const how = by === "voice" ? " by voice" : by === "overlay" ? " on the other overlay" : " in the main window";
+    settleConfirm(approved, how);
   });
 
   // --- boot --------------------------------------------------------------
