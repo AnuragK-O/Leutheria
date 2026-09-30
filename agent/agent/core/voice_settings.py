@@ -22,11 +22,12 @@ DEFAULTS = {
     "endpoint_silence_ms": 800,
     "dismiss_phrases": ["thanks", "thank you", "that's all", "that's it", "we're done", "goodbye"],
     "input_device": None,
-    # Spoken replies. "piper" is local and free; "elevenlabs" is a cloud voice
-    # needing ELEVENLABS_API_KEY in the environment -- the key itself is never
-    # a setting, so it never lands in this file. tts_voice is the selected
-    # backend's voice id; null means that backend's default.
-    "tts_backend": "piper",
+    # Spoken replies. "elevenlabs" (the default, by user choice 2026-09-30) is
+    # a cloud voice needing ELEVENLABS_API_KEY in the environment; without a
+    # key every reply falls back to "piper", which is local and free. The key
+    # itself is never a setting, so it never lands in this file. tts_voice is
+    # the selected backend's voice id; null means that backend's default.
+    "tts_backend": "elevenlabs",
     "tts_voice": None,
 }
 

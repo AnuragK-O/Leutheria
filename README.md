@@ -447,15 +447,17 @@ loop.
 mirroring `llm.py`'s `LLMBackend`): each returns int16 samples plus a sample rate, so
 playback, the `speaking` messages and the half-duplex mic muting don't know which one ran.
 
-- **Piper** (default): local, free, offline. Voice `en_US-amy-medium` unless `tts_voice`
+- **Piper** (the fallback): local, free, offline. Voice `en_US-amy-medium` unless `tts_voice`
   names another Piper voice (e.g. `en_GB-alan-medium`), which downloads on first use.
-- **ElevenLabs** (opt-in): noticeably more natural, but it's a cloud call — the reply text
+- **ElevenLabs** (default): noticeably more natural, but it's a cloud call — the reply text
   leaves the Mac, it needs internet, and it's billed per character on your own ElevenLabs
   plan. It uses the `eleven_flash_v2_5` model (lowest latency, half the per-character price
   of the multilingual models; override with `ELEVENLABS_MODEL_ID`) and adds a network round
   trip before speech starts (the whole reply is synthesized before playback, as with Piper).
   Needs `ELEVENLABS_API_KEY` in the repo-root `.env`; `tts_voice` is an ElevenLabs voice ID,
-  default `JBFqnCBsd6RMkjVDRZzb` ("George", a premade voice).
+  default `JBFqnCBsd6RMkjVDRZzb` ("George", a premade voice). **Without a key, every reply
+  is spoken by Piper** (and logs a `tts_error` saying the key is missing) — pick Piper in
+  the Voice view to stay fully local and silence that.
 
 Pick one in the Voice view's **Voice output** card, or with `set_voice_settings`
 (`tts_backend`, `tts_voice`). The settings are read per utterance, so the next reply uses
@@ -535,7 +537,7 @@ below, applied live):
 | `endpoint_silence_ms` | `800` | trailing silence that ends an utterance |
 | `dismiss_phrases` | thanks, thank you, that's all, that's it, we're done, goodbye | |
 | `input_device` | `null` | sounddevice index or name; `null` is the system default |
-| `tts_backend` | `"piper"` | `"piper"` or `"elevenlabs"` — the engine replies are spoken with (see "Voice output") |
+| `tts_backend` | `"elevenlabs"` | `"piper"` or `"elevenlabs"` — the engine replies are spoken with (see "Voice output") |
 | `tts_voice` | `null` | the selected engine's voice id (letters, digits, `-`, `_`); `null` is its default |
 
 **Testing it without a microphone.** Two scripts in `agent/scripts/`, neither of which
@@ -1076,8 +1078,7 @@ brackets the playback with `speaking` messages so the UI can animate while it ta
 
 There's no request for this — it follows every non-empty text reply, for every input
 method. `backend` is the engine that actually produced the audio — `"piper"` when an
-ElevenLabs request failed and fell back. No API key needed by default; Piper runs fully
-locally. The old `{"type": "speech", "data":
+ElevenLabs request failed or had no key and fell back to Piper, which runs fully locally. The old `{"type": "speech", "data":
 <base64 WAV>}` message is **gone** — nothing sends audio over the socket any more.
 
 ### Voice session protocol

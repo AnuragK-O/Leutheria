@@ -229,8 +229,8 @@ def main():
         real_file = voice_settings.SETTINGS_FILE
         with tempfile.TemporaryDirectory() as tmp:
             voice_settings.SETTINGS_FILE = Path(tmp) / "voice_settings.json"
-            check("defaults: piper, null voice",
-                  voice_settings.load()["tts_backend"] == "piper" and voice_settings.load()["tts_voice"] is None)
+            check("defaults: elevenlabs, null voice",
+                  voice_settings.load()["tts_backend"] == "elevenlabs" and voice_settings.load()["tts_voice"] is None)
             for partial, should_pass in [
                 ({"tts_backend": "elevenlabs", "tts_voice": "JBFqnCBsd6RMkjVDRZzb"}, True),
                 ({"tts_voice": None}, True),
