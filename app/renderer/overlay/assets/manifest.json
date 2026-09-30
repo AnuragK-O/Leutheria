@@ -1,0 +1,11 @@
+{
+  "size": 56,
+  "states": {
+    "listening": { "type": "css" },
+    "hearing": { "type": "css" },
+    "transcribing": { "type": "css" },
+    "thinking": { "type": "css" },
+    "speaking": { "type": "css" },
+    "awaiting_confirmation": { "type": "css" }
+  }
+}

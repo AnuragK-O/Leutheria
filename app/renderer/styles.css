@@ -366,6 +366,81 @@ p {
   -webkit-app-region: no-drag;
 }
 
+/* voice-session indicator (js/voice.js) -- always the last thing in the topbar */
+
+.voice-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 11px 0 10px;
+  border-radius: 99px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  flex: none;
+  -webkit-app-region: no-drag;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+
+.voice-indicator:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.voice-indicator:disabled {
+  opacity: 0.55;
+  cursor: default;
+  pointer-events: none;
+}
+
+.voice-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  flex: none;
+}
+
+.voice-indicator[data-state="idle"] .voice-dot {
+  background: var(--accent);
+  opacity: 0.5;
+}
+
+.voice-indicator:is([data-state="listening"], [data-state="thinking"], [data-state="speaking"], [data-state="confirm"]) {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  color: var(--text);
+}
+
+.voice-indicator[data-state="listening"] .voice-dot {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft-strong);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+.voice-indicator[data-state="thinking"] .voice-dot {
+  background: var(--accent);
+  animation: pulse 0.8s ease-in-out infinite;
+}
+
+.voice-indicator[data-state="speaking"] .voice-dot {
+  background: var(--success);
+  box-shadow: 0 0 0 3px var(--success-soft);
+}
+
+.voice-indicator[data-state="confirm"] {
+  border-color: color-mix(in srgb, var(--warning) 50%, var(--border));
+}
+
+.voice-indicator[data-state="confirm"] .voice-dot {
+  background: var(--warning);
+  box-shadow: 0 0 0 3px var(--warning-soft);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
 .view {
   flex: 1;
   min-height: 0;
