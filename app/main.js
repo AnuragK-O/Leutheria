@@ -618,6 +618,13 @@ function connectToAgent() {
       return;
     }
 
+    if (payload.type === "skill_save_failed") {
+      // Must be caught here: an unknown type falls through to pendingIsChat
+      // below and could be shown in place of a real reply still on its way.
+      chat("assistant", `Couldn't save "${payload.name}" as a skill: ${payload.error}`, { error: true });
+      return;
+    }
+
     if (payload.type === "skill_saved") {
       chat("assistant", `✅ Saved "${payload.name}" as a new skill.`);
       invalidateInventory();

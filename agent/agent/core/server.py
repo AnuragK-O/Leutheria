@@ -371,6 +371,13 @@ async def _read_loop(websocket, pending: dict, pending_skills: dict):
                     # Validated at proposal time, so this means the user's
                     # answers or a same-named skill saved since broke it.
                     log_event("skill_register_rejected", name=finalized.get("name"), reason=saved.get("error"))
+                    # Tell the user too: they pressed Approve, and silence
+                    # would read as success (BUGS.md #26 follow-up).
+                    await websocket.send(
+                        json.dumps(
+                            {"type": "skill_save_failed", "name": finalized.get("name"), "error": saved.get("error")}
+                        )
+                    )
             elif definition:
                 log_event(
                     "skill_declined",

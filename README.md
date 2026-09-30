@@ -1112,9 +1112,11 @@ waiting on this, so it can arrive or not without affecting anything else:
 {"type": "skill_response", "id": "<uuid>", "approved": true,
  "resolutions": {"<param_name>": false}}   # or "approved": false, no resolutions needed
 
-# only on approval, and only if it validated and was written (a failure is
-# logged as skill_register_rejected; nothing is sent -- see "Generated skill format"):
+# only on approval, and only if it validated and was written:
 {"type": "skill_saved", "name": "..."}
+# or, if it failed validation on save (also logged as skill_register_rejected --
+# see "Generated skill format"); the app shows it as an error in chat:
+{"type": "skill_save_failed", "name": "...", "error": "..."}
 ```
 
 A decline is just logged (`skill_declined` in `agent/logs/events.jsonl`) -- no reply is
