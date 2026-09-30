@@ -378,9 +378,11 @@ listening off closes the mic and the header pill goes to Off.
   checks the file exists before it's accepted.
 - **Microphone** lists input devices (`list_input_devices`, which only enumerates, never
   opens a stream). A new pick is stored by name, which survives devices being renumbered.
-  PortAudio snapshots the device list when the agent starts, so a device plugged in later
-  shows up after a restart.
-- There is no "never" for the silence timeout: the agent requires at least 5 seconds.
+  PortAudio snapshots the device list when the agent starts; the reload button makes it
+  re-read the list (a mic plugged in since launch), briefly closing and reopening the mic
+  outside a session, and is refused during one.
+- **Silence timeout** has a **Never** box: the session then ends only on a dismiss phrase
+  or Stop listening.
 
 ### Testing the agentic loop
 
@@ -1080,7 +1082,11 @@ Control messages, answered with `control_result` like the management ones below:
 # -> {..., "ok": true, "devices": [{"index": 3, "name": "MacBook Pro Microphone",
 #                                   "channels": 1, "default": true}, ...]}
 # input-capable devices only; enumerates via sounddevice.query_devices, never opens the
-# mic. The list is PortAudio's snapshot from agent start.
+# mic. The list is PortAudio's snapshot from agent start -- unless "refresh": true, which
+# re-initialises PortAudio first so a newly plugged-in device appears. That closes and
+# reopens the voice session's mic (~0.1 s gap in wake-word listening), is answered
+# asynchronously (same request_id) rather than inline, and fails with ok:false during a
+# voice session.
 
 {"type": "list_wake_models", "paths": ["~/models/hey_leutheria.onnx"], "request_id": "5"}
 # -> {..., "ok": true, "pretrained": [{"name": "hey_jarvis", "downloaded": true}, ...],

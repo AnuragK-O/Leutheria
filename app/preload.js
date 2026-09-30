@@ -35,7 +35,7 @@ contextBridge.exposeInMainWorld("leutheria", {
   getVoiceSettings: () => ipcRenderer.invoke("get-voice-settings"),
   setVoiceSettings: (settings) => ipcRenderer.invoke("set-voice-settings", settings),
   // Enumeration only -- neither opens the mic nor loads a model.
-  listInputDevices: () => ipcRenderer.invoke("list-input-devices"),
+  listInputDevices: (refresh) => ipcRenderer.invoke("list-input-devices", refresh),
   // paths: custom .onnx entries to check for existence on the agent's disk
   listWakeModels: (paths) => ipcRenderer.invoke("list-wake-models", paths),
 
