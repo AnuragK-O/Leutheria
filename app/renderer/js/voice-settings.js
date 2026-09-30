@@ -29,6 +29,9 @@
   };
 
   // voice_state -> label, matching the header pill's wording.
+  const STALLED_HINT =
+    "Enabled but not listening. If this doesn't change in a few seconds, the microphone or wake model failed to start — saving any change retries.";
+
   const STATE_LABELS = {
     off: "Off",
     idle: "Idle",
@@ -257,7 +260,7 @@
         ? "The microphone stays open and a session starts when you say a wake word."
         : "The microphone is closed. ⌥Space or the header button still start a one-off session.",
       el("div.inline-controls", {}, el("span.badge", { id: "voice-live-state" }), toggle),
-      el("div.setting-hint", { id: "voice-stalled", hidden: true, text: "Enabled but not listening. If this doesn't change in a few seconds, the microphone or wake model failed to start — saving any change retries." })
+      el("div.setting-hint", { id: "voice-stalled", hidden: true, text: STALLED_HINT })
     );
   }
 
@@ -271,6 +274,11 @@
     badge.className = label === "Off" ? "badge" : "badge badge-success";
     badge.textContent = voice.session ? `${label} · in a session` : label;
     hint.hidden = !(voice.connected && saved.enabled && voice.state === "off" && !voice.session);
+    // The agent says why when it knows (a mic that wouldn't open, a wake
+    // model that wouldn't load); otherwise keep the generic hint.
+    hint.textContent = voice.error
+      ? `Couldn't start listening (${voice.error.stage}): ${voice.error.message}. Saving any change retries.`
+      : STALLED_HINT;
   }
 
   function renderWakeModels() {
@@ -612,7 +620,12 @@
 
   window.leutheria.onVoiceEvent((event) => {
     if (event.type !== "voice_state") return;
-    voice = { state: event.state, session: Boolean(event.session), connected: event.connected !== false };
+    voice = {
+      state: event.state,
+      session: Boolean(event.session),
+      connected: event.connected !== false,
+      error: event.error || null,
+    };
     renderLiveState();
   });
 

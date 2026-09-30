@@ -115,6 +115,10 @@ def audio_level(frame: np.ndarray) -> float:
 
 
 _pretrained_cache = None
+# openWakeWord ships these alongside its wake words, but they fire on whole
+# requests ("set a timer for...") -- as a wake model they'd open a session
+# mid-sentence. Not offered in the Voice view; still accepted if configured.
+NOT_WAKE_WORDS = {"timer", "weather"}
 
 
 def available_wake_models() -> list:
@@ -131,6 +135,7 @@ def available_wake_models() -> list:
     return [
         {"name": name, "downloaded": Path(path).with_suffix(".onnx").exists()}
         for name, path in _pretrained_cache.items()
+        if name not in NOT_WAKE_WORDS
     ]
 
 
@@ -247,6 +252,10 @@ class VoiceSession:
         self._changed = asyncio.Event()
         self._restart_capture = False
         self._failed = False
+        # Why voice last went "off" on its own (stage + message), sent with
+        # voice_state so the UI can say what broke instead of guessing from
+        # a bare "off". Cleared once capture is running again.
+        self._last_error = None
         self._manual_start_pending = False
         self.source_done = asyncio.Event()  # a finite (test) source ran out
 
@@ -290,7 +299,7 @@ class VoiceSession:
         return task
 
     def snapshot(self) -> dict:
-        return {"type": "voice_state", "state": self.state, "session": self.in_session}
+        return {"type": "voice_state", "state": self.state, "session": self.in_session, "error": self._last_error}
 
     # -- control surface (called synchronously from control.py) ----------------
 
@@ -346,7 +355,9 @@ class VoiceSession:
 
     def _set_state(self, state: str) -> None:
         self.state = state
-        key = (state, self.in_session)
+        if state != "off":
+            self._last_error = None
+        key = (state, self.in_session, self._last_error and self._last_error["message"])
         if key != self._sent_state:
             self._sent_state = key
             self._emit(self.snapshot())
@@ -387,6 +398,7 @@ class VoiceSession:
     def _fail(self, stage: str, error: Exception) -> None:
         log_event("voice_error", stage=stage, error=str(error))
         self._failed = True
+        self._last_error = {"stage": stage, "message": str(error)[:300]}
         self._manual_start_pending = False
         if self.in_session:
             self._end_session("error")
