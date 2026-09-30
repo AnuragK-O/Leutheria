@@ -1,4 +1,4 @@
-from agent.core import audio_io, inventory, preferences, session, trust, voice_session, voice_settings
+from agent.core import audio_io, inventory, preferences, session, trust, tts_backends, voice_session, voice_settings
 from agent.core.logging_util import log_event
 from agent.skills.registry import delete_skill
 
@@ -80,7 +80,8 @@ def handle(payload: dict) -> dict:
         return result
 
     if message_type == "get_voice_settings":
-        return {"ok": True, "settings": voice_settings.load()}
+        # tts_available is booleans only (is a key set?), never the key itself.
+        return {"ok": True, "settings": voice_settings.load(), "tts_available": tts_backends.availability()}
 
     if message_type == "set_voice_settings":
         settings, error = voice_settings.update(payload.get("settings"))

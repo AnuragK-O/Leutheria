@@ -90,7 +90,7 @@ server.py
   once agent_loop gets a final text reply (no more tool calls):
     |
     v
-  tts.py (Piper) -> played through the speakers by the agent itself,
+  tts.py (Piper, or ElevenLabs if selected) -> played through the speakers by the agent itself,
                     bracketed by "speaking" started/ended messages
 
   meanwhile, if the trace had >= 2 tool calls and no skill covers it yet
@@ -153,6 +153,8 @@ agent/                Python sidecar
                        the voice control messages, settings persistence
     skill_format_check.py  Generated-skill format: metadata, validation rules, load /
                        migrate / reject, placeholder substitution (temp dirs only)
+    tts_check.py       TTS backends against a fake ElevenLabs server: request shape, PCM
+                       decoding, every fallback to Piper, settings validation (no key needed)
   .venv/              Virtualenv (gitignored)
   agent/
     core/
@@ -193,10 +195,14 @@ agent/                Python sidecar
                         results back until Claude gives a final answer (capped at 6 turns)
       audio_input.py    Decodes a base64 audio payload to a temp file, hands off to stt.py
       stt.py            Local Whisper ("base" model) transcription
-      tts.py            Local Piper ("en_US-amy-medium" voice) speech synthesis, played
-                        through the Mac's speakers by the sidecar itself; speak() is
-                        shared by server.py (final replies) and dispatcher.py (spoken
-                        confirmation prompts)
+      tts.py            Speaks replies: picks the TTS backend from the voice settings
+                        (falling back to Piper if it fails) and plays the audio through
+                        the Mac's speakers from the sidecar itself; speak() is shared by
+                        server.py (final replies) and dispatcher.py (spoken confirmation
+                        prompts)
+      tts_backends.py   TTSBackend interface -- swappable engine seam, like llm.py.
+                        PiperBackend (local, "en_US-amy-medium" by default) and
+                        ElevenLabsBackend (cloud REST API, needs ELEVENLABS_API_KEY)
       skill_learning.py Checks logs/events.jsonl for a matching past run, then asks
                         Claude to generalize into a skill definition -- confidently
                         from two examples if repeated, or from one example (flagging
@@ -290,6 +296,10 @@ directory and walks up through parents until it finds a `.env` — so the repo-r
 picked up automatically regardless of where the agent process's cwd is. `.env` is gitignored;
 never commit it.
 
+`ELEVENLABS_API_KEY=...` goes in the same file if you want the optional ElevenLabs voice
+(see "Voice output" below). It's read from the environment only — never stored in
+`voice_settings.json` or sent to the UI.
+
 ### Persona / behavior (`SYSTEM_PROMPT.md`)
 
 `agent/SYSTEM_PROMPT.md` is a plain markdown file that shapes how Claude behaves — it's
@@ -378,9 +388,16 @@ listening off closes the mic and the header pill goes to Off.
   checks the file exists before it's accepted.
 - **Microphone** lists input devices (`list_input_devices`, which only enumerates, never
   opens a stream). A new pick is stored by name, which survives devices being renumbered.
-  PortAudio snapshots the device list when the agent starts, so a device plugged in later
-  shows up after a restart.
-- There is no "never" for the silence timeout: the agent requires at least 5 seconds.
+  PortAudio snapshots the device list when the agent starts; the reload button makes it
+  re-read the list (a mic plugged in since launch), briefly closing and reopening the mic
+  outside a session, and is refused during one.
+- **Silence timeout** has a **Never** box: the session then ends only on a dismiss phrase
+  or Stop listening.
+- **Voice output** picks the engine replies are spoken with (Piper or ElevenLabs) and an
+  optional voice id; switching engines clears the voice id, since one engine's id means
+  nothing to the other. With ElevenLabs selected, it warns when the agent reports no
+  `ELEVENLABS_API_KEY` (`tts_available` in `get_voice_settings`), since replies would
+  still come out in Piper's voice.
 
 ### Testing the agentic loop
 
@@ -425,6 +442,33 @@ point where the final response is sent, not per input method. If synthesis or pl
 fails for any reason, it's logged (`tts_error` in `agent/logs/events.jsonl`) but never
 blocks or delays the text reply itself — TTS is additive, not a dependency of the core
 loop.
+
+**Two voice engines** behind one `TTSBackend` interface (`agent/core/tts_backends.py`,
+mirroring `llm.py`'s `LLMBackend`): each returns int16 samples plus a sample rate, so
+playback, the `speaking` messages and the half-duplex mic muting don't know which one ran.
+
+- **Piper** (default): local, free, offline. Voice `en_US-amy-medium` unless `tts_voice`
+  names another Piper voice (e.g. `en_GB-alan-medium`), which downloads on first use.
+- **ElevenLabs** (opt-in): noticeably more natural, but it's a cloud call — the reply text
+  leaves the Mac, it needs internet, and it's billed per character on your own ElevenLabs
+  plan. It uses the `eleven_flash_v2_5` model (lowest latency, half the per-character price
+  of the multilingual models; override with `ELEVENLABS_MODEL_ID`) and adds a network round
+  trip before speech starts (the whole reply is synthesized before playback, as with Piper).
+  Needs `ELEVENLABS_API_KEY` in the repo-root `.env`; `tts_voice` is an ElevenLabs voice ID,
+  default `JBFqnCBsd6RMkjVDRZzb` ("George", a premade voice).
+
+Pick one in the Voice view's **Voice output** card, or with `set_voice_settings`
+(`tts_backend`, `tts_voice`). The settings are read per utterance, so the next reply uses
+them — no restart. **Fallback:** if the selected backend fails — no key, network error,
+HTTP error (a bad key is a 401), a timeout (5 s connect, 20 s read) — that utterance is
+spoken by Piper's default voice instead and a `tts_error` is logged with the `backend`
+that failed and why. A reply is never silent because of the premium voice. The same goes
+for a Piper voice name that doesn't exist. (Piper's GPL licensing question is in
+`plans/NOTES.md` #1.)
+
+`agent/scripts/tts_check.py` checks all of this without a real key, against a fake
+ElevenLabs server on localhost: the request shape, PCM decoding, the `speak()` path, each
+fallback, and settings validation. Nothing is played aloud.
 
 Why the sidecar plays it rather than the renderer (which it used to, via a base64
 `speech` message): the always-listening mic below must not hear Leutheria's own voice,
@@ -487,10 +531,12 @@ below, applied live):
 | `enabled` | `true` | wake word listening on/off |
 | `wake_models` | `["hey_jarvis"]` | pretrained openWakeWord names, or paths to a trained `.onnx` |
 | `wake_threshold` | `0.5` | 0–1 |
-| `silence_timeout_s` | `180` | a session with nothing said for this long ends |
+| `silence_timeout_s` | `180` | a session with nothing said for this long ends; `null` = never (only a dismiss phrase or Stop listening ends it) |
 | `endpoint_silence_ms` | `800` | trailing silence that ends an utterance |
 | `dismiss_phrases` | thanks, thank you, that's all, that's it, we're done, goodbye | |
 | `input_device` | `null` | sounddevice index or name; `null` is the system default |
+| `tts_backend` | `"piper"` | `"piper"` or `"elevenlabs"` — the engine replies are spoken with (see "Voice output") |
+| `tts_voice` | `null` | the selected engine's voice id (letters, digits, `-`, `_`); `null` is its default |
 
 **Testing it without a microphone.** Two scripts in `agent/scripts/`, neither of which
 opens the mic:
@@ -1024,12 +1070,14 @@ brackets the playback with `speaking` messages so the UI can animate while it ta
 
 ```python
 {"type": "response", "text": "12 × 7 = **84**", "trace": []}
-{"type": "speaking", "state": "started", "text": "12 × 7 = **84**", "duration_ms": 2140}
+{"type": "speaking", "state": "started", "text": "12 × 7 = **84**", "duration_ms": 2140, "backend": "piper"}
 {"type": "speaking", "state": "ended"}
 ```
 
 There's no request for this — it follows every non-empty text reply, for every input
-method. No API key needed; Piper runs fully locally. The old `{"type": "speech", "data":
+method. `backend` is the engine that actually produced the audio — `"piper"` when an
+ElevenLabs request failed and fell back. No API key needed by default; Piper runs fully
+locally. The old `{"type": "speech", "data":
 <base64 WAV>}` message is **gone** — nothing sends audio over the socket any more.
 
 ### Voice session protocol
@@ -1069,7 +1117,10 @@ Control messages, answered with `control_result` like the management ones below:
 # -> {"type": "control_result", "request_id": "1", "ok": true, "state": "listening", "session": true}
 
 {"type": "get_voice_settings", "request_id": "2"}
-# -> {..., "ok": true, "settings": {"enabled": true, "wake_models": ["hey_jarvis"], ...}}
+# -> {..., "ok": true, "settings": {"enabled": true, "wake_models": ["hey_jarvis"], ...},
+#          "tts_available": {"piper": true, "elevenlabs": false}}
+# tts_available says whether each TTS engine is configured (for ElevenLabs: whether
+# ELEVENLABS_API_KEY is set) -- a boolean, never the key.
 
 {"type": "set_voice_settings", "settings": {"silence_timeout_s": 60}, "request_id": "3"}
 # -> {..., "ok": true, "settings": {...the full merged settings...}}
@@ -1080,7 +1131,11 @@ Control messages, answered with `control_result` like the management ones below:
 # -> {..., "ok": true, "devices": [{"index": 3, "name": "MacBook Pro Microphone",
 #                                   "channels": 1, "default": true}, ...]}
 # input-capable devices only; enumerates via sounddevice.query_devices, never opens the
-# mic. The list is PortAudio's snapshot from agent start.
+# mic. The list is PortAudio's snapshot from agent start -- unless "refresh": true, which
+# re-initialises PortAudio first so a newly plugged-in device appears. That closes and
+# reopens the voice session's mic (~0.1 s gap in wake-word listening), is answered
+# asynchronously (same request_id) rather than inline, and fails with ok:false during a
+# voice session.
 
 {"type": "list_wake_models", "paths": ["~/models/hey_leutheria.onnx"], "request_id": "5"}
 # -> {..., "ok": true, "pretrained": [{"name": "hey_jarvis", "downloaded": true}, ...],
@@ -1112,9 +1167,11 @@ waiting on this, so it can arrive or not without affecting anything else:
 {"type": "skill_response", "id": "<uuid>", "approved": true,
  "resolutions": {"<param_name>": false}}   # or "approved": false, no resolutions needed
 
-# only on approval, and only if it validated and was written (a failure is
-# logged as skill_register_rejected; nothing is sent -- see "Generated skill format"):
+# only on approval, and only if it validated and was written:
 {"type": "skill_saved", "name": "..."}
+# or, if it failed validation on save (also logged as skill_register_rejected --
+# see "Generated skill format"); the app shows it as an error in chat:
+{"type": "skill_save_failed", "name": "...", "error": "..."}
 ```
 
 A decline is just logged (`skill_declined` in `agent/logs/events.jsonl`) -- no reply is
@@ -1167,7 +1224,8 @@ it came from the LLM loop or a direct `{"tool": ...}` message) is appended as on
 line to `agent/logs/events.jsonl` (gitignored). Event types: `message_in`, `message_out`,
 `llm_turn` (what Claude decided that turn), `tool_call` (which tool ran, with what args
 and result), `stt_transcript` (what Whisper heard), `tts_error` (a synthesis failure --
-non-fatal, just skipped), `confirmation_requested`/`tool_declined` (the destructive-tool
+non-fatal; `backend` says which engine failed, and `fallback: "piper"` means the reply was
+still spoken by Piper), `confirmation_requested`/`tool_declined` (the destructive-tool
 confirmation flow), `confirmation_answered_by_voice`, `preference_changed`/
 `preference_reset`/`skill_deleted`/`trust_revoked` (management actions taken from the UI),
 the skill lifecycle (`skill_proposed`/`skill_registered`/`skill_declined`, plus

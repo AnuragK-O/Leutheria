@@ -251,6 +251,7 @@ class VoiceSession:
 
         self._changed = asyncio.Event()
         self._restart_capture = False
+        self._reinit_waiter = None  # Future while a device refresh is pending
         self._failed = False
         # Why voice last went "off" on its own (stage + message), sent with
         # voice_state so the UI can say what broke instead of guessing from
@@ -406,9 +407,36 @@ class VoiceSession:
 
     # -- capture supervisor --------------------------------------------------------
 
+    async def refresh_devices(self) -> None:
+        """Re-read the system's device list (NOTES #6). The mic stream must be
+        closed while PortAudio re-initialises, so this asks the supervisor to
+        close it, refresh, and reopen -- a sub-second gap in wake-word
+        listening. Refused mid-session, where that gap would eat speech."""
+        if self.in_session:
+            raise RuntimeError("can't refresh devices during a voice session -- end it first")
+        if self._reinit_waiter is None:
+            self._reinit_waiter = asyncio.get_running_loop().create_future()
+            self._restart_capture = True
+            self._changed.set()
+        await asyncio.wait_for(asyncio.shield(self._reinit_waiter), timeout=10)
+
+    async def _reinit_devices(self) -> None:
+        # Runs on the supervisor with no stream open: either capture was never
+        # started, or the restart flag just made it break out and close.
+        waiter, self._reinit_waiter = self._reinit_waiter, None
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, audio_io.reinitialize_devices)
+            log_event("voice_devices_refreshed")
+            waiter.set_result(None)
+        except Exception as e:
+            log_event("voice_error", stage="refresh_devices", error=str(e))
+            waiter.set_exception(e)
+
     async def _supervise(self):
         loop = asyncio.get_running_loop()
         while True:
+            if self._reinit_waiter is not None:
+                await self._reinit_devices()
             if not self._capture_wanted():
                 self._set_state("off")
                 await self._changed.wait()
@@ -422,6 +450,10 @@ class VoiceSession:
                     self._wake = await loop.run_in_executor(self._infer, self._wake_factory, models)
             except Exception as e:
                 self._fail("load_models", e)
+                continue
+
+            if self._reinit_waiter is not None:
+                await self._reinit_devices()
                 continue
 
             self._restart_capture = False
@@ -537,8 +569,8 @@ class VoiceSession:
                 self._set_state("hearing")
             elif state == "listening":
                 self._silence_frames += 1
-                timeout_frames = self.settings["silence_timeout_s"] * 1000 / FRAME_MS
-                if self._silence_frames >= timeout_frames:
+                timeout_s = self.settings["silence_timeout_s"]  # None = never
+                if timeout_s is not None and self._silence_frames >= timeout_s * 1000 / FRAME_MS:
                     self._end_session("timeout")
             return
 

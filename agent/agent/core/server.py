@@ -331,12 +331,35 @@ async def handler(websocket):
         _connections.remove(entry)
 
 
+async def _refresh_input_devices(websocket, request_id) -> None:
+    """Re-read the system's device list (NOTES #6), then answer like a plain
+    list_input_devices. With a live voice session the session does it, since
+    only it can close the mic stream first; otherwise PortAudio is idle."""
+    session = voice_session.current()
+    try:
+        if session is not None:
+            await session.refresh_devices()
+        else:
+            await asyncio.get_running_loop().run_in_executor(None, audio_io.reinitialize_devices)
+        result = control.handle({"type": "list_input_devices"})
+    except Exception as e:
+        result = {"ok": False, "error": f"couldn't refresh input devices: {e}"}
+    await _send(websocket, {"type": "control_result", "request_id": request_id, **result})
+
+
 async def _read_loop(websocket, pending: dict, pending_skills: dict):
     async for raw in websocket:
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError:
             await websocket.send(json.dumps({"type": "error", "text": "invalid JSON"}))
+            continue
+
+        if payload.get("type") == "list_input_devices" and payload.get("refresh"):
+            # A refresh briefly closes and reopens the mic, so unlike the
+            # other control messages it can't be answered inline; it replies
+            # (same request_id) when done, without holding up this loop.
+            _in_background(_refresh_input_devices(websocket, payload.get("request_id")))
             continue
 
         if payload.get("type") in control.CONTROL_TYPES:
@@ -371,6 +394,13 @@ async def _read_loop(websocket, pending: dict, pending_skills: dict):
                     # Validated at proposal time, so this means the user's
                     # answers or a same-named skill saved since broke it.
                     log_event("skill_register_rejected", name=finalized.get("name"), reason=saved.get("error"))
+                    # Tell the user too: they pressed Approve, and silence
+                    # would read as success (BUGS.md #26 follow-up).
+                    await websocket.send(
+                        json.dumps(
+                            {"type": "skill_save_failed", "name": finalized.get("name"), "error": saved.get("error")}
+                        )
+                    )
             elif definition:
                 log_event(
                     "skill_declined",

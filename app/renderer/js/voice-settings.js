@@ -1,5 +1,5 @@
 /* The Voice view: the always-listening session's settings (wake word,
-   timeouts, dismiss phrases, microphone). Edits collect in a local draft and
+   timeouts, dismiss phrases, microphone) and the voice replies are spoken in. Edits collect in a local draft and
    are sent together as one set_voice_settings carrying only the changed keys.
    The agent owns the ranges -- it validates the whole update and rejects it on
    the first bad key, and that error is shown against the field it names. The
@@ -19,7 +19,28 @@
     "endpoint_silence_ms",
     "dismiss_phrases",
     "input_device",
+    "tts_backend",
+    "tts_voice",
   ];
+
+  // Text-to-speech engines. The key for ElevenLabs lives only in the agent's
+  // environment; the view learns whether one exists (a boolean in
+  // get_voice_settings' tts_available) and nothing more.
+  const TTS_BACKENDS = [
+    {
+      name: "piper",
+      label: "Piper — on this Mac, free",
+      defaultVoice: "en_US-amy-medium",
+      voiceHint: "A Piper voice name, e.g. en_GB-alan-medium. A voice not yet on this Mac downloads the first time it speaks.",
+    },
+    {
+      name: "elevenlabs",
+      label: "ElevenLabs — cloud, your API key",
+      defaultVoice: "JBFqnCBsd6RMkjVDRZzb",
+      voiceHint: "A voice ID from your ElevenLabs voice library. Empty uses the default voice (George).",
+    },
+  ];
+  const VOICE_ID = /^[A-Za-z0-9_-]{1,100}$/;
 
   // Two of openWakeWord's pretrained models aren't wake words at all -- they
   // fire on a whole request -- which is worth saying before someone picks one.
@@ -58,6 +79,7 @@
   let customStatus = {}; // custom model path -> exists on the agent's disk
   let addModelError = null;
   let voice = { state: "off", session: false, connected: false };
+  let ttsAvailable = null; // { piper: true, elevenlabs: bool }, or null if the agent doesn't say
 
   const copy = (value) => JSON.parse(JSON.stringify(value));
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -82,6 +104,7 @@
       // kept, otherwise the form follows whatever the agent now holds.
       const keepDraft = isDirty();
       saved = settings.settings;
+      ttsAvailable = settings.tts_available || null;
       if (!keepDraft) resetDraft();
     }
 
@@ -106,8 +129,9 @@
   function resetDraft() {
     draft = copy(saved);
     raw = {
-      silence_timeout_s: String(saved.silence_timeout_s),
+      silence_timeout_s: saved.silence_timeout_s === null ? "180" : String(saved.silence_timeout_s),
       endpoint_silence_ms: String(saved.endpoint_silence_ms),
+      tts_voice: saved.tts_voice || "",
     };
     clientErrors = {};
     saveError = null;
@@ -137,9 +161,13 @@
   function validate() {
     const errors = {};
     for (const key of ["silence_timeout_s", "endpoint_silence_ms"]) {
+      if (key === "silence_timeout_s" && draft[key] === null) continue; // "never"
       if (!Number.isFinite(draft[key])) errors[key] = "Enter a number.";
     }
     if (!draft.wake_models.length) errors.wake_models = "Pick at least one wake word.";
+    if (draft.tts_voice !== null && !VOICE_ID.test(draft.tts_voice)) {
+      errors.tts_voice = "Letters, digits, - and _ only (no spaces or slashes).";
+    }
     if (!draft.dismiss_phrases.length) errors.dismiss_phrases = "Keep at least one phrase, or a session only ends on the timeout.";
     return errors;
   }
@@ -423,6 +451,28 @@
     return el("div.inline-controls", {}, input, el("span.unit", { text: unit }));
   }
 
+  // The number field plus a "Never" box. Never saves null; unticking restores
+  // whatever number was last typed, so toggling doesn't lose it.
+  function timeoutField() {
+    const never = draft.silence_timeout_s === null;
+    const field = numberField("silence_timeout_s", "seconds", 5, null, 5);
+    const input = field.querySelector("input");
+    input.disabled = never;
+    const box = el("input", {
+      type: "checkbox",
+      checked: never,
+      onchange: (event) => {
+        draft.silence_timeout_s = event.target.checked
+          ? null
+          : raw.silence_timeout_s.trim() === "" ? NaN : Number(raw.silence_timeout_s);
+        touched("silence_timeout_s");
+        render();
+      },
+    });
+    field.appendChild(el("label.inline-check", {}, box, el("span", { text: "Never" })));
+    return field;
+  }
+
   function renderPhrases() {
     const chips = el("div.chips");
     for (const phrase of draft.dismiss_phrases) {
@@ -516,7 +566,8 @@
           {
             title: "Reload the device list",
             onclick: async () => {
-              const result = await window.leutheria.listInputDevices();
+              // true: re-read the OS list, so a mic plugged in since launch shows up.
+              const result = await window.leutheria.listInputDevices(true);
               devices = result && result.ok ? result.devices : devices;
               devicesError = result && !result.ok ? result.error : null;
               render();
@@ -526,6 +577,75 @@
         )
       ),
       devicesError ? el("div.setting-hint", { text: devicesError }) : null
+    );
+  }
+
+  function ttsBackend(name) {
+    return TTS_BACKENDS.find((backend) => backend.name === name) || TTS_BACKENDS[0];
+  }
+
+  function renderTtsBackend() {
+    const select = el("select.field-input.select", {
+      onchange: (event) => {
+        draft.tts_backend = event.target.value;
+        // A voice id means nothing to the other engine, so switching starts
+        // from that engine's default rather than sending it a stranger's id.
+        draft.tts_voice = draft.tts_backend === saved.tts_backend ? saved.tts_voice : null;
+        raw.tts_voice = draft.tts_voice || "";
+        touched("tts_backend");
+        touched("tts_voice");
+        render();
+      },
+    });
+    for (const backend of TTS_BACKENDS) {
+      const option = el("option", { value: backend.name, text: backend.label });
+      if (backend.name === draft.tts_backend) option.selected = true;
+      select.appendChild(option);
+    }
+
+    let note = null;
+    if (draft.tts_backend === "elevenlabs") {
+      const missing = ttsAvailable && ttsAvailable.elevenlabs === false;
+      note = el(
+        "div.callout",
+        { class: missing ? "callout-warning" : "" },
+        icon(missing ? "warning" : "info"),
+        el("span", {
+          text: missing
+            ? "No ElevenLabs API key is configured, so replies are still spoken by Piper. Add ELEVENLABS_API_KEY to the .env file in the Leutheria folder and restart Leutheria."
+            : "Replies are sent to ElevenLabs to be spoken, which is billed per character on your ElevenLabs plan. If a request fails, that reply is spoken by Piper instead.",
+        })
+      );
+    }
+    return row(
+      "tts_backend",
+      "Voice engine",
+      "Piper runs offline on this Mac. ElevenLabs sounds more natural but needs internet and your own API key.",
+      el("div.select-wrap", {}, select),
+      note
+    );
+  }
+
+  function renderTtsVoice() {
+    const backend = ttsBackend(draft.tts_backend);
+    const input = el("input.field-input.grow", {
+      type: "text",
+      spellcheck: "false",
+      placeholder: `Default (${backend.defaultVoice})`,
+      value: raw.tts_voice,
+      oninput: (event) => {
+        raw.tts_voice = event.target.value;
+        const trimmed = event.target.value.trim();
+        draft.tts_voice = trimmed === "" ? null : trimmed;
+        touched("tts_voice");
+      },
+    });
+    return row(
+      "tts_voice",
+      "Voice",
+      backend.voiceHint,
+      null,
+      el("div.setting-body", {}, el("div.add-row", {}, input))
     );
   }
 
@@ -583,12 +703,18 @@
         row(
           "silence_timeout_s",
           "Silence timeout",
-          "A session with nothing said for this long ends on its own.",
-          numberField("silence_timeout_s", "seconds", 5, null, 5)
+          "A session with nothing said for this long ends on its own. With Never, only a dismiss phrase or Stop listening ends it.",
+          timeoutField()
         ),
         renderPhrases()
       ),
-      card("Input", "The microphone the session listens on.", renderDevice())
+      card("Input", "The microphone the session listens on.", renderDevice()),
+      card(
+        "Voice output",
+        "How replies are spoken. A change applies from the next reply.",
+        renderTtsBackend(),
+        renderTtsVoice()
+      )
     );
     renderLiveState();
   }
@@ -607,9 +733,9 @@
   }
 
   function subtitle() {
-    if (!saved) return "Wake word, timeouts and microphone";
+    if (!saved) return "Wake word, microphone and spoken replies";
     const count = changedKeys().length;
-    return count ? `${count} unsaved ${count === 1 ? "change" : "changes"}` : "Wake word, timeouts and microphone";
+    return count ? `${count} unsaved ${count === 1 ? "change" : "changes"}` : "Wake word, microphone and spoken replies";
   }
 
   // Re-read from the agent each time the view is opened, unless there's an

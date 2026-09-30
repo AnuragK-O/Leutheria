@@ -618,6 +618,13 @@ function connectToAgent() {
       return;
     }
 
+    if (payload.type === "skill_save_failed") {
+      // Must be caught here: an unknown type falls through to pendingIsChat
+      // below and could be shown in place of a real reply still on its way.
+      chat("assistant", `Couldn't save "${payload.name}" as a skill: ${payload.error}`, { error: true });
+      return;
+    }
+
     if (payload.type === "skill_saved") {
       chat("assistant", `✅ Saved "${payload.name}" as a new skill.`);
       invalidateInventory();
@@ -691,7 +698,10 @@ ipcMain.handle("get-voice-settings", () => sendControlRequest({ type: "get_voice
 ipcMain.handle("set-voice-settings", (_event, settings) =>
   sendControlRequest({ type: "set_voice_settings", settings })
 );
-ipcMain.handle("list-input-devices", () => sendControlRequest({ type: "list_input_devices" }));
+// refresh: re-read the OS device list first (a mic plugged in since launch).
+ipcMain.handle("list-input-devices", (_event, refresh) =>
+  sendControlRequest({ type: "list_input_devices", refresh: Boolean(refresh) })
+);
 ipcMain.handle("list-wake-models", (_event, paths) =>
   sendControlRequest({ type: "list_wake_models", paths: paths || [] })
 );

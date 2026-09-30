@@ -9,6 +9,7 @@ microphone and drive the whole state machine in a test (scripts/voice_sim.py).
 
 import asyncio
 import io
+import threading
 import time
 import wave
 
@@ -17,6 +18,11 @@ import numpy as np
 SAMPLE_RATE = 16000
 FRAME_SAMPLES = 1280  # 80 ms
 FRAME_MS = 80
+
+# Held by speaker playback and by a device-list refresh: PortAudio can't be
+# re-initialised under a stream that's still playing. (Mic capture is kept
+# out of the way by the voice session closing its stream first.)
+_portaudio_lock = threading.Lock()
 
 # ~2.5 s of backlog. If the consumer falls further behind than this (a long
 # GC pause, a slow model load), the oldest audio is dropped: stale audio is
@@ -28,10 +34,10 @@ def list_input_devices() -> list:
     """Enumerate input devices without opening any of them -- opening a stream
     is what triggers the macOS microphone prompt, listing does not.
 
-    PortAudio snapshots the device list when it initializes (first import of
-    sounddevice), so a device plugged in after that won't appear until the
-    agent restarts. Re-initializing to refresh it would tear down the voice
-    session's open stream, so it isn't done here."""
+    PortAudio snapshots the device list when it initializes, so a device
+    plugged in later doesn't appear here until reinitialize_devices() runs --
+    which the voice session does on request, between closing its mic stream
+    and reopening it (NOTES #6)."""
     import sounddevice as sd
 
     try:
@@ -157,4 +163,21 @@ def play_blocking(audio: np.ndarray, rate: int) -> None:
     this in an executor -- it blocks for the length of the clip."""
     import sounddevice as sd
 
-    sd.play(audio, rate, blocking=True)
+    with _portaudio_lock:
+        sd.play(audio, rate, blocking=True)
+
+
+def reinitialize_devices() -> None:
+    """Make PortAudio re-read the device list, so a mic plugged in since the
+    agent started can be listed and opened. Blocking; run in an executor.
+
+    Only safe with no stream open: terminating PortAudio under a live stream
+    crashes the process. Playback is excluded by _portaudio_lock; the caller
+    (VoiceSession.refresh_devices) guarantees the mic stream is closed.
+    _terminate/_initialize are private but are sounddevice's documented way
+    to do this -- there's no public equivalent."""
+    import sounddevice as sd
+
+    with _portaudio_lock:
+        sd._terminate()
+        sd._initialize()
