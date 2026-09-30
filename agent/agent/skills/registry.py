@@ -1,9 +1,14 @@
 import functools
 import json
+import os
+import time
 from pathlib import Path
 
-from agent.skills import backup_folder, quick_note, setup_project
+from agent.core.logging_util import log_event
+from agent.skills import backup_folder, quick_note, setup_project, validate
 from agent.skills.template_skill import run_template
+from agent.skills.validate import SkillValidationError, skill_path
+from agent.tools.registry import TOOLS
 
 GENERATED_DIR = Path(__file__).resolve().parent / "generated"
 
@@ -79,8 +84,30 @@ SKILLS = {
 }
 
 
-def _load_generated_skill(path: Path) -> None:
-    definition = json.loads(path.read_text())
+# Everything above is code; everything loaded below is data. Captured before
+# any generated file is read, so a generated skill can never take one of
+# these names -- or a tool's: dispatch() resolves skills before tools, so a
+# generated skill named after a tool would silently shadow it (BUGS.md #23).
+BUILTIN_SKILLS = frozenset(SKILLS)
+
+MAX_FILE_BYTES = 256 * 1024
+
+
+def validation_kwargs() -> dict:
+    return {
+        "tools": TOOLS,
+        "reserved_names": set(TOOLS) | set(BUILTIN_SKILLS),
+        "skill_names": set(SKILLS),
+    }
+
+
+def _write_atomic(path: Path, definition: dict) -> None:
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(json.dumps(definition, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _register_definition(definition: dict, path: Path) -> None:
     SKILLS[definition["name"]] = {
         "fn": functools.partial(run_template, definition),
         "description": definition["description"],
@@ -90,32 +117,131 @@ def _load_generated_skill(path: Path) -> None:
         # is also what makes a skill deletable -- a generated skill is just a
         # JSON file we can remove, a hand-written one is code.
         "origin": "generated",
-        "steps": definition.get("steps", []),
-        "created_at": path.stat().st_mtime,
+        "steps": definition["steps"],
+        "created_at": definition["created_at"],
         "path": str(path),
+        "id": definition["id"],
+        "content_hash": definition["content_hash"],
+        "version": definition["version"],
+        "source": definition["source"],
+        "requires": definition["requires"],
     }
 
 
-def _load_all_generated_skills() -> None:
+def _reject_constant(constant):
+    raise SkillValidationError(f"{constant} is not plain JSON data")
+
+
+def _load_generated_skill(path: Path, seen_ids: set) -> None:
+    """Validate one file and register it, migrating a file written before
+    metadata existed by writing the computed metadata back. Raises for
+    anything that shouldn't load."""
+    if path.is_symlink():
+        raise SkillValidationError("is a symlink")
+    if path.stat().st_size > MAX_FILE_BYTES:
+        raise SkillValidationError(f"larger than {MAX_FILE_BYTES} bytes")
+    definition = json.loads(path.read_text(encoding="utf-8"), parse_constant=_reject_constant)
+    if not isinstance(definition, dict):
+        raise SkillValidationError("not a JSON object")
+    name = definition.get("name")
+    if skill_path(GENERATED_DIR, name) != path.resolve():
+        raise SkillValidationError(f"file name does not match skill name {name!r}")
+    validate.validate_content(definition, **validation_kwargs())
+
+    reasons = []
+    missing = validate.METADATA_KEYS - set(definition)
+    if missing:
+        # created_at falls back to the file's mtime, which is what the
+        # Library showed for every generated skill until now.
+        fresh = validate.new_metadata(definition, created_at=path.stat().st_mtime)
+        definition.update({key: fresh[key] for key in sorted(missing)})
+        reasons.append(f"added {', '.join(sorted(missing))}")
+    if definition["content_hash"] != validate.content_hash(definition) or (
+        definition["requires"] != validate.requires(definition)
+    ):
+        if definition.get("source") != "learned":
+            # An imported skill's hash is its provenance claim; content that
+            # no longer matches it isn't that skill any more.
+            raise SkillValidationError("content does not match content_hash")
+        # A learned skill edited by hand on this machine: a new revision.
+        definition["content_hash"] = validate.content_hash(definition)
+        definition["requires"] = validate.requires(definition)
+        if isinstance(definition.get("version"), int) and not isinstance(definition["version"], bool):
+            definition["version"] += 1
+        reasons.append("content changed on disk")
+    validate.validate_metadata(definition)
+    if definition["id"] in seen_ids:
+        raise SkillValidationError(f"duplicate id {definition['id']}")
+
+    if reasons:
+        _write_atomic(path, definition)
+        log_event("skill_migrated", name=name, path=str(path), reasons=reasons)
+    seen_ids.add(definition["id"])
+    _register_definition(definition, path)
+
+
+def load_generated_skills() -> None:
+    """(Re)load every generated skill from GENERATED_DIR. A file that fails
+    validation is logged as skill_load_rejected and skipped -- one bad file
+    never stops startup or the other skills loading."""
+    for name in [n for n, s in SKILLS.items() if s.get("origin") == "generated"]:
+        SKILLS.pop(name)
     if not GENERATED_DIR.exists():
         return
+    seen_ids: set = set()
     for path in sorted(GENERATED_DIR.glob("*.json")):
         try:
-            _load_generated_skill(path)
-        except Exception:
-            continue  # a malformed generated-skill file shouldn't break startup
+            _load_generated_skill(path, seen_ids)
+        except (SkillValidationError, OSError, ValueError, TypeError, KeyError, AttributeError) as e:
+            log_event("skill_load_rejected", path=str(path), reason=str(e) or type(e).__name__)
 
 
-_load_all_generated_skills()
+load_generated_skills()
 
 
-def register_skill(definition: dict) -> None:
-    """Persist a newly-approved generated skill to disk and make it usable
-    immediately in this running process, no restart needed."""
+def available_name(name: str) -> str:
+    """name, or name_2, name_3... -- the first that no tool, skill, or file
+    on disk already has. An invalid name comes back unchanged, so the
+    validator reports it rather than this papering over it."""
+    try:
+        validate.check_name(name)
+    except SkillValidationError:
+        return name
+    candidate, n = name, 1
+    while candidate in SKILLS or candidate in TOOLS or (GENERATED_DIR / f"{candidate}.json").exists():
+        n += 1
+        suffix = f"_{n}"
+        candidate = name[: 64 - len(suffix)] + suffix
+    return candidate
+
+
+def register_skill(definition: dict) -> dict:
+    """Validate a newly-approved generated skill, stamp its metadata, write
+    it, and make it usable in this running process with no restart. Returns
+    {"ok": False, "error"} instead of raising; nothing is written unless the
+    whole definition validates."""
+    try:
+        path = skill_path(GENERATED_DIR, definition.get("name"))
+        content = {k: v for k, v in definition.items() if k not in validate.METADATA_KEYS}
+        validate.validate_content(content, **validation_kwargs())
+        full = {**content, **validate.new_metadata(content, created_at=time.time())}
+        validate.validate(full, **validation_kwargs())
+    except (SkillValidationError, KeyError, TypeError, AttributeError, ValueError) as e:
+        return {"ok": False, "error": str(e)}
+
+    existing = SKILLS.get(full["name"])
+    if existing is not None:
+        if existing.get("origin") == "generated" and existing.get("content_hash") == full["content_hash"]:
+            return {"ok": True, "name": full["name"], "id": existing["id"], "unchanged": True}
+        return {"ok": False, "error": f"a skill named {full['name']!r} already exists"}
+    if path.exists() or path.is_symlink():
+        # Most likely a file that was rejected at load; don't clobber it.
+        return {"ok": False, "error": f"{path.name} already exists on disk"}
+
     GENERATED_DIR.mkdir(parents=True, exist_ok=True)
-    path = GENERATED_DIR / f"{definition['name']}.json"
-    path.write_text(json.dumps(definition, indent=2))
-    _load_generated_skill(path)
+    _write_atomic(path, full)
+    _register_definition(full, path)
+    return {"ok": True, "name": full["name"], "id": full["id"], "content_hash": full["content_hash"]}
 
 
 def delete_skill(name: str) -> dict:

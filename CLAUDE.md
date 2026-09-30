@@ -72,6 +72,18 @@ tool function directly from a skill.
 to `agent/agent/skills/generated/*.json` (gitignored) and executed by the one reviewed
 interpreter, `skills/template_skill.py:run_template()`. Skill learning must never emit Python.
 
+**Generated skills call tools only, and are validated on every way in.** A generated step's
+`tool` must be a registered tool, never a skill (hand-written or generated): every learned
+skill stays a flat, auditable step list with no recursion and nothing hidden behind another
+skill's name. `skills/validate.py` is the format contract, written to hold for a file nobody
+on this machine wrote (a future shared skill): it runs at proposal, at `register_skill()`, and
+at load, where a bad file is logged as `skill_load_rejected` and skipped, never fatal. A
+generated skill's name can't be a tool's or built-in skill's (dispatch resolves skills first,
+so it would shadow it — BUGS.md #23), and its file path comes only from the validated name.
+`content_hash` covers steps + the behavioural part of `input_schema`, deliberately not prose;
+changing what it covers means bumping `HASH_DOMAIN`. Placeholders are `{param}` with `{{`/`}}`
+escapes, substituted in one pass — never go back to `str.format` (BUGS.md #24).
+
 **GUI control is the one thing that isn't safe by construction.** The `scoped` tier
 (`focus_app`, `type_text`, `press_keys`) is gated per *target app* for a time-boxed
 window rather than per call, because nobody approves 200 keystrokes. `core/ui_access.py`

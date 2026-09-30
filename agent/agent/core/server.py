@@ -363,9 +363,14 @@ async def _read_loop(websocket, pending: dict, pending_skills: dict):
             definition = pending_skills.pop(payload.get("id"), None)
             if definition and payload.get("approved"):
                 finalized = skill_learning.finalize_definition(definition, payload.get("resolutions", {}))
-                register_skill(finalized)
-                log_event("skill_registered", name=finalized["name"])
-                await websocket.send(json.dumps({"type": "skill_saved", "name": finalized["name"]}))
+                saved = register_skill(finalized)
+                if saved.get("ok"):
+                    log_event("skill_registered", name=finalized["name"], id=saved.get("id"))
+                    await websocket.send(json.dumps({"type": "skill_saved", "name": finalized["name"]}))
+                else:
+                    # Validated at proposal time, so this means the user's
+                    # answers or a same-named skill saved since broke it.
+                    log_event("skill_register_rejected", name=finalized.get("name"), reason=saved.get("error"))
             elif definition:
                 log_event(
                     "skill_declined",
