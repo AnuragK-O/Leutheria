@@ -38,9 +38,11 @@ async def run(backend, user_text: str, websocket=None, pending: dict = None) -> 
     """
     # Prior turns come first so a follow-up ("add that too", "put it in the
     # same note") has an antecedent. Only plain user/assistant text is
-    # carried -- the tool_use/tool_result blocks below stay local to this
-    # request, since replaying a stale tool trace invites the model to treat
-    # an old result as still true.
+    # carried; which tools ran is summarised separately in the system prompt
+    # (session.record_actions, BUGS.md #21) -- the
+    # tool_use/tool_result blocks below stay local to this request, since
+    # replaying a stale tool trace invites the model to treat an old result
+    # as still true.
     messages = session.history() + [{"role": "user", "content": user_text}]
     tools = anthropic_tool_schemas() + anthropic_skill_schemas()
     loop = asyncio.get_running_loop()
@@ -57,6 +59,7 @@ async def run(backend, user_text: str, websocket=None, pending: dict = None) -> 
         if not turn.tool_calls:
             session.remember("user", user_text)
             session.remember("assistant", turn.text)
+            session.record_actions(user_text, trace)
             return {"type": "response", "text": turn.text, "trace": trace}
 
         messages.append({"role": "assistant", "content": turn.content})

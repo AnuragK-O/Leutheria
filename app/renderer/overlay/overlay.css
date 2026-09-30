@@ -1,0 +1,343 @@
+/* ==========================================================================
+   Activation overlay
+   A floating "island" (asset slot + state label + one line of text) with an
+   optional compact confirmation card under it. The window is transparent and
+   click-through; everything visible lives inside .stage.
+
+   Custom properties the frame maintains (usable by placeholders and assets):
+     --level      0..1, smoothed mic level (audio_level), ~15 Hz
+     --slot-size  side of the square asset slot (manifest "size", default 56px)
+   ========================================================================== */
+
+:root {
+  --level: 0;
+  --slot-size: 56px;
+  --island-bg: rgba(23, 19, 31, 0.9);
+  --island-border: rgba(166, 139, 240, 0.22);
+  --island-shadow: 0 10px 34px rgba(0, 0, 0, 0.45), 0 1px 0 rgba(255, 255, 255, 0.04) inset;
+  --orb-core: #b9a3f5;
+  --orb-mid: var(--violet-500);
+  --orb-edge: var(--violet-700);
+  --ring: rgba(166, 139, 240, 0.55);
+}
+
+[data-theme="light"] {
+  --island-bg: rgba(255, 255, 255, 0.94);
+  --island-border: rgba(120, 86, 196, 0.2);
+  --island-shadow: 0 10px 30px rgba(25, 19, 35, 0.16), 0 1px 3px rgba(25, 19, 35, 0.08);
+  --orb-core: #a68bf0;
+  --orb-mid: var(--violet-600);
+  --orb-edge: var(--violet-700);
+  --ring: rgba(120, 86, 196, 0.45);
+}
+
+html,
+body {
+  background: transparent;
+}
+
+body {
+  user-select: none;
+  cursor: default;
+}
+
+.stage {
+  width: 420px;
+  margin: 10px auto 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: opacity 0.4s var(--ease), transform 0.4s var(--ease);
+}
+
+/* Entering: the island drops in from the top edge. Leaving (session_ended):
+   fades back up. main.js keeps the window mapped for OVERLAY_LINGER_MS so
+   this can finish. */
+body.leaving .stage {
+  opacity: 0;
+  transform: translateY(-8px) scale(0.97);
+}
+
+/* --- island ----------------------------------------------------------- */
+
+.island {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 18px 10px 12px;
+  min-height: calc(var(--slot-size) + 20px);
+  border-radius: calc((var(--slot-size) + 20px) / 2);
+  background: var(--island-bg);
+  border: 1px solid var(--island-border);
+  box-shadow: var(--island-shadow);
+  transition: border-color 0.3s;
+}
+
+.island[data-state="awaiting_confirmation"] {
+  border-color: color-mix(in srgb, var(--warning) 50%, transparent);
+}
+
+.island-text {
+  min-width: 0;
+  flex: 1;
+}
+
+.island-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.island[data-state="awaiting_confirmation"] .island-label {
+  color: var(--warning);
+}
+
+.island-line {
+  margin-top: 1px;
+  font-size: 13.5px;
+  line-height: 1.4;
+  color: var(--text);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.island-line.hint {
+  color: var(--text-muted);
+}
+
+.island-line.quote::before {
+  content: "\201C";
+}
+.island-line.quote::after {
+  content: "\201D";
+}
+
+/* --- asset slot ------------------------------------------------------- */
+
+.slot {
+  position: relative;
+  width: var(--slot-size);
+  height: var(--slot-size);
+  flex: none;
+  display: grid;
+  place-items: center;
+}
+
+.slot > * {
+  grid-area: 1 / 1;
+}
+
+.slot img,
+.slot video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* Optional manifest "react" hooks for image/video assets. */
+.slot [data-react="scale"] {
+  transform: scale(calc(1 + var(--level) * 0.18));
+  transition: transform 0.09s linear;
+}
+.slot [data-react="glow"] {
+  filter: drop-shadow(0 0 calc(var(--level) * 14px) var(--ring));
+  transition: filter 0.09s linear;
+}
+
+/* --- CSS placeholder: the orb ------------------------------------------
+   One element, restyled per state via [data-state] on .island. Replace any
+   state with a real asset in assets/manifest.json -- nothing here needs to
+   change. */
+
+.orb {
+  position: relative;
+  width: 64%;
+  height: 64%;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, var(--orb-core), var(--orb-mid) 55%, var(--orb-edge));
+  box-shadow: 0 0 calc(6px + var(--level) * 22px) color-mix(in srgb, var(--orb-mid) 70%, transparent);
+  transform: scale(calc(0.92 + var(--level) * 0.22));
+  transition: transform 0.09s linear, box-shadow 0.09s linear, filter 0.3s;
+}
+
+/* The ring around the orb: grows with the mic level while listening. */
+.orb::before,
+.orb::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  border: 1.5px solid var(--ring);
+  opacity: calc(0.25 + var(--level) * 0.75);
+  transform: scale(calc(0.96 + var(--level) * 0.14));
+  transition: transform 0.09s linear, opacity 0.09s linear;
+}
+
+.orb::after {
+  inset: -6px;
+  border-color: transparent;
+  opacity: 0;
+}
+
+/* listening: breathing, level-reactive */
+.island[data-state="listening"] .orb {
+  animation: breathe 3.2s ease-in-out infinite;
+}
+
+/* hearing: the ring doubles and tracks the voice harder */
+.island[data-state="hearing"] .orb {
+  transform: scale(calc(0.96 + var(--level) * 0.2));
+}
+.island[data-state="hearing"] .orb::after {
+  inset: -10px;
+  border-color: var(--ring);
+  opacity: calc(var(--level) * 0.9);
+  transform: scale(calc(0.92 + var(--level) * 0.1));
+}
+
+/* transcribing: a spinning arc replaces the ring */
+.island[data-state="transcribing"] .orb::before {
+  border-color: transparent;
+  border-top-color: var(--accent);
+  border-right-color: var(--accent);
+  opacity: 1;
+  animation: spin 0.9s linear infinite;
+}
+
+/* thinking: the orb's light rotates -- slower, calmer than transcribing */
+.island[data-state="thinking"] .orb {
+  background: conic-gradient(from 0deg, var(--orb-edge), var(--orb-core), var(--orb-mid), var(--orb-edge));
+  animation: spin 2.4s linear infinite;
+}
+.island[data-state="thinking"] .orb::before {
+  opacity: 0.35;
+}
+
+/* speaking: steady rhythmic pulse outward */
+.island[data-state="speaking"] .orb::before,
+.island[data-state="speaking"] .orb::after {
+  border-color: var(--ring);
+  animation: ripple 1.6s var(--ease) infinite;
+}
+.island[data-state="speaking"] .orb::after {
+  animation-delay: 0.8s;
+}
+
+/* awaiting_confirmation: amber, waiting on the user */
+.island[data-state="awaiting_confirmation"] {
+  --orb-core: #f3d596;
+  --orb-mid: var(--warning);
+  --orb-edge: #9a6c17;
+  --ring: color-mix(in srgb, var(--warning) 60%, transparent);
+}
+.island[data-state="awaiting_confirmation"] .orb {
+  animation: breathe 1.8s ease-in-out infinite;
+}
+
+@keyframes breathe {
+  50% {
+    filter: brightness(1.18);
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes ripple {
+  from {
+    transform: scale(0.9);
+    opacity: 0.8;
+  }
+  to {
+    transform: scale(1.3);
+    opacity: 0;
+  }
+}
+
+/* --- compact confirmation card ---------------------------------------- */
+
+.ov-confirm {
+  border-radius: var(--radius-lg);
+  background: var(--island-bg);
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border));
+  box-shadow: var(--island-shadow);
+  overflow: hidden;
+  animation: drop 0.24s var(--ease);
+}
+
+.ov-confirm-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: var(--warning-soft);
+  color: var(--warning);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.ov-confirm-head svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
+.ov-confirm-body {
+  padding: 10px 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ov-confirm-cmd {
+  max-height: 3.2em;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.ov-confirm-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ov-confirm-hint {
+  flex: 1;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.ov-confirm-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.ov-confirm-resolved {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.ov-confirm-resolved svg {
+  width: 14px;
+  height: 14px;
+}
+
+@keyframes drop {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}

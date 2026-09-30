@@ -144,7 +144,9 @@
   function resolveConfirmCard({ id, approved, by }) {
     const settle = confirmCards.get(id);
     if (!settle) return;
-    settle(`${approved ? "Approved" : "Declined"} by ${by === "voice" ? "voice" : "you"}.`);
+    settle(
+      `${approved ? "Approved" : "Declined"} ${by === "voice" ? "by voice" : by === "ui" ? "from the overlay" : "by you"}.`
+    );
   }
 
   // --- skill proposal card -----------------------------------------------
@@ -277,11 +279,6 @@
   window.leutheria.onConfirmRequest(addConfirmCard);
   window.leutheria.onConfirmResolved(resolveConfirmCard);
   window.leutheria.onSkillProposed(addProposalCard);
-  window.leutheria.onSpeech((base64Wav) => {
-    new Audio(`data:audio/wav;base64,${base64Wav}`)
-      .play()
-      .catch((err) => toast(`Couldn't play speech: ${err.message}`, "error"));
-  });
 
   setMicIcon(false);
   showEmptyState();

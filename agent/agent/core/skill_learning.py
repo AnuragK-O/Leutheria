@@ -1,7 +1,9 @@
 import json
 
-from agent.core.logging_util import LOG_FILE
-from agent.skills.registry import SKILLS
+from agent.core.logging_util import LOG_FILE, log_event
+from agent.skills import validate
+from agent.skills.registry import SKILLS, available_name, validation_kwargs
+from agent.skills.template_skill import TOKEN_RE, escape_literal, placeholders
 
 NOT_APPLICABLE = object()  # sentinel: "don't consider a proposal at all" (distinct from
                             # None, which means "consider it, but no past example exists")
@@ -60,6 +62,11 @@ def check_before_logging(response: dict):
         return NOT_APPLICABLE
     trace = response.get("trace") or []
     if len(trace) < 2 or not is_clean_success(trace):
+        return NOT_APPLICABLE
+    # Generated skills call tools only (skills/validate.py), so a trace that
+    # used a skill could never produce a saveable proposal -- don't spend an
+    # LLM call generating one.
+    if any(step.get("tool") in SKILLS for step in trace):
         return NOT_APPLICABLE
     if has_matching_skill(trace) or has_declined_signature(trace):
         return NOT_APPLICABLE
@@ -161,16 +168,16 @@ Respond with ONLY a JSON object (no prose, no markdown fences) with this exact s
 
 Compare the two examples to figure out which argument values are constant (keep them
 literal) versus which varied (replace with a {{param_name}} placeholder and add that
-param to input_schema). Use the exact tool names and argument names from the examples."""
+param to input_schema). Use the exact tool names and argument names from the examples.
+Every declared param must be used by at least one step. Write any literal brace in an
+argument value as {{{{ or }}}}."""
 
     turn = backend.generate([{"role": "user", "content": prompt}], [])
     definition = _extract_json(turn.text)
     if definition is None:
         return None
 
-    definition.setdefault("uncertain_params", [])
-    definition["source_signature"] = list(_signature(trace))
-    return definition
+    return _prepare(definition, trace)
 
 
 def generate_skill_definition_single(backend, trace: list, user_text: str = ""):
@@ -213,15 +220,55 @@ vary or stay constant. A specific name the user explicitly mentioned in their re
 (like a project name) is clearly a real parameter -- put it straight into "steps" and
 "input_schema", not "uncertain_params". Something like a location that only appeared
 once (e.g. "~/Desktop") is a good candidate for "uncertain_params", since a single
-example can't tell you whether the user always means that exact place."""
+example can't tell you whether the user always means that exact place. An uncertain param
+must still be a {{param}} placeholder in "steps" and declared in "input_schema": if the user
+says it's fixed, its guessed_value gets baked back in. Every declared param must be used
+by at least one step. Write any literal brace in an argument value as {{{{ or }}}}."""
 
     turn = backend.generate([{"role": "user", "content": prompt}], [])
     definition = _extract_json(turn.text)
     if definition is None:
         return None
 
-    definition.setdefault("uncertain_params", [])
+    return _prepare(definition, trace)
+
+
+def _prepare(definition, trace: list):
+    """Turn raw model output into a proposal that is known to be saveable,
+    or None. Runs before anything is shown to the user: a proposal that
+    would fail validation at Save time is a Save button that can't work.
+
+    Keeps only the keys the format defines (the model sometimes adds its
+    own), drops malformed uncertain_params entries (each one dropped just
+    stays a real parameter -- the fail-toward-flexibility default), picks a
+    free name, and validates the all-"it varies" outcome, which is the one
+    that keeps every placeholder.
+    """
+    if not isinstance(definition, dict):
+        return None
+    definition = {k: v for k, v in definition.items() if k in validate.CONTENT_KEYS | {"uncertain_params"}}
     definition["source_signature"] = list(_signature(trace))
+
+    properties = (definition.get("input_schema") or {}).get("properties") or {}
+    uncertain = definition.get("uncertain_params")
+    definition["uncertain_params"] = [
+        item
+        for item in (uncertain if isinstance(uncertain, list) else [])
+        if isinstance(item, dict)
+        and isinstance(item.get("name"), str)
+        and item["name"] in properties
+        and isinstance(item.get("guessed_value"), (str, int, float))
+        and not isinstance(item.get("guessed_value"), bool)
+        and isinstance(item.get("question"), str)
+    ]
+
+    if isinstance(definition.get("name"), str):
+        definition["name"] = available_name(definition["name"])
+    try:
+        validate.validate_content(finalize_definition(definition, {}), **validation_kwargs())
+    except (validate.SkillValidationError, KeyError, TypeError, AttributeError) as e:
+        log_event("skill_proposal_rejected", name=str(definition.get("name")), reason=str(e))
+        return None
     return definition
 
 
@@ -232,26 +279,40 @@ def finalize_definition(definition: dict, resolutions: dict) -> dict:
     input_schema; otherwise leave it as a real parameter. Unanswered
     params default to staying a parameter (fail toward flexibility, not
     toward silently hardcoding something that might actually vary).
+
+    Baking is token-aware and escapes the literal: a guessed value of
+    "{text}" is baked as the literal text "{text}", not turned into a new
+    placeholder (BUGS.md #25). Afterwards any optional parameter no step
+    uses is pruned -- it would do nothing, and the validator rejects it.
     """
     definition = json.loads(json.dumps(definition))  # deep copy
     uncertain = definition.pop("uncertain_params", [])
 
     def _bake(value, name, literal):
         if isinstance(value, str):
-            return value.replace("{" + name + "}", literal)
+            return TOKEN_RE.sub(lambda m: literal if m.group(1) == name else m.group(0), value)
         if isinstance(value, dict):
             return {k: _bake(v, name, literal) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_bake(v, name, literal) for v in value]
         return value
 
+    schema = definition["input_schema"]
     for item in uncertain:
         name = item["name"]
         if resolutions.get(name, True):  # True = "it varies" = keep as a param
             continue
-        literal = item["guessed_value"]
+        literal = escape_literal(str(item["guessed_value"]))
         for step in definition["steps"]:
             step["args"] = _bake(step["args"], name, literal)
-        definition["input_schema"]["properties"].pop(name, None)
-        if name in definition["input_schema"].get("required", []):
-            definition["input_schema"]["required"].remove(name)
+        schema["properties"].pop(name, None)
+        if name in schema.get("required", []):
+            schema["required"].remove(name)
+
+    used = set().union(*(placeholders(step.get("args")) for step in definition["steps"]))
+    required = set(schema.get("required") or [])
+    for name in list(schema.get("properties") or {}):
+        if name not in used and name not in required:
+            schema["properties"].pop(name)
 
     return definition

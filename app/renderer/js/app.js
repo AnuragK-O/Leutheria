@@ -9,6 +9,7 @@
     { id: "library", label: "Library", title: "Library" },
     { id: "activity", label: "Activity", title: "Activity" },
     { id: "permissions", label: "Permissions", title: "Permissions" },
+    { id: "voice", label: "Voice", title: "Voice" },
     { id: "logs", label: "Logs", title: "Logs" },
   ];
 
@@ -65,6 +66,9 @@
     renderActions();
     const mod = module(id);
     if (mod && mod.render) mod.render();
+    // show() is for work that belongs to opening a view (re-reading data),
+    // not to every re-render -- render() also runs on each inventory refresh.
+    if (mod && mod.show) mod.show();
     if (id === "assistant") LX.chat.focus();
   }
 
@@ -92,11 +96,19 @@
 
   window.leutheria.onInventoryChanged(refresh);
 
-  window.leutheria.onStatus((status) => {
+  function showStatus(status) {
     statusEl.dataset.state = status;
     statusEl.querySelector(".status-text").textContent = status;
+  }
+
+  window.leutheria.onStatus((status) => {
+    showStatus(status);
     if (status === "connected") refresh();
   });
+
+  // The bridge can connect before this page is listening (a fast agent, or
+  // the window reopened later), so ask rather than wait for an event -- BUGS.md #18.
+  window.leutheria.getStatus().then(showStatus);
 
   // --- theme -------------------------------------------------------------
 

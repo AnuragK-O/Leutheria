@@ -127,6 +127,13 @@ def snapshot() -> dict:
                 "source_signature": skill.get("source_signature"),
                 "created_at": skill.get("created_at"),
                 "deletable": skill.get("origin") == "generated",
+                # Format metadata (skills/validate.py); None for hand-written
+                # skills. Not rendered by the Library yet.
+                "id": skill.get("id"),
+                "version": skill.get("version"),
+                "source": skill.get("source"),
+                "content_hash": skill.get("content_hash"),
+                "requires": skill.get("requires"),
             },
         )
         for name, skill in SKILLS.items()

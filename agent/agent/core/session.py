@@ -25,15 +25,18 @@ open-ended ("anything typed into Bear for the next 15 minutes") and shouldn't
 outlive the session that asked for it.
 """
 
+import json
 import time
 
 GRANT_DURATION = 15 * 60  # seconds an app stays drivable after one approval
 CONVERSATION_IDLE = 10 * 60  # seconds of silence that ends a conversation
 MAX_HISTORY_TURNS = 12  # plain turns kept (user + assistant counted separately)
+MAX_ACTION_RECORDS = 6  # recent requests whose tool calls are listed in the prompt
 
 _focus: dict = {}
 _grants: dict = {}  # canonical app name -> unix expiry
 _history: list = []
+_actions: list = []  # [{"request", "steps": [str], "at"}], oldest first
 _last_activity: float = 0.0
 
 
@@ -101,9 +104,10 @@ def _expire_if_idle() -> None:
     """A conversation is over once it's been quiet long enough. Without this,
     a request hours later would silently inherit the last one's context and
     resolve "it"/"that" against something the user has long forgotten."""
-    global _history
+    global _history, _actions
     if _last_activity and time.time() - _last_activity > CONVERSATION_IDLE:
         _history = []
+        _actions = []
         clear_focus()
 
 
@@ -122,8 +126,31 @@ def remember(role: str, text: str) -> None:
 
 
 def clear_history() -> None:
-    global _history
+    global _history, _actions
     _history = []
+    _actions = []
+
+
+def record_actions(request: str, trace: list) -> None:
+    """Remember which tools a request actually ran, and whether each worked.
+
+    History carries only text, and text alone made the model disown its own
+    past replies: shown "Ran it -- the output was Hello" with no tool call
+    behind it, it concluded it had made that up and asked to run the command
+    again (BUGS.md #21). This is the evidence, kept to names, arguments and
+    outcome -- never result payloads, which are the stale state the text-only
+    rule exists to keep out. It lives in the system prompt rather than being
+    appended to the assistant's turn so the model never learns to imitate a
+    bracketed annotation in replies that get read aloud."""
+    if not trace:
+        return
+    steps = []
+    for step in trace:
+        args = ", ".join(f"{k}={json.dumps(v)[:60]}" for k, v in step["args"].items())
+        ok = isinstance(step["result"], dict) and step["result"].get("ok")
+        steps.append(f"{step['tool']}({args}) {'succeeded' if ok else 'failed or was declined'}")
+    _actions.append({"request": request[:80], "steps": steps, "at": time.time()})
+    del _actions[:-MAX_ACTION_RECORDS]
 
 
 def context_note() -> str:
@@ -138,6 +165,16 @@ def context_note() -> str:
             "If the user refers to a document, note, or window without naming an app, "
             "they almost certainly mean this one."
         )
+    _expire_if_idle()
+    if _actions:
+        lines.append(
+            "Tools you actually ran earlier in this conversation (already done -- these are past "
+            "events, not current state):"
+        )
+        for record in _actions:
+            minutes = int((time.time() - record["at"]) // 60)
+            ago = "just now" if minutes < 1 else f"{minutes} min ago"
+            lines.append(f"- {ago}, for \"{record['request']}\": {'; '.join(record['steps'])}")
     grants = active_grants()
     if grants:
         allowed = ", ".join(g["app"] for g in grants)

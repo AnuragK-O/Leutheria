@@ -16,14 +16,18 @@ Electron (app/)
 ---------------
 main.js
   - spawns the Python agent, owns the WebSocket connection
-  - event stream one way (chat/confirm/speech), request/response the other
-    (inventory reads + preference writes, matched by request_id)
+  - event stream one way (chat/confirm/voice state), request/response the other
+    (inventory reads, preference + voice-setting writes, matched by request_id)
+  - hosts the activation overlay, the menu bar item and the Alt+Space shortcut
 renderer/
-  - Assistant     chat, mic, confirmation + skill-proposal cards, plays TTS audio
+  - Assistant     chat, push-to-talk mic, confirmation + skill-proposal cards, voice-state indicator
   - Library       every tool and skill: inspect, enable/disable, ask-first, delete
   - Activity      skill history + what actually gets used
   - Permissions   standing approvals and customized capabilities
   - Logs          the raw bridge stream
+renderer/overlay/
+  - floating, click-through "island" shown during a voice session; assets
+    come from overlay/assets/manifest.json
 
         |
         |  ws://127.0.0.1:8765 -- JSON messages, both directions
@@ -41,8 +45,16 @@ server.py
                      trust.py, skills/registry.py
     answered inline -- never touches the LLM, never blocks a command
 
-  "audio" message
-    -> audio_input.py -> stt.py (Whisper) -> transcript text
+  voice_session.py (not a message -- runs on its own from startup)
+    mic (sounddevice) -> openWakeWord "hey jarvis" -> Silero VAD endpointing
+    -> stt.py (Whisper) -> dismissal? end : transcript text ----------+
+    muted while tts.py is playing (half-duplex)                       |
+                                                                      |
+  "audio" message (push-to-talk)                                      |
+    -> audio_input.py -> stt.py (Whisper) -> transcript text          |
+                                                   |                  |
+                        server.handle_transcript <-+------------------+
+                        (a pending yes/no is answered here, else:)
                                                    |
   "text" (typed, or a transcript from above) <-----+
     |
@@ -78,7 +90,8 @@ server.py
   once agent_loop gets a final text reply (no more tool calls):
     |
     v
-  tts.py (Piper) -> "speech" message -> Electron plays it
+  tts.py (Piper) -> played through the speakers by the agent itself,
+                    bracketed by "speaking" started/ended messages
 
   meanwhile, if the trace had >= 2 tool calls and no skill covers it yet
   (skill_learning.py, checked against logs/events.jsonl BEFORE this
@@ -101,7 +114,8 @@ skill pauses exactly the same way a directly-called destructive tool would.
 
 ```
 app/                  Electron shell
-  main.js             Spawns the Python agent, connects to it over WebSocket, hosts the window
+  main.js             Spawns the Python agent, connects to it over WebSocket, hosts the main
+                       window, the voice overlay, the menu bar item and the global shortcut
   preload.js           Bridges the agent event stream + the management request/response calls
                        into the renderer safely (contextBridge, no node access in the page)
   renderer/
@@ -115,6 +129,13 @@ app/                  Electron shell
       activity.js      Activity view: skill history timeline + usage stats
       permissions.js   Permissions view: standing approvals, customized capabilities
       logs.js          Logs view: the raw bridge stream
+      voice.js         Header voice-state indicator (click to start/stop a session)
+      voice-settings.js  Voice view: wake word, timeouts, dismiss phrases, input device
+    overlay/
+      overlay.html/.css/.js  The activation overlay (reuses styles.css tokens + util.js)
+      assets/          Drop-in visuals: manifest.json + README.md for the asset designer
+  scripts/
+    mock-agent.js      Scripted stand-in agent (port 8799) for testing the Electron side
 
 agent/                Python sidecar
   preferences.json     Per-capability enabled / ask-first overrides set from the Library
@@ -124,11 +145,27 @@ agent/                Python sidecar
                        beyond restarting the agent process.
   trusted_commands.json  Permanently-trusted (tool, args) pairs (gitignored -- local
                        state, not source). See trust.py below.
+  voice_settings.json  Voice session settings set from the UI (gitignored -- local state)
+  scripts/
+    voice_sim.py       Drives the voice session with synthesized speech instead of the mic
+                       and checks the state/message sequence per scenario
+    voice_server_check.py  End-to-end: real server on a side port, a WAV as the mic,
+                       the voice control messages, settings persistence
+    skill_format_check.py  Generated-skill format: metadata, validation rules, load /
+                       migrate / reject, placeholder substitution (temp dirs only)
   .venv/              Virtualenv (gitignored)
   agent/
     core/
-      server.py        WebSocket server, message routing (max_size=20MB -- a long spoken
-                       reply's audio can exceed the 1MB library default, see BUGS.md #7)
+      server.py        WebSocket server, message routing, the primary-connection registry
+                       voice commands run on, and the one transcript path shared by
+                       push-to-talk and the voice session (max_size=20MB -- a long
+                       push-to-talk upload can exceed the 1MB library default, BUGS.md #7)
+      voice_session.py  The always-listening state machine: wake word (openWakeWord), VAD
+                        endpointing (Silero), Whisper, dismissal, silence timeout,
+                        half-duplex muting while Leutheria speaks
+      voice_settings.py Voice settings: defaults, validation, agent/voice_settings.json
+      audio_io.py       Mic frames (sounddevice), the WAV stand-in source used in tests,
+                        and speaker playback
       dispatcher.py     Routes {tool, args} payloads to tools and skills; refuses anything
                         disabled in preferences.py, then pauses for a live confirmation
                         round-trip when the capability asks first (destructive by default,
@@ -156,9 +193,10 @@ agent/                Python sidecar
                         results back until Claude gives a final answer (capped at 6 turns)
       audio_input.py    Decodes a base64 audio payload to a temp file, hands off to stt.py
       stt.py            Local Whisper ("base" model) transcription
-      tts.py            Local Piper ("en_US-amy-medium" voice) speech synthesis; speak()
-                        is shared by server.py (final replies) and dispatcher.py
-                        (spoken confirmation prompts)
+      tts.py            Local Piper ("en_US-amy-medium" voice) speech synthesis, played
+                        through the Mac's speakers by the sidecar itself; speak() is
+                        shared by server.py (final replies) and dispatcher.py (spoken
+                        confirmation prompts)
       skill_learning.py Checks logs/events.jsonl for a matching past run, then asks
                         Claude to generalize into a skill definition -- confidently
                         from two examples if repeated, or from one example (flagging
@@ -187,8 +225,11 @@ agent/                Python sidecar
                         that packaging turned out to be more annoying to navigate than
                         it was worth for single-function tools, so it was reverted.
     skills/
-      registry.py       SKILLS dict + anthropic_skill_schemas(); loads generated/*.json at
-                        startup, plus register_skill() to add a new one at runtime
+      registry.py       SKILLS dict + anthropic_skill_schemas(); loads (and validates,
+                        and migrates) generated/*.json at startup, plus register_skill()
+                        to add a new one at runtime
+      validate.py       The generated-skill format contract: name/path rules, tools-only
+                        steps, placeholder and JSON checks, content_hash + metadata
       template_skill.py The one reviewed interpreter every generated skill runs through --
                         a generated skill is data (steps + {param} placeholders), never
                         new code
@@ -294,7 +335,7 @@ The sidebar's status dot goes green once the bridge is connected.
 
 ### The interface
 
-Five views in the left sidebar:
+Six views in the left sidebar:
 
 | view | what it's for |
 |---|---|
@@ -302,6 +343,7 @@ Five views in the left sidebar:
 | **Library** | Every tool and skill in one master/detail list. Select one to read its description and parameters, see how often it's actually been used, turn it off, make it always ask first, or (for a learned skill) inspect its steps and delete it. |
 | **Activity** | How the skill set has grown: every skill proposed, saved, or turned down, plus a most-used breakdown. |
 | **Permissions** | Standing approvals (the `remember: session/always` ones) with a revoke button, and every capability whose settings differ from its default, with a reset. |
+| **Voice** | Settings for the always-listening session: wake word on/off, which wake words, sensitivity, the end-of-utterance pause, the silence timeout, dismiss phrases, and the microphone. See below. |
 | **Logs** | The raw bridge stream, out of the way of the conversation. Copy or clear it. |
 
 Light and dark themes both ship; toggle at the bottom of the sidebar (the choice sticks).
@@ -323,6 +365,22 @@ Light and dark themes both ship; toggle at the bottom of the sidebar (the choice
 Both settings live in `agent/preferences.json` and survive restarts. Deleting a learned
 skill also clears its overrides, so a later skill that happens to reuse the name doesn't
 silently inherit the dead one's settings.
+
+**The Voice view.** Edits collect in a draft; **Save changes** sends one
+`set_voice_settings` carrying only the keys you changed, and **Revert** drops the draft.
+The form only checks that values are well-formed (a number, at least one wake word); the
+agent owns the ranges, and since it refuses the whole update on the first bad key, its
+message is shown against that field and nothing is saved. Changes apply live: turning
+listening off closes the mic and the header pill goes to Off.
+- **Wake words** lists openWakeWord's pretrained models (`list_wake_models`); ones not yet
+  on disk are marked and download the first time they're used. `timer` and `weather` are
+  intent models, not wake words. A custom trained `.onnx` can be added by path; the agent
+  checks the file exists before it's accepted.
+- **Microphone** lists input devices (`list_input_devices`, which only enumerates, never
+  opens a stream). A new pick is stored by name, which survives devices being renumbered.
+  PortAudio snapshots the device list when the agent starts, so a device plugged in later
+  shows up after a restart.
+- There is no "never" for the silence timeout: the agent requires at least 5 seconds.
 
 ### Testing the agentic loop
 
@@ -352,22 +410,182 @@ Click the mic button next to the input to start recording, click it again (now a
 square, pulsing red) to stop. macOS will prompt for microphone access the first time — grant it to
 Electron. On stop, the clip is sent to the agent, transcribed locally with Whisper, and the
 transcript appears as your own message (labelled `you · voice`) before the normal agentic loop
-runs on it exactly as if you'd typed it. There's no wake word or true "hold to talk" yet —
-it's click-to-start/click-to-stop for now, which is simpler to get right than global hotkey
-hold-detection and matches the roadmap's "push-to-talk is fine for now" scope.
+runs on it exactly as if you'd typed it. It's click-to-start/click-to-stop, which is
+simpler to get right than global hotkey hold-detection. For hands-free use there's now the
+always-listening voice session below; push-to-talk stays as the no-wake-word path, and both
+feed the same transcript handling in `server.py`.
 
 ### Voice output (TTS)
 
 Every final text reply is also spoken out loud automatically — no toggle needed. The
-agent synthesizes it locally with Piper right after sending the text response, and the
-audio plays as soon as it arrives in the renderer. This applies to typed, spoken, and
-tool-triggered replies alike, since it's wired in at the point where the final response
-is sent, not per input method. If synthesis fails for any reason, it's logged
-(`tts_error` in `agent/logs/events.jsonl`) but never blocks or delays the text reply
-itself — TTS is additive, not a dependency of the core loop.
+agent synthesizes it locally with Piper right after sending the text response and plays
+it through the Mac's speakers **itself** — the renderer never touches the audio. This
+applies to typed, spoken, and tool-triggered replies alike, since it's wired in at the
+point where the final response is sent, not per input method. If synthesis or playback
+fails for any reason, it's logged (`tts_error` in `agent/logs/events.jsonl`) but never
+blocks or delays the text reply itself — TTS is additive, not a dependency of the core
+loop.
+
+Why the sidecar plays it rather than the renderer (which it used to, via a base64
+`speech` message): the always-listening mic below must not hear Leutheria's own voice,
+and only the process driving the speaker knows exactly when playback starts and stops.
+It also means replies are heard with every window hidden. One voice at a time — two
+replies finishing together queue rather than talk over each other.
+
+### Always-listening voice session
+
+Say **"hey Jarvis"** (a pretrained openWakeWord model — a custom "hey Leutheria" needs a
+trained model, and drops in via the `wake_models` setting without code changes), then just
+talk. The session stays open across as many requests as you like: each is transcribed,
+run through the same agent loop as a typed command, and the reply spoken; then it's
+listening again. It ends when you say something that's essentially a goodbye — "thanks",
+"thank you", "that's all", "that's it", "we're done", "goodbye" — or after
+`silence_timeout_s` (default 3 minutes) with nothing said, or when you end it from the UI.
+A session can also be started without the wake word (`voice_session` `start`, below), and
+that works even with voice disabled — the mic opens for that one session and closes again.
+
+How it works, all in `agent/core/voice_session.py`:
+
+- The sidecar captures the mic itself (sounddevice, 16 kHz mono, 80 ms frames). Idle, each
+  frame goes to openWakeWord (ONNX — its default tflite backend has no Python 3.12 macOS
+  wheel). In a session, each frame goes to the Silero VAD that ships with openWakeWord
+  (picked over webrtcvad because it tells speech from steady noise — fans, keyboards,
+  music — much better, at no extra dependency).
+- An utterance ends after `endpoint_silence_ms` (800 ms) of trailing silence, and goes to
+  Whisper in an executor.
+- **Half-duplex:** while Leutheria is talking, plus a 300 ms echo tail, captured audio is
+  thrown away — no wake word, no VAD. There's no barge-in yet. While a command is running
+  (and not waiting on a confirmation) audio is discarded too: one command in flight.
+- **Guards against Whisper's hallucinations** — it famously "hears" "Thank you." in
+  silence, which would dismiss the session. An utterance only reaches Whisper if VAD heard
+  at least 300 ms of actual speech; segments with `no_speech_prob` over 0.6 are dropped;
+  a transcript that's only "hm"/"uh"/"um" is dropped; and a dismissal only counts if the
+  utterance is five words or fewer *and* nothing but the phrase plus filler ("okay, that's
+  all for now") — "thanks, what's the weather" is a request, not a goodbye.
+- **Confirmations work hands-free.** A destructive step's prompt is spoken, then the mic
+  opens (`awaiting_confirmation`) for a yes/no, answered through the same
+  `interpret_yes_no()` path as push-to-talk. Unlike push-to-talk, anything that *isn't* a
+  clear yes/no is shown in the chat but not run as a new command — a second command
+  starting while the first is paused on a question would break "one command in flight".
+  The card stays open for another try or a click.
+- Voice commands run on the most recently connected UI (the "primary"), so confirmation
+  cards and skill proposals land there. With no UI connected they still run — and a
+  destructive step fails closed, since there's nothing to confirm through.
+- No mic, a failed model download, a device unplugged mid-session: logged as
+  `voice_error`, voice goes to `off`, and everything else carries on. Any settings change
+  retries.
+
+macOS shows its orange mic indicator the whole time voice is enabled — the mic really is
+open. The first time, macOS asks for microphone permission for whatever launched the
+agent (Electron when run via `npm start`, your terminal when standalone).
+
+**Settings** (`agent/voice_settings.json`, gitignored; read and written over the protocol
+below, applied live):
+
+| setting | default | |
+|---|---|---|
+| `enabled` | `true` | wake word listening on/off |
+| `wake_models` | `["hey_jarvis"]` | pretrained openWakeWord names, or paths to a trained `.onnx` |
+| `wake_threshold` | `0.5` | 0–1 |
+| `silence_timeout_s` | `180` | a session with nothing said for this long ends |
+| `endpoint_silence_ms` | `800` | trailing silence that ends an utterance |
+| `dismiss_phrases` | thanks, thank you, that's all, that's it, we're done, goodbye | |
+| `input_device` | `null` | sounddevice index or name; `null` is the system default |
+
+**Testing it without a microphone.** Two scripts in `agent/scripts/`, neither of which
+opens the mic:
+
+```bash
+cd agent
+./.venv/bin/python scripts/voice_sim.py            # every scenario, ~2 min
+./.venv/bin/python scripts/voice_sim.py confirm    # one; --list names them
+./.venv/bin/python scripts/voice_server_check.py   # the real server on port 8781
+```
+
+`voice_sim.py` stitches Piper utterances ("Hey Jarvis." … "What time is it?" …
+"Thanks.") with silence and feeds them through the session's injectable frame source at
+real speed, wired to the real server hooks, and checks the exact `voice_state` sequence
+per scenario: dismissal, a long sentence containing "thanks" (not a dismissal), silence
+timeout, noise and blips (never a command), a spoken confirmation answered by voice, and a
+manual start/end. The agent loop is a canned responder and playback is a silent sleep, so
+it needs no API key and makes no sound (`--real-llm`, `--play` to change that).
+`voice_server_check.py` runs `python -m agent` with `LEUTHERIA_PORT=8781` and
+`LEUTHERIA_VOICE_SOURCE=<wav>` (a WAV in place of the mic — also usable by hand), then
+exercises the control messages, a live session through the real agent loop (needs the
+API key; the reply *is* played aloud), push-to-talk, and settings surviving a restart.
+It backs up and restores `voice_settings.json`.
 
 Note: `piper-tts` is GPL-3.0-or-later licensed. Fine for local development; worth
 revisiting the licensing implications before any public release/distribution.
+
+### Voice sessions: the overlay, menu bar and shortcut
+
+A voice session is the hands-free mode: once it starts, Leutheria keeps listening,
+answering and listening again until you say something like "thanks" or "that's all", or
+it hears nothing for a long while. The mic, wake word and playback all live in the
+Python sidecar; the Electron side only shows the session and starts or stops it.
+
+**Starting and stopping.** A session starts on the wake word, or manually from any of:
+- **⌥Space** (Alt+Space), a global shortcut that toggles a session from any app;
+- the **menu bar icon** → *Start listening* / *Stop listening* (only the one that makes
+  sense right now is enabled; the menu also has *Show Leutheria* and *Quit*);
+- the **voice indicator** at the right of the main window's header, which also shows the
+  current state: Off, Idle, Listening, Thinking, Speaking, or Needs approval.
+
+Closing the main window no longer stops the agent: a session keeps running, and the
+menu bar icon brings the window back.
+
+**The overlay** (`app/renderer/overlay/`) is a small floating "island" at the top-center
+of whichever display the cursor is on. It fades in when a session starts and out when it
+ends, and shows the state (listening, hearing, transcribing, thinking, speaking, waiting
+for approval), what you said, and a short form of the reply. It is built never to get in
+the way: it floats above full-screen apps and every Space, appears without taking focus,
+and is **click-through**; clicks land on whatever is underneath. The one exception is a
+confirmation: while a compact Approve / Decline card is showing, the overlay accepts
+clicks, and it goes click-through again as soon as the card is answered (by click, by
+voice, or from the main window's full card, which still offers the "remember" options).
+Answering in either place settles the other.
+
+The overlay follows the main window's light/dark choice (and the macOS appearance if none
+was made).
+
+**Visual assets** live in `app/renderer/overlay/assets/`. `manifest.json` maps each state
+to a built-in CSS placeholder, an image (png/gif/svg/webp) or a video (transparent webm);
+swapping in real artwork is a file copy plus a manifest edit, no code change. The mic level
+is exposed as the CSS variable `--level` (0 to 1) for reactive visuals. That folder's
+`README.md` is written for the asset designer: which states exist and when, formats and
+sizes, and how to preview.
+
+**Voice settings** (wake model, threshold, timeouts, dismiss phrases, input device) are
+edited in the **Voice** view (see The interface above), which uses
+`window.leutheria.getVoiceSettings()` / `setVoiceSettings(partial)` / `listInputDevices()` /
+`listWakeModels(paths)`: the `get_voice_settings` / `set_voice_settings` /
+`list_input_devices` / `list_wake_models` control messages.
+
+### Testing the Electron side without Python
+
+`app/scripts/mock-agent.js` is a scripted stand-in for the agent on port 8799 (never
+8765). It plays a complete voice session: wake, listening with mic levels, hearing,
+transcribing, a transcript, thinking, a confirmation (waits for a click, then "answers by
+voice" if none comes), the spoken reply, and a dismissal. It also answers the control
+messages, and a typed command containing "confirm" runs a push-to-talk confirmation round
+trip. Two environment variables point the app at it:
+
+| variable | effect |
+|---|---|
+| `LEUTHERIA_AGENT_URL` | Connect to this WebSocket URL instead of `ws://127.0.0.1:8765` |
+| `LEUTHERIA_NO_SPAWN=1` | Don't start (or pkill) the Python agent; keep retrying the connection instead |
+| `LEUTHERIA_CAPTURE_DIR` | Debug only: write a PNG of the overlay and main window on every voice-state change, into this folder (which also gets its own `userdata/`, so a debug run never shares storage with a real one) |
+| `LEUTHERIA_CAPTURE_THEME` | With the above: force the overlay to `light` or `dark` |
+
+```bash
+cd app
+node scripts/mock-agent.js &
+env -u ELECTRON_RUN_AS_NODE LEUTHERIA_AGENT_URL=ws://127.0.0.1:8799 LEUTHERIA_NO_SPAWN=1 npx electron .
+```
+
+`MOCK_LOOP=1` replays the session after each one ends; `MOCK_AUTOSTART=0` waits for
+⌥Space or the menu instead; `MOCK_CONFIRM_TIMEOUT_MS` sets how long it waits for a click.
 
 ## Running the Python agent standalone (no Electron)
 
@@ -379,7 +597,9 @@ cd agent
 ```
 
 This starts the WebSocket server at `ws://127.0.0.1:8765` and prints `AGENT_READY`
-once it's up. Leave it running in one terminal, then in another terminal use a small
+once it's up (`LEUTHERIA_PORT=8781` picks another port, to run beside the app). With voice
+enabled it also opens the microphone; `LEUTHERIA_VOICE_SOURCE=/path/to.wav` feeds that WAV
+in instead (at real speed, then silence), so the voice session can be driven without one. Leave it running in one terminal, then in another terminal use a small
 Python client to send it commands:
 
 ```bash
@@ -532,6 +752,82 @@ Declining is remembered — a `skill_declined` event records the tool-sequence s
 (not the generated name, which can vary between attempts), and that signature is checked
 before ever proposing again, so a declined pattern doesn't keep coming back.
 
+#### Generated skill format
+
+A generated skill is written to be safe to hand to someone else, even though nothing is
+shared yet: the rules below hold for a file nobody on this machine wrote, so they reject
+rather than repair. They live in `agent/skills/validate.py` and run at three points: when
+a proposal is generated (an invalid one is logged as `skill_proposal_rejected` and never
+shown — a Save button that can't work is worse than no proposal), when it's saved
+(`register_skill()`; nothing is written unless the whole definition passes), and when
+`generated/*.json` is loaded at startup (a bad file is logged as `skill_load_rejected` with
+the reason and skipped; it never stops startup or the other skills).
+
+```json
+{
+  "name": "make_and_list",
+  "description": "Create a folder and list what's inside it.",
+  "input_schema": {"type": "object",
+                   "properties": {"folder": {"type": "string", "description": "..."}},
+                   "required": ["folder"]},
+  "steps": [{"tool": "create_folder", "args": {"path": "~/Desktop/{folder}"}},
+            {"tool": "list_files",    "args": {"path": "~/Desktop/{folder}"}}],
+  "source_signature": ["create_folder", "list_files"],
+  "id": "3f0c…",                 "version": 1,        "source": "learned",
+  "content_hash": "9a1e…",       "requires": ["create_folder", "list_files"],
+  "created_at": 1790798842.2
+}
+```
+
+- **Steps call tools only, never skills** — hand-written or generated. Every generated
+  skill stays a flat list you can read top to bottom: no recursion, and nothing hidden
+  behind another skill's name. `run_template()` re-checks this at run time. A trace that
+  used a skill isn't proposed at all, since it could never validate.
+- **Name** matches `^[a-z][a-z0-9_]{0,63}$`, isn't a Windows device name (`con`, `nul`,
+  …), and isn't a tool's or hand-written skill's name — `dispatch()` resolves skills
+  first, so a generated skill named after a tool would shadow it. The file path is built
+  only from the validated name and must resolve directly inside `generated/`; on load the
+  file name must equal the name inside it, and symlinks are refused. A proposal whose
+  name is taken gets `_2`, `_3`… before it's shown.
+- **Steps**: 1–50 of exactly `{tool, args}`. `args` is plain JSON (no NaN/Infinity,
+  string keys, bounded depth/length), uses only argument names the tool declares, and
+  supplies every argument the tool requires.
+- **input_schema**: `type: object` with `properties` / `required` only; each parameter is
+  `string` / `number` / `integer` / `boolean` with optional `description`, `enum`,
+  `default`. At most 20.
+- **Placeholders**: every `{param}` must be declared, and every declared parameter must be
+  used by some step — an **error**, not a warning: a parameter the skill ignores is an
+  interface that lies to the model. `finalize_definition()` prunes unused *optional*
+  ones, so what fails is a genuinely broken generalization.
+- **description**: non-empty, at most 1000 characters. Unknown top-level keys are refused.
+
+**Placeholder grammar** (`template_skill.py`): `{param}` is replaced, `{{` / `}}` are
+literal braces, and anything else with braces — `{}`, `{print $1}`, a lone `{` — is
+literal. Substitution is one pass, so a value containing `{other}` is inserted as-is and
+never re-expanded; a string that is exactly one placeholder keeps the value's JSON type.
+This replaced `str.format`, which gave up on the whole string at the first brace it
+couldn't resolve (`plans/BUGS.md` #24). A skill run missing a parameter with no `default`
+fails before any step runs.
+
+**Metadata**, stamped by `register_skill()`:
+
+| Field | Meaning |
+|---|---|
+| `id` | uuid4, fixed for the skill's life. Duplicate ids on disk are refused. |
+| `content_hash` | sha256 of canonical JSON (sorted keys, no whitespace, UTF-8, domain-prefixed `leutheria-skill-content-v1`) over the **steps** and the **behavioural part of input_schema** — parameter names, types, enums, defaults, sorted `required`. Name, description and parameter descriptions are left out on purpose: two users who learned the same procedure and worded it differently get the same hash, which is what a shared database would dedupe on. So it identifies *behaviour*; it is not an integrity check of the file's prose. |
+| `version` | Starts at 1. A learned skill whose content was hand-edited on disk gets its hash recomputed and its version bumped on the next load (`skill_migrated`). |
+| `source` | `"learned"`, or (reserved for later) `"imported:<sha256>"`. An imported skill whose content no longer matches its hash is rejected, not re-hashed. |
+| `requires` | Sorted tool names the steps use — what a skill needs enabled to work. |
+| `created_at` | Unix seconds. |
+
+A file from before metadata existed is migrated on load: the metadata is computed and
+written back (`created_at` from the file's mtime), everything else unchanged. Inventory
+exposes `id` / `version` / `source` / `content_hash` / `requires` on each skill row (null for
+hand-written skills); the Library doesn't render them yet.
+
+`./.venv/bin/python scripts/skill_format_check.py` exercises all of this against temp
+directories.
+
 ### Confirmation flow
 
 Any tool tagged `"destructive"` in `agent/tools/registry.py` (currently just `run_command`)
@@ -631,8 +927,13 @@ multi-minute working session needs:
 - **history** — a rolling window of plain user/assistant turns. Only text is carried; the
   `tool_use`/`tool_result` blocks stay local to their own request, since replaying a stale
   tool trace invites the model to treat an old result as still true.
+- **actions** — which tools each recent request actually ran, and whether they
+  succeeded, listed in the system prompt as past events. Names and arguments only, never
+  results. Text-only history on its own made the model disown its own replies: shown
+  "Ran it, the output was Hello" with no tool call behind it, it apologised for making
+  that up and ran the command again.
 
-Both expire after 10 minutes of silence, so a request made hours later doesn't silently
+All three expire after 10 minutes of silence, so a request made hours later doesn't silently
 resolve "it" against something long forgotten.
 
 Try it — three separate requests, the app named only once:
@@ -704,9 +1005,13 @@ exact same agentic loop as a `text` command:
 
 ```python
 {"type": "audio", "data": "<base64-encoded webm/wav/etc audio>", "format": "webm"}
-# -> {"type": "transcript", "text": "open the calculator app"}   (sent first)
+# -> {"type": "transcript", "text": "open the calculator app", "origin": "push_to_talk"}   (sent first)
 # -> {"type": "response", "text": "Calculator is now open...", "trace": [...]}  (final)
 ```
+
+`transcript.origin` is `"push_to_talk"` here and `"voice_session"` for the live session,
+whose replies also carry `"origin": "voice_session"` on the `response` — the renderer never
+sent a request for those, so this is how the UI knows to show them.
 
 `format` can be any container ffmpeg can decode (the Electron app sends `webm`, since
 that's what the browser's `MediaRecorder` produces by default). No API key needed for
@@ -714,28 +1019,86 @@ this part — Whisper runs fully locally.
 
 ### Voice output protocol
 
-After any `{"type": "response", ...}` with non-empty text, a `speech` message follows
-automatically with the synthesized audio as base64 WAV:
+The agent plays every spoken reply (and every spoken confirmation prompt) itself, and
+brackets the playback with `speaking` messages so the UI can animate while it talks:
 
 ```python
 {"type": "response", "text": "12 × 7 = **84**", "trace": []}
-{"type": "speech", "data": "<base64-encoded WAV audio>"}
+{"type": "speaking", "state": "started", "text": "12 × 7 = **84**", "duration_ms": 2140}
+{"type": "speaking", "state": "ended"}
 ```
 
-There's no request for this — it's always sent after a text reply, for every input
-method (typed, voice, or a tool result reached via either). No API key needed; Piper
-runs fully locally.
+There's no request for this — it follows every non-empty text reply, for every input
+method. No API key needed; Piper runs fully locally. The old `{"type": "speech", "data":
+<base64 WAV>}` message is **gone** — nothing sends audio over the socket any more.
+
+### Voice session protocol
+
+Stream events (to every connected UI; a newly connected one gets the current
+`voice_state` straight away):
+
+```python
+{"type": "voice_state", "state": "listening", "session": true}
+# state: off | idle | listening | hearing | transcribing | thinking | speaking | awaiting_confirmation
+# -- sent on every transition
+{"type": "session_started", "trigger": "wake_word", "wake_word": "hey_jarvis", "score": 0.93}
+{"type": "session_started", "trigger": "manual", "wake_word": null, "score": null}
+{"type": "session_ended", "reason": "dismissed"}   # | "timeout" | "manual" | "error"
+{"type": "audio_level", "level": 0.42}   # 0..1, smoothed; once per 80 ms frame (12.5 Hz),
+                                         # only in a session while listening/hearing/awaiting_confirmation
+```
+
+The transitions:
+
+```
+off ──(voice enabled)──▶ idle ──wake word / manual start──▶ listening
+listening ──speech starts──▶ hearing ──endpoint (≈800 ms silence)──▶ transcribing
+transcribing ──dismiss phrase──▶ idle (session_ended reason=dismissed)
+transcribing ──empty/hallucination──▶ listening
+transcribing ──command──▶ thinking ──reply──▶ speaking ──playback ends──▶ listening
+thinking ──confirmation_required──▶ speaking(prompt) ──▶ awaiting_confirmation (mic live)
+listening ──no speech for silence_timeout──▶ idle (session_ended reason=timeout)
+any ──manual end──▶ idle (session_ended reason=manual)
+```
+
+A session ended while voice is disabled (a manual one) goes back to `off`, not `idle`.
+Control messages, answered with `control_result` like the management ones below:
+
+```python
+{"type": "voice_session", "action": "start", "request_id": "1"}   # or "end"
+# -> {"type": "control_result", "request_id": "1", "ok": true, "state": "listening", "session": true}
+
+{"type": "get_voice_settings", "request_id": "2"}
+# -> {..., "ok": true, "settings": {"enabled": true, "wake_models": ["hey_jarvis"], ...}}
+
+{"type": "set_voice_settings", "settings": {"silence_timeout_s": 60}, "request_id": "3"}
+# -> {..., "ok": true, "settings": {...the full merged settings...}}
+# a partial object; merged, persisted, applied live. One bad or unknown key rejects the
+# whole update: {"ok": false, "error": "wake_threshold must be between 0 and 1"}
+
+{"type": "list_input_devices", "request_id": "4"}
+# -> {..., "ok": true, "devices": [{"index": 3, "name": "MacBook Pro Microphone",
+#                                   "channels": 1, "default": true}, ...]}
+# input-capable devices only; enumerates via sounddevice.query_devices, never opens the
+# mic. The list is PortAudio's snapshot from agent start.
+
+{"type": "list_wake_models", "paths": ["~/models/hey_leutheria.onnx"], "request_id": "5"}
+# -> {..., "ok": true, "pretrained": [{"name": "hey_jarvis", "downloaded": true}, ...],
+#     "paths": [{"path": "~/models/hey_leutheria.onnx", "exists": false}]}
+# names only, no model loaded or downloaded; `paths` (optional) are custom entries to
+# check for existence. The openwakeword import (~0.5 s) happens once, then is cached.
+```
 
 ### Skill proposal protocol
 
-May follow a `response` (after any `speech` message) whenever a multi-step (2+ tool call)
+May follow a `response` (after its spoken reply) whenever a multi-step (2+ tool call)
 success isn't already covered by an existing skill -- on the first occurrence as well as
 repeats, not just repeats. Fully independent of the request/response cycle -- nothing is
 waiting on this, so it can arrive or not without affecting anything else:
 
 ```python
 {"type": "response", "text": "...", "trace": [...]}          # the actual answer, unaffected
-{"type": "speech", "data": "..."}                              # if any
+{"type": "speaking", "state": "started", ...}                  # if any, then "ended"
 {"type": "skill_proposed", "id": "<uuid>", "name": "...", "description": "...",
  "steps": [{"tool": "...", "args": {...}}, ...],
  "uncertain_params": [
@@ -749,7 +1112,8 @@ waiting on this, so it can arrive or not without affecting anything else:
 {"type": "skill_response", "id": "<uuid>", "approved": true,
  "resolutions": {"<param_name>": false}}   # or "approved": false, no resolutions needed
 
-# only on approval:
+# only on approval, and only if it validated and was written (a failure is
+# logged as skill_register_rejected; nothing is sent -- see "Generated skill format"):
 {"type": "skill_saved", "name": "..."}
 ```
 
@@ -759,7 +1123,8 @@ present (possibly empty) so the client doesn't need to special-case a missing ke
 
 ### Management protocol (what the Library and Permissions views use)
 
-Everything else in the protocol is an event stream. These four are request/response: each
+Everything else in the protocol is an event stream. These (plus the voice ones above) are
+request/response: each
 carries a `request_id` that comes back on the reply, so several can be in flight at once
 and interleave freely with a command that's mid-confirmation. They're handled inline in
 `server.py`'s read loop via `control.py` — no LLM call, nothing that can block.
@@ -805,7 +1170,16 @@ and result), `stt_transcript` (what Whisper heard), `tts_error` (a synthesis fai
 non-fatal, just skipped), `confirmation_requested`/`tool_declined` (the destructive-tool
 confirmation flow), `confirmation_answered_by_voice`, `preference_changed`/
 `preference_reset`/`skill_deleted`/`trust_revoked` (management actions taken from the UI),
-and `dispatch_blocked_disabled` (something tried to run a capability you turned off).
+the skill lifecycle (`skill_proposed`/`skill_registered`/`skill_declined`, plus
+`skill_proposal_rejected`, `skill_register_rejected`, `skill_load_rejected` and
+`skill_migrated` from format validation -- each rejection carries the reason),
+`dispatch_blocked_disabled` (something tried to run a capability you turned off), and the
+voice session's own: `wake_detected` (with its score), `voice_session_started`/
+`voice_session_ended` (trigger / reason and duration), `voice_transcript` (text, speech
+duration, Whisper's `no_speech_prob` per segment, anything dropped, whether it was
+filler or a dismissal), `voice_utterance_rejected` (too short to transcribe),
+`voice_confirmation_unclear`, `voice_settings_changed`, and `voice_error` (a stage —
+`load_models`, `capture`, `transcribe`, `command` — and the error; voice goes to `off`).
 The Library's usage counts and the Activity view's history are both derived from this
 file, so it's the single source of truth for both. Tail it live while testing:
 
@@ -827,6 +1201,16 @@ saved skill) will read over.
   ```
 
 ## Troubleshooting
+
+**The voice indicator says `off` and "hey Jarvis" does nothing**
+
+Look for the latest `voice_error` in `agent/logs/events.jsonl` — its `stage` says what
+failed. `capture` is the mic: no input device, the configured `input_device` doesn't
+exist, or microphone permission was denied (System Settings → Privacy & Security →
+Microphone, for Electron or your terminal). `load_models` is openWakeWord: a
+`wake_models` entry that isn't a pretrained name or an existing `.onnx` path, or the
+first-run model download failed (it needs network once). Changing any voice setting
+retries.
 
 **`OSError: ... address already in use` on port 8765 when running `npm start`**
 
