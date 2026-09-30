@@ -181,7 +181,7 @@ def _error_detail(response) -> str:
 
 
 BACKENDS = {backend.name: backend for backend in (PiperBackend(), ElevenLabsBackend())}
-DEFAULT_BACKEND = PiperBackend.name
+DEFAULT_BACKEND = ElevenLabsBackend.name  # falls back to Piper per utterance (tts.py)
 
 
 def availability() -> dict:

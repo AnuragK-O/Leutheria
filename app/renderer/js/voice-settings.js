@@ -28,16 +28,16 @@
   // get_voice_settings' tts_available) and nothing more.
   const TTS_BACKENDS = [
     {
+      name: "elevenlabs",
+      label: "ElevenLabs — cloud, your API key (default)",
+      defaultVoice: "JBFqnCBsd6RMkjVDRZzb",
+      voiceHint: "A voice ID from your ElevenLabs voice library. Empty uses the default voice (George).",
+    },
+    {
       name: "piper",
       label: "Piper — on this Mac, free",
       defaultVoice: "en_US-amy-medium",
       voiceHint: "A Piper voice name, e.g. en_GB-alan-medium. A voice not yet on this Mac downloads the first time it speaks.",
-    },
-    {
-      name: "elevenlabs",
-      label: "ElevenLabs — cloud, your API key",
-      defaultVoice: "JBFqnCBsd6RMkjVDRZzb",
-      voiceHint: "A voice ID from your ElevenLabs voice library. Empty uses the default voice (George).",
     },
   ];
   const VOICE_ID = /^[A-Za-z0-9_-]{1,100}$/;
