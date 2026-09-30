@@ -127,6 +127,15 @@ async def _check_scope(
     return True, None
 
 
+def _fallback_prompt(tool_name: str, args: dict) -> str:
+    """Spoken when the model gave no explanation of its own. It has to say
+    *what* will happen: the old "I want to run run_command" named the tool
+    and left out the only part a listener can judge (BUGS.md #22)."""
+    if tool_name == "run_command" and args.get("cmd"):
+        return f"I want to run the command: {args['cmd'][:120]}. Should I go ahead?"
+    return f"I want to use {tool_name.replace('_', ' ')}. Should I go ahead?"
+
+
 async def _confirm(tool_name: str, args: dict, websocket, pending: dict, intro_text: str = "") -> tuple:
     if websocket is None or pending is None:
         # No interactive channel to confirm through (e.g. dispatch called
@@ -153,7 +162,7 @@ async def _confirm(tool_name: str, args: dict, websocket, pending: dict, intro_t
     # model's own accompanying explanation for this turn (SYSTEM_PROMPT.md
     # already asks it to briefly explain a destructive action before taking
     # it) over a generic fallback -- it's more natural and specific.
-    spoken = intro_text.strip() or f"I want to run {tool_name}. Should I go ahead?"
+    spoken = intro_text.strip() or _fallback_prompt(tool_name, args)
     await speak(websocket, spoken)
 
     try:

@@ -259,6 +259,23 @@ async def answer_confirmation_by_voice(text: str) -> bool:
     return True
 
 
+async def decline_pending_by_dismissal() -> None:
+    """The session was dismissed while a confirmation was open: decline it now
+    rather than leave it waiting, unseen, until it times out (BUGS.md #22).
+    Sent as by:"voice" so both UI cards settle the way a spoken "no" does --
+    but without a transcript, since the user never said "no"."""
+    websocket, pending, _ = _primary()
+    for confirmation_id, future in list(pending.items()):
+        if future.done():
+            continue
+        future.set_result({"approved": False, "remember": None})
+        log_event("confirmation_declined_by_dismissal", id=confirmation_id)
+        await _send(
+            websocket,
+            {"type": "confirmation_resolved", "id": confirmation_id, "approved": False, "by": "voice"},
+        )
+
+
 def confirmation_pending() -> bool:
     _, pending, _ = _primary()
     return any(not future.done() for future in pending.values())
@@ -281,6 +298,7 @@ def start_voice_session() -> "voice_session.VoiceSession":
         on_command=run_voice_command,
         on_confirmation_answer=answer_confirmation_by_voice,
         confirmation_pending=confirmation_pending,
+        on_dismiss_pending=decline_pending_by_dismissal,
         source_factory=_voice_source_factory(),
     )
     session.start()

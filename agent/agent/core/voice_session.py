@@ -176,6 +176,7 @@ class VoiceSession:
         on_command,
         on_confirmation_answer,
         confirmation_pending,
+        on_dismiss_pending=None,
         source_factory=None,
         wake_factory=None,
         vad_factory=None,
@@ -187,6 +188,8 @@ class VoiceSession:
         on_confirmation_answer(text)   -- async -> bool; True if it answered the
                                           pending confirmation
         confirmation_pending()         -- is a confirmation waiting on the primary UI?
+        on_dismiss_pending()           -- async; decline whatever is pending (the
+                                          session was dismissed over an open question)
         source_factory(settings)       -- async iterator of int16 80 ms frames
         """
         self.settings = dict(settings)
@@ -194,6 +197,7 @@ class VoiceSession:
         self._on_command = on_command
         self._on_confirmation_answer = on_confirmation_answer
         self._confirmation_pending = confirmation_pending
+        self._on_dismiss_pending = on_dismiss_pending
         self._source_factory = source_factory or (lambda s: audio_io.mic_frames(s.get("input_device")))
         self._wake_factory = wake_factory or OpenWakeWordDetector
         self._vad_factory = vad_factory or SileroVAD
@@ -559,6 +563,11 @@ class VoiceSession:
             if await self._on_confirmation_answer(text):
                 self._set_state("thinking")
             elif dismissed:
+                # "Thanks, that's all" over an open question is a no: decline
+                # it now rather than leave it pending, unseen, until it times
+                # out after the overlay has gone (BUGS.md #22).
+                if self._on_dismiss_pending:
+                    await self._on_dismiss_pending()
                 self._end_session("dismissed")
             else:
                 self._set_state("awaiting_confirmation")

@@ -154,6 +154,17 @@ def scenarios() -> dict:
             "expect_ended": ["dismissed"],
             "expect_transcripts": 3,
         },
+        "dismiss_pending": {
+            "about": "'thanks' over an open confirmation declines it and ends the session (BUGS.md #22)",
+            "parts": [silence(1), say("Hey Jarvis."), silence(1), say("Run the shell command echo hello."),
+                      silence(6), say("Thanks."), silence(4)],
+            "expect_states": None,
+            "expect_prefix": ["idle", "listening", "hearing", "transcribing", "thinking", "speaking",
+                              "awaiting_confirmation", "hearing", "transcribing", "idle"],
+            "expect_ended": ["dismissed"],
+            "expect_transcripts": 2,
+            "expect_resolved": [False],
+        },
         "manual": {
             "about": "manual start (no wake word), one command, manual end",
             "parts": [silence(0.5), ("start",), silence(0.5), say("What time is it?"), silence(5), ("end",),
@@ -203,6 +214,7 @@ async def run_scenario(name: str, spec: dict, real_llm: bool) -> bool:
         on_command=server.run_voice_command,
         on_confirmation_answer=server.answer_confirmation_by_voice,
         confirmation_pending=server.confirmation_pending,
+        on_dismiss_pending=server.decline_pending_by_dismissal,
         source_factory=source,
     )
     holder["session"] = session
@@ -245,7 +257,13 @@ def report(name: str, spec: dict, messages: list) -> bool:
     problems = []
     if spec["expect_states"] is not None and states != spec["expect_states"]:
         problems.append(f"states {states} != expected {spec['expect_states']}")
-    if spec["expect_states"] is None and "thinking" in states:
+    prefix = spec.get("expect_prefix")
+    if prefix is not None and states[: len(prefix)] != prefix:
+        problems.append(f"states {states} don't start with {prefix}")
+    resolved = [m["approved"] for _, m in messages if m["type"] == "confirmation_resolved"]
+    if "expect_resolved" in spec and resolved != spec["expect_resolved"]:
+        problems.append(f"confirmation_resolved {resolved} != {spec['expect_resolved']}")
+    if spec["expect_states"] is None and prefix is None and "thinking" in states:
         problems.append(f"became a command: {states}")
     if ended != spec["expect_ended"]:
         problems.append(f"session_ended {ended} != {spec['expect_ended']}")
@@ -314,6 +332,7 @@ async def failure_checks() -> bool:
         emit=server.broadcast, on_command=server.run_voice_command,
         on_confirmation_answer=server.answer_confirmation_by_voice,
         confirmation_pending=server.confirmation_pending,
+        on_dismiss_pending=server.decline_pending_by_dismissal,
         source_factory=lambda s: audio_io.array_frames(silence(60), realtime=1.0),
     )
     session.start()
@@ -336,7 +355,8 @@ async def failure_checks() -> bool:
     session = voice_session.VoiceSession(
         voice_session_defaults(), emit=server.broadcast, on_command=server.run_voice_command,
         on_confirmation_answer=server.answer_confirmation_by_voice,
-        confirmation_pending=server.confirmation_pending, source_factory=dying_source,
+        confirmation_pending=server.confirmation_pending,
+        on_dismiss_pending=server.decline_pending_by_dismissal, source_factory=dying_source,
     )
     session.start()
     await asyncio.sleep(0.3)
