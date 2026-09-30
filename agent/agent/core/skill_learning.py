@@ -59,9 +59,31 @@ def check_before_logging(response: dict):
     if response.get("type") != "response":
         return NOT_APPLICABLE
     trace = response.get("trace") or []
-    if len(trace) < 2 or has_matching_skill(trace) or has_declined_signature(trace):
+    if len(trace) < 2 or not is_clean_success(trace):
+        return NOT_APPLICABLE
+    if has_matching_skill(trace) or has_declined_signature(trace):
         return NOT_APPLICABLE
     return find_matching_past_trace(trace)
+
+
+def is_clean_success(trace: list) -> bool:
+    """Every step in the trace worked.
+
+    A skill replays its whole step list, so a sequence containing a failure
+    isn't a procedure worth learning -- it's a procedure that didn't work,
+    plus whatever the model tried next to recover. Observed before this
+    check existed: a run where the app never launched, so focus_app and
+    describe_ui both failed, still produced a "create_titled_note" proposal
+    whose steps were the failing sequence. Approving that would have saved a
+    skill that reproduces the failure on demand.
+
+    Uses `is False` rather than falsiness to match how inventory.py counts a
+    failure, so a tool returning no "ok" key isn't silently treated as broken.
+    """
+    return not any(
+        isinstance(step.get("result"), dict) and step["result"].get("ok") is False
+        for step in trace
+    )
 
 
 def has_matching_skill(trace: list) -> bool:

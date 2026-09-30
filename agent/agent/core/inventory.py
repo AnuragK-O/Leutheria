@@ -1,6 +1,6 @@
 import json
 
-from agent.core import preferences, trust
+from agent.core import preferences, session, trust
 from agent.core.logging_util import LOG_FILE
 from agent.skills.registry import SKILLS
 from agent.tools.registry import TOOLS
@@ -104,7 +104,9 @@ def snapshot() -> dict:
             tool["description"],
             tool["input_schema"],
             "tool",
-            tool["safety"] == "destructive",
+            # Scoped tools ask too -- once per target app rather than per
+            # call -- so the Library shows them as asking by default.
+            tool["safety"] in ("destructive", "scoped"),
             usage,
             {"safety": tool["safety"]},
         )
@@ -138,4 +140,5 @@ def snapshot() -> dict:
         "skills": skills,
         "history": history,
         "trusted": trust.list_trusted(),
+        "grants": session.active_grants(),
     }

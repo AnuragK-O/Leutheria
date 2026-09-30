@@ -28,6 +28,11 @@ piper-tts==1.7.0
 protobuf==7.36.1
 pydantic==2.13.5
 pydantic_core==2.46.5
+pyobjc-core==12.2.2
+pyobjc-framework-ApplicationServices==12.2.2
+pyobjc-framework-Cocoa==12.2.2
+pyobjc-framework-CoreText==12.2.2
+pyobjc-framework-Quartz==12.2.2
 python-dotenv==1.2.3
 regex==2026.9.3
 requests==2.34.2

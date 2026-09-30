@@ -300,6 +300,12 @@ ipcMain.handle("revoke-trust", async (_event, key) => {
   return result;
 });
 
+ipcMain.handle("revoke-grant", async (_event, app) => {
+  const result = await sendControlRequest({ type: "revoke_grant", app });
+  if (result.ok) invalidateInventory();
+  return result;
+});
+
 ipcMain.on("confirm-response", (_event, { id, approved, remember }) => {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   const message = { type: "confirm", id, approved, remember };

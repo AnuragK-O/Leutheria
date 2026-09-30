@@ -62,6 +62,64 @@
     return card;
   }
 
+  function formatRemaining(seconds) {
+    if (seconds === null || seconds === undefined) return "until restart";
+    if (seconds < 60) return `${seconds}s left`;
+    return `${Math.round(seconds / 60)} min left`;
+  }
+
+  /* Live app-control grants. Unlike a standing approval these are broad (any
+     typing into that app) and time-boxed, so they get their own card rather
+     than being mixed in above -- and they're the thing most worth being able
+     to cut short. */
+  function renderGrants(grants) {
+    const card = el("div.card");
+    card.appendChild(
+      el(
+        "div.card-header",
+        {},
+        el("h2", { text: "App control" }),
+        el("p", { text: "Apps Leutheria can currently type into. These expire on their own, and always on restart." })
+      )
+    );
+
+    if (!grants || !grants.length) {
+      card.appendChild(el("div.empty", { text: "No app is under Leutheria's control right now." }));
+      return card;
+    }
+
+    const list = el("div");
+    for (const entry of grants) {
+      list.appendChild(
+        el(
+          "div.trust-row",
+          {},
+          el(
+            "div.trust-text",
+            {},
+            el(
+              "div.trust-tool",
+              {},
+              el("span", { text: entry.app }),
+              el("span.badge.badge-warning", { text: formatRemaining(entry.expires_in) })
+            ),
+            el("div.trust-args", { text: "can be focused and typed into without asking again" })
+          ),
+          el("button.btn.btn-sm.btn-danger", {
+            text: "Revoke",
+            onclick: async () => {
+              const result = await window.leutheria.revokeGrant(entry.app);
+              if (result.ok) toast(`Revoked — ${entry.app} is no longer controllable`);
+              else toast(result.error || "Couldn't revoke that", "error");
+            },
+          })
+        )
+      );
+    }
+    card.appendChild(list);
+    return card;
+  }
+
   function renderOverrides(inventory) {
     const changed = [...inventory.tools, ...inventory.skills].filter((entry) => entry.is_overridden);
 
@@ -131,6 +189,7 @@
             "Approvals are tied to the exact command, arguments and all — approving one shell command never approves a different one. Session approvals disappear when the app restarts.",
         })
       ),
+      renderGrants(inventory.grants),
       renderTrusted(inventory.trusted),
       renderOverrides(inventory)
     );

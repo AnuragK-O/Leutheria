@@ -66,6 +66,10 @@ server.py
      sub-steps)              run_command  (destructive)
                                   |
                                   v
+                         scoped (GUI)? -> one prompt per target app, then that
+                         app stays drivable for 15 minutes (session.py); some
+                         apps are never drivable at all (ui_access.DENIED_APPS)
+
                          destructive? -> send "confirmation_required" AND
                          speak the prompt, pause until a "confirm" message
                          answers it -- which the next transcribed voice
@@ -159,6 +163,17 @@ agent/                Python sidecar
                         Claude to generalize into a skill definition -- confidently
                         from two examples if repeated, or from one example (flagging
                         uncertain params as clarifying questions) if this is the first
+      ui_access.py      macOS GUI primitives: app focus, Accessibility tree reads,
+                        synthetic keystrokes. Holds the two structural mitigations the
+                        scoped tier rests on -- DENIED_APPS and secure-field redaction --
+                        plus workarounds for three silently-failing macOS behaviours
+                        (all NSWorkspace state is frozen without a run-loop pump, AX
+                        failing on Electron apps, CGEvent inheriting modifier flags).
+                        All measured; see the docstrings before changing any of them
+      session.py        Live session state: which app is focused, a rolling window of
+                        plain conversation turns, and which apps are currently grantable
+                        to the scoped tools. In-memory only -- grants never outlive the
+                        process
       logging_util.py   Appends every message/decision/tool call to logs/events.jsonl
     tools/
       registry.py       TOOLS dict (fn, safety, description, input_schema) + anthropic_tool_schemas()
@@ -167,6 +182,7 @@ agent/                Python sidecar
       take_screenshot.py read_file.py        append_text.py      trash_file.py
       move_file.py       copy_file.py        list_running_apps.py
       get_battery_status.py  get_disk_space.py  get_current_datetime.py
+      focus_app.py       describe_ui.py      type_text.py        press_keys.py
                         One flat .py file per tool -- no per-tool folders/__init__.py;
                         that packaging turned out to be more annoying to navigate than
                         it was worth for single-function tools, so it was reverted.
@@ -207,6 +223,10 @@ cd agent
 cd ../app
 npm install
 ```
+
+Controlling other apps additionally needs **Accessibility permission** (System Settings >
+Privacy & Security > Accessibility) for whatever launched the agent — Electron under
+`npm start`, or your terminal if you ran it standalone. See "Controlling other apps" below.
 
 Both STT and TTS auto-download their models on first use, no manual steps needed:
 - Whisper's `"base"` model (~140MB) goes to `~/.cache/whisper`.
@@ -402,6 +422,10 @@ asyncio.run(main())
 | `get_battery_status` | `{}` | safe | percent + charging state, if this Mac has a battery |
 | `get_disk_space` | `{}` | safe | total/used/free GB on the main disk |
 | `get_current_datetime` | `{}` | safe | current date and time |
+| `focus_app` | `{"name": "TextEdit"}` | **scoped** | brings an app to the front and makes it the working context |
+| `describe_ui` | `{"app": "TextEdit"}` (optional) | safe | the app's Accessibility tree; password fields redacted |
+| `type_text` | `{"text": "..."}` | **scoped** | types into whatever has keyboard focus |
+| `press_keys` | `{"keys": "cmd+n"}` | **scoped** | one keyboard shortcut to the frontmost app |
 
 Example calls for each (swap the `tool`/`args` fields in the snippet above):
 
@@ -467,8 +491,12 @@ assigned it a safety tier — a meaningfully bigger trust step, deliberately def
 generalizes from a single example, so anything genuinely ambiguous gets asked as a
 clarifying question instead of silently guessed:
 
-1. Any request that finishes with 2+ tool calls and isn't already covered by an existing
-   skill is a candidate. `agent/core/skill_learning.py` checks `agent/logs/events.jsonl`
+1. Any request that finishes with 2+ tool calls, **where every one of them succeeded**,
+   and isn't already covered by an existing skill, is a candidate. The clean-success
+   requirement matters: without it a run where the app never launched (so `focus_app` and
+   `describe_ui` both failed) still produced a `create_titled_note` proposal built from
+   the failing sequence — approving it would have saved a skill that reproduces the
+   failure on demand. `agent/core/skill_learning.py` checks `agent/logs/events.jsonl`
    for a *past* run with the same ordered tool-name sequence — this check runs **before**
    the current request logs its own entry (a real bug caught during testing, see
    `plans/BUGS.md` #6: checking after would trivially match the request against itself).
@@ -544,6 +572,80 @@ agent restarts; `"always"` additionally persists to `agent/trusted_commands.json
 deliberately narrow: trusting one specific `git init` in one specific directory can never
 blanket-trust a *different* `rm` command elsewhere just because both happen to be
 `run_command` calls — only a genuinely identical repeated invocation skips the prompt.
+
+### Controlling other apps (the `scoped` tier)
+
+`open_app` launches something; the scoped tools actually *drive* it. Together they cover
+the case a shell command can't reach — "open my notes app," then, sporadically over the
+next ten minutes, "add a line about X" without ever naming the app again:
+
+```
+focus_app    bring an app forward and make it the session's working context
+describe_ui  read its on-screen structure -- fields, buttons, what has focus, what they contain
+type_text    type at the cursor
+press_keys   a keyboard shortcut (cmd+n, cmd+s, escape...)
+```
+
+This is the first capability in the codebase that **isn't safe by construction**, and it
+gets a different shape of gate as a result. A shell tool's blast radius is bounded by its
+arguments; `type_text` goes wherever the cursor is. So:
+
+- **Approval is per app, not per call, and time-boxed.** Nobody clicks Approve two hundred
+  times for two hundred keystrokes. The first time Leutheria reaches for an app you get one
+  prompt; approving grants that app for 15 minutes, and the typing that follows doesn't ask
+  again. Grants live in memory only — they die with the agent process, unlike a
+  `remember: always` trust — and the Permissions view lists every live one with a Revoke
+  button.
+- **Some apps can never be driven or read at all**, grant or no grant: Terminal, iTerm,
+  Keychain Access, System Settings, password managers (`DENIED_APPS` in
+  `agent/core/ui_access.py`). Terminal is on that list specifically because typing into a
+  shell would turn `type_text` into `run_command` with no confirmation — the denylist is
+  what stops the GUI tier from being a hole straight through the safety model.
+- **`describe_ui` stays unprompted**, because looking before acting is what makes the loop
+  work — the same reason `list_files` doesn't ask. It's safe by construction rather than by
+  policy: `AXSecureTextField` values are never returned, and the denylist applies to reads
+  too.
+- **Focus is re-checked before every chunk of typing**, and typing aborts mid-stream if it
+  moves. The whole point is a session where you keep using your computer, so focus changing
+  mid-sentence isn't an edge case. Without this, approving a note app and then clicking to
+  Slack would send the rest of the sentence into a chat box. A partial write is reported as
+  a failure with the character count, never rounded up to success.
+- `type_text` also reports **where** it typed (window title and focused control), and warns
+  when that's a dialog or a non-text control. Found in testing: opening TextEdit put its
+  *Open* panel in front, and a perfectly "successful" type went into the file picker.
+
+**Requires Accessibility permission**, which macOS grants to the *responsible* process —
+Electron under `npm start`, or your terminal if you ran the agent standalone. Untrusted AX
+calls don't error, they return empty trees, so `ui_access.ensure_trusted()` checks
+explicitly and fails loudly. Grant it in System Settings > Privacy & Security >
+Accessibility.
+
+### Conversation continuity
+
+Every request used to be independent: `agent_loop.run()` built a fresh `messages` list, so
+nothing could refer back. `agent/core/session.py` adds the two pieces of state a
+multi-minute working session needs:
+
+- **focus** — the app last successfully focused, injected into the system prompt ("You are
+  currently working in TextEdit"), so a follow-up doesn't have to re-name it.
+- **history** — a rolling window of plain user/assistant turns. Only text is carried; the
+  `tool_use`/`tool_result` blocks stay local to their own request, since replaying a stale
+  tool trace invites the model to treat an old result as still true.
+
+Both expire after 10 minutes of silence, so a request made hours later doesn't silently
+resolve "it" against something long forgotten.
+
+Try it — three separate requests, the app named only once:
+
+```
+open textedit and write a heading that says Meeting notes
+add a line under that saying budget review is on friday
+actually add one more line about the hiring plan
+```
+
+Observed trace: `focus_app` → `describe_ui` (empty, so) → `press_keys cmd+n` →
+`type_text`, then on the follow-ups `describe_ui` → `type_text` appending only the new
+line, and on the third `press_keys cmd+down` to get to the end first.
 
 ### Voice-only confirmation
 

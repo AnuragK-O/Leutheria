@@ -2,7 +2,7 @@ import asyncio
 import json
 import uuid
 
-from agent.core import preferences, trust
+from agent.core import preferences, session, trust, ui_access
 from agent.core.logging_util import log_event
 from agent.core.tts import speak
 from agent.skills.registry import SKILLS
@@ -25,6 +25,14 @@ async def dispatch(
     if not preferences.is_enabled(tool_name):
         log_event("dispatch_blocked_disabled", tool=tool_name, args=args)
         return {"ok": False, "error": f"{tool_name} is currently disabled by the user"}
+
+    # A "scoped" tool drives the GUI, so it's gated per target app for a
+    # stretch of time rather than per call -- see _check_scope.
+    if tool is not None and tool["safety"] == "scoped":
+        allowed, error = await _check_scope(tool_name, tool, args, websocket, pending, intro_text)
+        if not allowed:
+            return {"ok": False, "error": error}
+        return _run_tool(tool, args)
 
     # Built-in policy: destructive tools ask, everything else doesn't. Skills
     # default to not asking because each of their *steps* dispatches back
@@ -51,10 +59,72 @@ async def dispatch(
     if skill is not None:
         return await skill["fn"](args, websocket, pending)
 
+    return _run_tool(tool, args)
+
+
+def _run_tool(tool: dict, args: dict) -> dict:
     try:
         return tool["fn"](**args)
     except TypeError as e:
         return {"ok": False, "error": str(e)}
+
+
+def _scope_target(tool: dict, args: dict) -> str:
+    """Which app a scoped call would actually act on.
+
+    Declared per tool in the registry: "frontmost" means the call lands on
+    whatever is in front at this instant (type_text), otherwise it names the
+    argument holding the app name (focus_app's "name"). Resolving it here
+    rather than inside the tool is what stops a tool from being able to act
+    on an app other than the one it was checked against.
+    """
+    if tool.get("target") == "frontmost":
+        return ui_access.frontmost_app()
+    return (args.get(tool.get("target", ""), "") or "").strip()
+
+
+async def _check_scope(
+    tool_name: str, tool: dict, args: dict, websocket, pending: dict, intro_text: str
+) -> tuple:
+    """Gate a GUI tool on a live grant for its target app.
+
+    Per-call confirmation is the wrong shape here -- nobody approves two
+    hundred keystrokes -- so approval is per app and time-boxed: one prompt
+    when the agent first reaches for an app, then it can drive that app
+    freely until the grant lapses. The denylist is checked first and is not
+    overridable by any grant or preference; everything else about a spoken
+    "yes" here reuses the existing confirmation round-trip.
+    """
+    app = _scope_target(tool, args)
+    if not app:
+        return False, f"{tool_name} could not determine which app it would act on"
+
+    if ui_access.is_denied(app):
+        log_event("scope_denied", tool=tool_name, app=app)
+        return False, f"{app} can never be controlled by Leutheria"
+
+    if session.has_grant(app):
+        return True, None
+
+    # An explicit "don't ask about this one" from the Library turns the grant
+    # requirement off, the same way it can for run_command. The denylist
+    # above still stands.
+    if not preferences.requires_confirmation(tool_name, True):
+        session.grant(app)
+        return True, None
+
+    spoken = intro_text.strip() or f"Do you want to let me control {app}?"
+    approved, remember = await _confirm(tool_name, {**args, "app": app}, websocket, pending, spoken)
+    if not approved:
+        log_event("scope_declined", tool=tool_name, app=app)
+        return False, f"permission to control {app} was declined by the user"
+
+    # The card offers "this session" / "always"; for an app grant both mean
+    # "until the agent restarts", since no grant is ever written to disk.
+    # A plain approval is the time-boxed default.
+    expires = session.grant(app, duration=None if remember else session.GRANT_DURATION)
+    log_event("scope_granted", tool=tool_name, app=app, expires=expires)
+    return True, None
 
 
 async def _confirm(tool_name: str, args: dict, websocket, pending: dict, intro_text: str = "") -> tuple:

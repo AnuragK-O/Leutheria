@@ -43,8 +43,12 @@ SKILLS = {
     "quick_note": {
         "fn": quick_note.run,
         "description": (
-            "Jot down a quick timestamped note and confirm it with a notification. "
-            "Use this whenever the user wants to remember or note something down."
+            "Append a timestamped line to a plain text log file and confirm with a "
+            "notification. This is a scratch log, NOT the Notes app and not a document "
+            "the user can see, open or edit -- nothing appears on screen. Use it only "
+            "for 'remind me later' or 'jot this down somewhere' where the user doesn't "
+            "care where it lands. If they name an app, or want a note or document they "
+            "can look at afterwards, open that app and write it there instead."
         ),
         "input_schema": {
             "type": "object",

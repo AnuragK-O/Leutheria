@@ -1,6 +1,8 @@
 from agent.tools.append_text import append_text
 from agent.tools.copy_file import copy_file
 from agent.tools.create_folder import create_folder
+from agent.tools.describe_ui import describe_ui
+from agent.tools.focus_app import focus_app
 from agent.tools.get_battery_status import get_battery_status
 from agent.tools.get_clipboard import get_clipboard
 from agent.tools.get_current_datetime import get_current_datetime
@@ -10,12 +12,14 @@ from agent.tools.list_running_apps import list_running_apps
 from agent.tools.move_file import move_file
 from agent.tools.open_app import open_app
 from agent.tools.open_url import open_url
+from agent.tools.press_keys import press_keys
 from agent.tools.read_file import read_file
 from agent.tools.run_command import run_command
 from agent.tools.set_clipboard import set_clipboard
 from agent.tools.show_notification import show_notification
 from agent.tools.take_screenshot import take_screenshot
 from agent.tools.trash_file import trash_file
+from agent.tools.type_text import type_text
 
 # run_command is marked destructive, not "safe", because it executes
 # arbitrary shell input -- unlike the others, its blast radius isn't bounded
@@ -212,6 +216,84 @@ TOOLS = {
         "safety": "safe",
         "description": "Get the current date and time.",
         "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    "focus_app": {
+        "fn": focus_app,
+        "safety": "scoped",
+        "target": "name",
+        "description": (
+            "Bring an application to the front and make it the working context for "
+            "what follows. Use this before typing into an app. Unlike open_app this "
+            "waits until the app is really frontmost, and it's remembered, so later "
+            "requests can refer to 'the note' or 'the document' without naming the app."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "The application name, e.g. 'TextEdit'."}
+            },
+            "required": ["name"],
+        },
+    },
+    "describe_ui": {
+        "fn": describe_ui,
+        "safety": "safe",
+        "description": (
+            "Read the on-screen structure of an app's window: its text areas, fields "
+            "and buttons, which one has keyboard focus, and what they contain. Use "
+            "this to check where typing will land before typing, the same way you'd "
+            "list a folder before writing into it. Password fields are never returned."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "app": {
+                    "type": "string",
+                    "description": "App to inspect. Defaults to the current working app, or whatever is frontmost.",
+                }
+            },
+            "required": [],
+        },
+    },
+    "press_keys": {
+        "fn": press_keys,
+        "safety": "scoped",
+        "target": "frontmost",
+        "description": (
+            "Send a keyboard shortcut to the frontmost app, e.g. 'cmd+n' for a new "
+            "document, 'cmd+s' to save, 'cmd+z' to undo, or 'return'/'tab'/'escape'. "
+            "Use this for app commands that have no text equivalent, rather than "
+            "shelling out to osascript. One shortcut per call."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "keys": {
+                    "type": "string",
+                    "description": "Shortcut in 'modifier+key' form, e.g. 'cmd+n' or 'cmd+shift+s'.",
+                }
+            },
+            "required": ["keys"],
+        },
+    },
+    "type_text": {
+        "fn": type_text,
+        "safety": "scoped",
+        "target": "frontmost",
+        "description": (
+            "Type text into whatever currently has keyboard focus, as if the user typed "
+            "it. Text is inserted at the cursor, so to add to a document that already "
+            "has content, send only the new text -- do not retype what is already there. "
+            "Newlines in the text are sent as real Return keypresses. Focus the right "
+            "app first, and use describe_ui to check where the cursor is if unsure."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "The text to type."}
+            },
+            "required": ["text"],
+        },
     },
 }
 

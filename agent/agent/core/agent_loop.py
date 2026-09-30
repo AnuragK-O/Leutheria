@@ -2,6 +2,7 @@ import asyncio
 import json
 from pathlib import Path
 
+from agent.core import session
 from agent.core.dispatcher import dispatch
 from agent.core.logging_util import log_event
 from agent.skills.registry import anthropic_skill_schemas
@@ -13,6 +14,19 @@ SYSTEM_PROMPT_PATH = Path(__file__).resolve().parent.parent.parent / "SYSTEM_PRO
 SYSTEM_PROMPT = SYSTEM_PROMPT_PATH.read_text() if SYSTEM_PROMPT_PATH.exists() else None
 
 
+def _system_prompt() -> str:
+    """The hand-edited persona plus whatever is true right now (which app is
+    focused, what's currently permitted). Built per call rather than at import
+    so it tracks the session; returns the file's contents unchanged when
+    there's no live state to report."""
+    note = session.context_note()
+    if not note:
+        return SYSTEM_PROMPT
+    if not SYSTEM_PROMPT:
+        return f"## Current session\n\n{note}"
+    return f"{SYSTEM_PROMPT}\n\n## Current session\n\n{note}"
+
+
 async def run(backend, user_text: str, websocket=None, pending: dict = None) -> dict:
     """Drive the Claude <-> tool-dispatch loop for one user message.
 
@@ -22,13 +36,18 @@ async def run(backend, user_text: str, websocket=None, pending: dict = None) -> 
     to dispatch() so a destructive tool mid-loop can pause for a live
     confirmation round-trip without blocking the connection's read loop.
     """
-    messages = [{"role": "user", "content": user_text}]
+    # Prior turns come first so a follow-up ("add that too", "put it in the
+    # same note") has an antecedent. Only plain user/assistant text is
+    # carried -- the tool_use/tool_result blocks below stay local to this
+    # request, since replaying a stale tool trace invites the model to treat
+    # an old result as still true.
+    messages = session.history() + [{"role": "user", "content": user_text}]
     tools = anthropic_tool_schemas() + anthropic_skill_schemas()
     loop = asyncio.get_running_loop()
     trace = []
 
     for _ in range(MAX_TURNS):
-        turn = await loop.run_in_executor(None, backend.generate, messages, tools, SYSTEM_PROMPT)
+        turn = await loop.run_in_executor(None, backend.generate, messages, tools, _system_prompt())
         log_event(
             "llm_turn",
             text=turn.text,
@@ -36,6 +55,8 @@ async def run(backend, user_text: str, websocket=None, pending: dict = None) -> 
         )
 
         if not turn.tool_calls:
+            session.remember("user", user_text)
+            session.remember("assistant", turn.text)
             return {"type": "response", "text": turn.text, "trace": trace}
 
         messages.append({"role": "assistant", "content": turn.content})

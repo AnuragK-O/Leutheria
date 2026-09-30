@@ -131,6 +131,8 @@
       );
     } else if (entry.safety === "destructive") {
       list.push(el("span.badge.badge-warning", { text: "destructive" }));
+    } else if (entry.safety === "scoped") {
+      list.push(el("span.badge.badge-warning", { text: "controls apps" }));
     }
     if (!entry.enabled) list.push(el("span.badge.badge-danger", { text: "disabled" }));
     return list;

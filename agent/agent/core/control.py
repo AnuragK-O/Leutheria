@@ -1,4 +1,4 @@
-from agent.core import inventory, preferences, trust
+from agent.core import inventory, preferences, session, trust
 from agent.core.logging_util import log_event
 from agent.skills.registry import delete_skill
 
@@ -7,7 +7,7 @@ from agent.skills.registry import delete_skill
 # They're deliberately handled inline in the server's read loop rather than
 # through process_command(), because none of them touch the LLM, none can
 # block, and none should be logged or spoken as part of a conversation.
-CONTROL_TYPES = {"inventory", "set_preference", "delete_skill", "revoke_trust"}
+CONTROL_TYPES = {"inventory", "set_preference", "delete_skill", "revoke_trust", "revoke_grant"}
 
 
 def handle(payload: dict) -> dict:
@@ -49,5 +49,14 @@ def handle(payload: dict) -> dict:
         if result.get("ok"):
             log_event("trust_revoked", key=key)
         return result
+
+    if message_type == "revoke_grant":
+        app = payload.get("app")
+        if not app:
+            return {"ok": False, "error": "missing app"}
+        if not session.revoke(app):
+            return {"ok": False, "error": f"no live grant for {app}"}
+        log_event("grant_revoked", app=app)
+        return {"ok": True, "app": app}
 
     return {"ok": False, "error": f"unknown control message: {message_type}"}

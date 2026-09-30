@@ -25,4 +25,5 @@ contextBridge.exposeInMainWorld("leutheria", {
   setPreference: (name, changes) => ipcRenderer.invoke("set-preference", { name, ...changes }),
   deleteSkill: (name) => ipcRenderer.invoke("delete-skill", name),
   revokeTrust: (key) => ipcRenderer.invoke("revoke-trust", key),
+  revokeGrant: (app) => ipcRenderer.invoke("revoke-grant", app),
 });
