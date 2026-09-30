@@ -16,14 +16,18 @@ Electron (app/)
 ---------------
 main.js
   - spawns the Python agent, owns the WebSocket connection
-  - event stream one way (chat/confirm/speech), request/response the other
+  - event stream one way (chat/confirm/voice state), request/response the other
     (inventory reads + preference writes, matched by request_id)
+  - hosts the activation overlay, the menu bar item and the Alt+Space shortcut
 renderer/
-  - Assistant     chat, mic, confirmation + skill-proposal cards, plays TTS audio
+  - Assistant     chat, mic, confirmation + skill-proposal cards, voice-state indicator
   - Library       every tool and skill: inspect, enable/disable, ask-first, delete
   - Activity      skill history + what actually gets used
   - Permissions   standing approvals and customized capabilities
   - Logs          the raw bridge stream
+renderer/overlay/
+  - floating, click-through "island" shown during a voice session; assets
+    come from overlay/assets/manifest.json
 
         |
         |  ws://127.0.0.1:8765 -- JSON messages, both directions
@@ -101,7 +105,8 @@ skill pauses exactly the same way a directly-called destructive tool would.
 
 ```
 app/                  Electron shell
-  main.js             Spawns the Python agent, connects to it over WebSocket, hosts the window
+  main.js             Spawns the Python agent, connects to it over WebSocket, hosts the main
+                       window, the voice overlay, the menu bar item and the global shortcut
   preload.js           Bridges the agent event stream + the management request/response calls
                        into the renderer safely (contextBridge, no node access in the page)
   renderer/
@@ -115,6 +120,12 @@ app/                  Electron shell
       activity.js      Activity view: skill history timeline + usage stats
       permissions.js   Permissions view: standing approvals, customized capabilities
       logs.js          Logs view: the raw bridge stream
+      voice.js         Header voice-state indicator (click to start/stop a session)
+    overlay/
+      overlay.html/.css/.js  The activation overlay (reuses styles.css tokens + util.js)
+      assets/          Drop-in visuals: manifest.json + README.md for the asset designer
+  scripts/
+    mock-agent.js      Scripted stand-in agent (port 8799) for testing the Electron side
 
 agent/                Python sidecar
   preferences.json     Per-capability enabled / ask-first overrides set from the Library
@@ -359,8 +370,9 @@ hold-detection and matches the roadmap's "push-to-talk is fine for now" scope.
 ### Voice output (TTS)
 
 Every final text reply is also spoken out loud automatically — no toggle needed. The
-agent synthesizes it locally with Piper right after sending the text response, and the
-audio plays as soon as it arrives in the renderer. This applies to typed, spoken, and
+agent synthesizes it locally with Piper right after sending the text response and plays
+it itself (the renderer no longer plays any audio, so replies are heard even with every
+window hidden). This applies to typed, spoken, and
 tool-triggered replies alike, since it's wired in at the point where the final response
 is sent, not per input method. If synthesis fails for any reason, it's logged
 (`tts_error` in `agent/logs/events.jsonl`) but never blocks or delays the text reply
@@ -368,6 +380,74 @@ itself — TTS is additive, not a dependency of the core loop.
 
 Note: `piper-tts` is GPL-3.0-or-later licensed. Fine for local development; worth
 revisiting the licensing implications before any public release/distribution.
+
+### Voice sessions: the overlay, menu bar and shortcut
+
+A voice session is the hands-free mode: once it starts, Leutheria keeps listening,
+answering and listening again until you say something like "thanks" or "that's all", or
+it hears nothing for a long while. The mic, wake word and playback all live in the
+Python sidecar; the Electron side only shows the session and starts or stops it.
+
+**Starting and stopping.** A session starts on the wake word, or manually from any of:
+- **⌥Space** (Alt+Space), a global shortcut that toggles a session from any app;
+- the **menu bar icon** → *Start listening* / *Stop listening* (only the one that makes
+  sense right now is enabled; the menu also has *Show Leutheria* and *Quit*);
+- the **voice indicator** at the right of the main window's header, which also shows the
+  current state: Off, Idle, Listening, Thinking, Speaking, or Needs approval.
+
+Closing the main window no longer stops the agent: a session keeps running, and the
+menu bar icon brings the window back.
+
+**The overlay** (`app/renderer/overlay/`) is a small floating "island" at the top-center
+of whichever display the cursor is on. It fades in when a session starts and out when it
+ends, and shows the state (listening, hearing, transcribing, thinking, speaking, waiting
+for approval), what you said, and a short form of the reply. It is built never to get in
+the way: it floats above full-screen apps and every Space, appears without taking focus,
+and is **click-through**; clicks land on whatever is underneath. The one exception is a
+confirmation: while a compact Approve / Decline card is showing, the overlay accepts
+clicks, and it goes click-through again as soon as the card is answered (by click, by
+voice, or from the main window's full card, which still offers the "remember" options).
+Answering in either place settles the other.
+
+The overlay follows the main window's light/dark choice (and the macOS appearance if none
+was made).
+
+**Visual assets** live in `app/renderer/overlay/assets/`. `manifest.json` maps each state
+to a built-in CSS placeholder, an image (png/gif/svg/webp) or a video (transparent webm);
+swapping in real artwork is a file copy plus a manifest edit, no code change. The mic level
+is exposed as the CSS variable `--level` (0 to 1) for reactive visuals. That folder's
+`README.md` is written for the asset designer: which states exist and when, formats and
+sizes, and how to preview.
+
+**Voice settings** (wake model, threshold, timeouts, dismiss phrases, input device) are
+reachable from the renderer as `window.leutheria.getVoiceSettings()` /
+`setVoiceSettings(partial)`, which become the `get_voice_settings` / `set_voice_settings`
+control messages. There's no settings screen yet.
+
+### Testing the Electron side without Python
+
+`app/scripts/mock-agent.js` is a scripted stand-in for the agent on port 8799 (never
+8765). It plays a complete voice session: wake, listening with mic levels, hearing,
+transcribing, a transcript, thinking, a confirmation (waits for a click, then "answers by
+voice" if none comes), the spoken reply, and a dismissal. It also answers the control
+messages, and a typed command containing "confirm" runs a push-to-talk confirmation round
+trip. Two environment variables point the app at it:
+
+| variable | effect |
+|---|---|
+| `LEUTHERIA_AGENT_URL` | Connect to this WebSocket URL instead of `ws://127.0.0.1:8765` |
+| `LEUTHERIA_NO_SPAWN=1` | Don't start (or pkill) the Python agent; keep retrying the connection instead |
+| `LEUTHERIA_CAPTURE_DIR` | Debug only: write a PNG of the overlay and main window on every voice-state change, into this folder (which also gets its own `userdata/`, so a debug run never shares storage with a real one) |
+| `LEUTHERIA_CAPTURE_THEME` | With the above: force the overlay to `light` or `dark` |
+
+```bash
+cd app
+node scripts/mock-agent.js &
+env -u ELECTRON_RUN_AS_NODE LEUTHERIA_AGENT_URL=ws://127.0.0.1:8799 LEUTHERIA_NO_SPAWN=1 npx electron .
+```
+
+`MOCK_LOOP=1` replays the session after each one ends; `MOCK_AUTOSTART=0` waits for
+⌥Space or the menu instead; `MOCK_CONFIRM_TIMEOUT_MS` sets how long it waits for a click.
 
 ## Running the Python agent standalone (no Electron)
 
