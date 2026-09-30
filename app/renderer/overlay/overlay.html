@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Leutheria overlay</title>
+    <!-- Brand tokens, .btn, .code-block come from the main stylesheet so the
+         overlay can't drift from the app's look; overlay.css adds the rest. -->
+    <link rel="stylesheet" href="../styles.css" />
+    <link rel="stylesheet" href="overlay.css" />
+  </head>
+  <body class="leaving">
+    <div class="stage">
+      <div class="island" id="island" data-state="listening">
+        <!-- The asset slot: whatever assets/manifest.json maps the current
+             state to is mounted in here. -->
+        <div class="slot" id="slot"></div>
+        <div class="island-text">
+          <div class="island-label" id="label">Listening</div>
+          <div class="island-line" id="line"></div>
+        </div>
+      </div>
+
+      <div class="ov-confirm" id="confirm" hidden>
+        <div class="ov-confirm-head" id="confirm-head"></div>
+        <div class="ov-confirm-body">
+          <div class="code-block ov-confirm-cmd" id="confirm-cmd"></div>
+          <div class="ov-confirm-foot">
+            <span class="ov-confirm-hint" id="confirm-hint">Say yes or no, or choose</span>
+            <div class="ov-confirm-actions" id="confirm-actions"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="../js/util.js"></script>
+    <script src="overlay.js"></script>
+  </body>
+</html>

@@ -92,11 +92,19 @@
 
   window.leutheria.onInventoryChanged(refresh);
 
-  window.leutheria.onStatus((status) => {
+  function showStatus(status) {
     statusEl.dataset.state = status;
     statusEl.querySelector(".status-text").textContent = status;
+  }
+
+  window.leutheria.onStatus((status) => {
+    showStatus(status);
     if (status === "connected") refresh();
   });
+
+  // The bridge can connect before this page is listening (a fast agent, or
+  // the window reopened later), so ask rather than wait for an event -- BUGS.md #18.
+  window.leutheria.getStatus().then(showStatus);
 
   // --- theme -------------------------------------------------------------
 
