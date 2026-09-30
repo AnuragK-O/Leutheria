@@ -17,10 +17,10 @@ Electron (app/)
 main.js
   - spawns the Python agent, owns the WebSocket connection
   - event stream one way (chat/confirm/voice state), request/response the other
-    (inventory reads + preference writes, matched by request_id)
+    (inventory reads, preference + voice-setting writes, matched by request_id)
   - hosts the activation overlay, the menu bar item and the Alt+Space shortcut
 renderer/
-  - Assistant     chat, mic, confirmation + skill-proposal cards, voice-state indicator
+  - Assistant     chat, push-to-talk mic, confirmation + skill-proposal cards, voice-state indicator
   - Library       every tool and skill: inspect, enable/disable, ask-first, delete
   - Activity      skill history + what actually gets used
   - Permissions   standing approvals and customized capabilities
@@ -45,8 +45,16 @@ server.py
                      trust.py, skills/registry.py
     answered inline -- never touches the LLM, never blocks a command
 
-  "audio" message
-    -> audio_input.py -> stt.py (Whisper) -> transcript text
+  voice_session.py (not a message -- runs on its own from startup)
+    mic (sounddevice) -> openWakeWord "hey jarvis" -> Silero VAD endpointing
+    -> stt.py (Whisper) -> dismissal? end : transcript text ----------+
+    muted while tts.py is playing (half-duplex)                       |
+                                                                      |
+  "audio" message (push-to-talk)                                      |
+    -> audio_input.py -> stt.py (Whisper) -> transcript text          |
+                                                   |                  |
+                        server.handle_transcript <-+------------------+
+                        (a pending yes/no is answered here, else:)
                                                    |
   "text" (typed, or a transcript from above) <-----+
     |
@@ -82,7 +90,8 @@ server.py
   once agent_loop gets a final text reply (no more tool calls):
     |
     v
-  tts.py (Piper) -> "speech" message -> Electron plays it
+  tts.py (Piper) -> played through the speakers by the agent itself,
+                    bracketed by "speaking" started/ended messages
 
   meanwhile, if the trace had >= 2 tool calls and no skill covers it yet
   (skill_learning.py, checked against logs/events.jsonl BEFORE this
@@ -135,11 +144,25 @@ agent/                Python sidecar
                        beyond restarting the agent process.
   trusted_commands.json  Permanently-trusted (tool, args) pairs (gitignored -- local
                        state, not source). See trust.py below.
+  voice_settings.json  Voice session settings set from the UI (gitignored -- local state)
+  scripts/
+    voice_sim.py       Drives the voice session with synthesized speech instead of the mic
+                       and checks the state/message sequence per scenario
+    voice_server_check.py  End-to-end: real server on a side port, a WAV as the mic,
+                       the voice control messages, settings persistence
   .venv/              Virtualenv (gitignored)
   agent/
     core/
-      server.py        WebSocket server, message routing (max_size=20MB -- a long spoken
-                       reply's audio can exceed the 1MB library default, see BUGS.md #7)
+      server.py        WebSocket server, message routing, the primary-connection registry
+                       voice commands run on, and the one transcript path shared by
+                       push-to-talk and the voice session (max_size=20MB -- a long
+                       push-to-talk upload can exceed the 1MB library default, BUGS.md #7)
+      voice_session.py  The always-listening state machine: wake word (openWakeWord), VAD
+                        endpointing (Silero), Whisper, dismissal, silence timeout,
+                        half-duplex muting while Leutheria speaks
+      voice_settings.py Voice settings: defaults, validation, agent/voice_settings.json
+      audio_io.py       Mic frames (sounddevice), the WAV stand-in source used in tests,
+                        and speaker playback
       dispatcher.py     Routes {tool, args} payloads to tools and skills; refuses anything
                         disabled in preferences.py, then pauses for a live confirmation
                         round-trip when the capability asks first (destructive by default,
@@ -167,9 +190,10 @@ agent/                Python sidecar
                         results back until Claude gives a final answer (capped at 6 turns)
       audio_input.py    Decodes a base64 audio payload to a temp file, hands off to stt.py
       stt.py            Local Whisper ("base" model) transcription
-      tts.py            Local Piper ("en_US-amy-medium" voice) speech synthesis; speak()
-                        is shared by server.py (final replies) and dispatcher.py
-                        (spoken confirmation prompts)
+      tts.py            Local Piper ("en_US-amy-medium" voice) speech synthesis, played
+                        through the Mac's speakers by the sidecar itself; speak() is
+                        shared by server.py (final replies) and dispatcher.py (spoken
+                        confirmation prompts)
       skill_learning.py Checks logs/events.jsonl for a matching past run, then asks
                         Claude to generalize into a skill definition -- confidently
                         from two examples if repeated, or from one example (flagging
@@ -363,20 +387,110 @@ Click the mic button next to the input to start recording, click it again (now a
 square, pulsing red) to stop. macOS will prompt for microphone access the first time — grant it to
 Electron. On stop, the clip is sent to the agent, transcribed locally with Whisper, and the
 transcript appears as your own message (labelled `you · voice`) before the normal agentic loop
-runs on it exactly as if you'd typed it. There's no wake word or true "hold to talk" yet —
-it's click-to-start/click-to-stop for now, which is simpler to get right than global hotkey
-hold-detection and matches the roadmap's "push-to-talk is fine for now" scope.
+runs on it exactly as if you'd typed it. It's click-to-start/click-to-stop, which is
+simpler to get right than global hotkey hold-detection. For hands-free use there's now the
+always-listening voice session below; push-to-talk stays as the no-wake-word path, and both
+feed the same transcript handling in `server.py`.
 
 ### Voice output (TTS)
 
 Every final text reply is also spoken out loud automatically — no toggle needed. The
 agent synthesizes it locally with Piper right after sending the text response and plays
-it itself (the renderer no longer plays any audio, so replies are heard even with every
-window hidden). This applies to typed, spoken, and
-tool-triggered replies alike, since it's wired in at the point where the final response
-is sent, not per input method. If synthesis fails for any reason, it's logged
-(`tts_error` in `agent/logs/events.jsonl`) but never blocks or delays the text reply
-itself — TTS is additive, not a dependency of the core loop.
+it through the Mac's speakers **itself** — the renderer never touches the audio. This
+applies to typed, spoken, and tool-triggered replies alike, since it's wired in at the
+point where the final response is sent, not per input method. If synthesis or playback
+fails for any reason, it's logged (`tts_error` in `agent/logs/events.jsonl`) but never
+blocks or delays the text reply itself — TTS is additive, not a dependency of the core
+loop.
+
+Why the sidecar plays it rather than the renderer (which it used to, via a base64
+`speech` message): the always-listening mic below must not hear Leutheria's own voice,
+and only the process driving the speaker knows exactly when playback starts and stops.
+It also means replies are heard with every window hidden. One voice at a time — two
+replies finishing together queue rather than talk over each other.
+
+### Always-listening voice session
+
+Say **"hey Jarvis"** (a pretrained openWakeWord model — a custom "hey Leutheria" needs a
+trained model, and drops in via the `wake_models` setting without code changes), then just
+talk. The session stays open across as many requests as you like: each is transcribed,
+run through the same agent loop as a typed command, and the reply spoken; then it's
+listening again. It ends when you say something that's essentially a goodbye — "thanks",
+"thank you", "that's all", "that's it", "we're done", "goodbye" — or after
+`silence_timeout_s` (default 3 minutes) with nothing said, or when you end it from the UI.
+A session can also be started without the wake word (`voice_session` `start`, below), and
+that works even with voice disabled — the mic opens for that one session and closes again.
+
+How it works, all in `agent/core/voice_session.py`:
+
+- The sidecar captures the mic itself (sounddevice, 16 kHz mono, 80 ms frames). Idle, each
+  frame goes to openWakeWord (ONNX — its default tflite backend has no Python 3.12 macOS
+  wheel). In a session, each frame goes to the Silero VAD that ships with openWakeWord
+  (picked over webrtcvad because it tells speech from steady noise — fans, keyboards,
+  music — much better, at no extra dependency).
+- An utterance ends after `endpoint_silence_ms` (800 ms) of trailing silence, and goes to
+  Whisper in an executor.
+- **Half-duplex:** while Leutheria is talking, plus a 300 ms echo tail, captured audio is
+  thrown away — no wake word, no VAD. There's no barge-in yet. While a command is running
+  (and not waiting on a confirmation) audio is discarded too: one command in flight.
+- **Guards against Whisper's hallucinations** — it famously "hears" "Thank you." in
+  silence, which would dismiss the session. An utterance only reaches Whisper if VAD heard
+  at least 300 ms of actual speech; segments with `no_speech_prob` over 0.6 are dropped;
+  a transcript that's only "hm"/"uh"/"um" is dropped; and a dismissal only counts if the
+  utterance is five words or fewer *and* nothing but the phrase plus filler ("okay, that's
+  all for now") — "thanks, what's the weather" is a request, not a goodbye.
+- **Confirmations work hands-free.** A destructive step's prompt is spoken, then the mic
+  opens (`awaiting_confirmation`) for a yes/no, answered through the same
+  `interpret_yes_no()` path as push-to-talk. Unlike push-to-talk, anything that *isn't* a
+  clear yes/no is shown in the chat but not run as a new command — a second command
+  starting while the first is paused on a question would break "one command in flight".
+  The card stays open for another try or a click.
+- Voice commands run on the most recently connected UI (the "primary"), so confirmation
+  cards and skill proposals land there. With no UI connected they still run — and a
+  destructive step fails closed, since there's nothing to confirm through.
+- No mic, a failed model download, a device unplugged mid-session: logged as
+  `voice_error`, voice goes to `off`, and everything else carries on. Any settings change
+  retries.
+
+macOS shows its orange mic indicator the whole time voice is enabled — the mic really is
+open. The first time, macOS asks for microphone permission for whatever launched the
+agent (Electron when run via `npm start`, your terminal when standalone).
+
+**Settings** (`agent/voice_settings.json`, gitignored; read and written over the protocol
+below, applied live):
+
+| setting | default | |
+|---|---|---|
+| `enabled` | `true` | wake word listening on/off |
+| `wake_models` | `["hey_jarvis"]` | pretrained openWakeWord names, or paths to a trained `.onnx` |
+| `wake_threshold` | `0.5` | 0–1 |
+| `silence_timeout_s` | `180` | a session with nothing said for this long ends |
+| `endpoint_silence_ms` | `800` | trailing silence that ends an utterance |
+| `dismiss_phrases` | thanks, thank you, that's all, that's it, we're done, goodbye | |
+| `input_device` | `null` | sounddevice index or name; `null` is the system default |
+
+**Testing it without a microphone.** Two scripts in `agent/scripts/`, neither of which
+opens the mic:
+
+```bash
+cd agent
+./.venv/bin/python scripts/voice_sim.py            # every scenario, ~2 min
+./.venv/bin/python scripts/voice_sim.py confirm    # one; --list names them
+./.venv/bin/python scripts/voice_server_check.py   # the real server on port 8781
+```
+
+`voice_sim.py` stitches Piper utterances ("Hey Jarvis." … "What time is it?" …
+"Thanks.") with silence and feeds them through the session's injectable frame source at
+real speed, wired to the real server hooks, and checks the exact `voice_state` sequence
+per scenario: dismissal, a long sentence containing "thanks" (not a dismissal), silence
+timeout, noise and blips (never a command), a spoken confirmation answered by voice, and a
+manual start/end. The agent loop is a canned responder and playback is a silent sleep, so
+it needs no API key and makes no sound (`--real-llm`, `--play` to change that).
+`voice_server_check.py` runs `python -m agent` with `LEUTHERIA_PORT=8781` and
+`LEUTHERIA_VOICE_SOURCE=<wav>` (a WAV in place of the mic — also usable by hand), then
+exercises the control messages, a live session through the real agent loop (needs the
+API key; the reply *is* played aloud), push-to-talk, and settings surviving a restart.
+It backs up and restores `voice_settings.json`.
 
 Note: `piper-tts` is GPL-3.0-or-later licensed. Fine for local development; worth
 revisiting the licensing implications before any public release/distribution.
@@ -459,7 +573,9 @@ cd agent
 ```
 
 This starts the WebSocket server at `ws://127.0.0.1:8765` and prints `AGENT_READY`
-once it's up. Leave it running in one terminal, then in another terminal use a small
+once it's up (`LEUTHERIA_PORT=8781` picks another port, to run beside the app). With voice
+enabled it also opens the microphone; `LEUTHERIA_VOICE_SOURCE=/path/to.wav` feeds that WAV
+in instead (at real speed, then silence), so the voice session can be driven without one. Leave it running in one terminal, then in another terminal use a small
 Python client to send it commands:
 
 ```bash
@@ -784,9 +900,13 @@ exact same agentic loop as a `text` command:
 
 ```python
 {"type": "audio", "data": "<base64-encoded webm/wav/etc audio>", "format": "webm"}
-# -> {"type": "transcript", "text": "open the calculator app"}   (sent first)
+# -> {"type": "transcript", "text": "open the calculator app", "origin": "push_to_talk"}   (sent first)
 # -> {"type": "response", "text": "Calculator is now open...", "trace": [...]}  (final)
 ```
+
+`transcript.origin` is `"push_to_talk"` here and `"voice_session"` for the live session,
+whose replies also carry `"origin": "voice_session"` on the `response` — the renderer never
+sent a request for those, so this is how the UI knows to show them.
 
 `format` can be any container ffmpeg can decode (the Electron app sends `webm`, since
 that's what the browser's `MediaRecorder` produces by default). No API key needed for
@@ -794,28 +914,74 @@ this part — Whisper runs fully locally.
 
 ### Voice output protocol
 
-After any `{"type": "response", ...}` with non-empty text, a `speech` message follows
-automatically with the synthesized audio as base64 WAV:
+The agent plays every spoken reply (and every spoken confirmation prompt) itself, and
+brackets the playback with `speaking` messages so the UI can animate while it talks:
 
 ```python
 {"type": "response", "text": "12 × 7 = **84**", "trace": []}
-{"type": "speech", "data": "<base64-encoded WAV audio>"}
+{"type": "speaking", "state": "started", "text": "12 × 7 = **84**", "duration_ms": 2140}
+{"type": "speaking", "state": "ended"}
 ```
 
-There's no request for this — it's always sent after a text reply, for every input
-method (typed, voice, or a tool result reached via either). No API key needed; Piper
-runs fully locally.
+There's no request for this — it follows every non-empty text reply, for every input
+method. No API key needed; Piper runs fully locally. The old `{"type": "speech", "data":
+<base64 WAV>}` message is **gone** — nothing sends audio over the socket any more.
+
+### Voice session protocol
+
+Stream events (to every connected UI; a newly connected one gets the current
+`voice_state` straight away):
+
+```python
+{"type": "voice_state", "state": "listening", "session": true}
+# state: off | idle | listening | hearing | transcribing | thinking | speaking | awaiting_confirmation
+# -- sent on every transition
+{"type": "session_started", "trigger": "wake_word", "wake_word": "hey_jarvis", "score": 0.93}
+{"type": "session_started", "trigger": "manual", "wake_word": null, "score": null}
+{"type": "session_ended", "reason": "dismissed"}   # | "timeout" | "manual" | "error"
+{"type": "audio_level", "level": 0.42}   # 0..1, smoothed; once per 80 ms frame (12.5 Hz),
+                                         # only in a session while listening/hearing/awaiting_confirmation
+```
+
+The transitions:
+
+```
+off ──(voice enabled)──▶ idle ──wake word / manual start──▶ listening
+listening ──speech starts──▶ hearing ──endpoint (≈800 ms silence)──▶ transcribing
+transcribing ──dismiss phrase──▶ idle (session_ended reason=dismissed)
+transcribing ──empty/hallucination──▶ listening
+transcribing ──command──▶ thinking ──reply──▶ speaking ──playback ends──▶ listening
+thinking ──confirmation_required──▶ speaking(prompt) ──▶ awaiting_confirmation (mic live)
+listening ──no speech for silence_timeout──▶ idle (session_ended reason=timeout)
+any ──manual end──▶ idle (session_ended reason=manual)
+```
+
+A session ended while voice is disabled (a manual one) goes back to `off`, not `idle`.
+Control messages, answered with `control_result` like the management ones below:
+
+```python
+{"type": "voice_session", "action": "start", "request_id": "1"}   # or "end"
+# -> {"type": "control_result", "request_id": "1", "ok": true, "state": "listening", "session": true}
+
+{"type": "get_voice_settings", "request_id": "2"}
+# -> {..., "ok": true, "settings": {"enabled": true, "wake_models": ["hey_jarvis"], ...}}
+
+{"type": "set_voice_settings", "settings": {"silence_timeout_s": 60}, "request_id": "3"}
+# -> {..., "ok": true, "settings": {...the full merged settings...}}
+# a partial object; merged, persisted, applied live. One bad or unknown key rejects the
+# whole update: {"ok": false, "error": "wake_threshold must be between 0 and 1"}
+```
 
 ### Skill proposal protocol
 
-May follow a `response` (after any `speech` message) whenever a multi-step (2+ tool call)
+May follow a `response` (after its spoken reply) whenever a multi-step (2+ tool call)
 success isn't already covered by an existing skill -- on the first occurrence as well as
 repeats, not just repeats. Fully independent of the request/response cycle -- nothing is
 waiting on this, so it can arrive or not without affecting anything else:
 
 ```python
 {"type": "response", "text": "...", "trace": [...]}          # the actual answer, unaffected
-{"type": "speech", "data": "..."}                              # if any
+{"type": "speaking", "state": "started", ...}                  # if any, then "ended"
 {"type": "skill_proposed", "id": "<uuid>", "name": "...", "description": "...",
  "steps": [{"tool": "...", "args": {...}}, ...],
  "uncertain_params": [
@@ -839,7 +1005,8 @@ present (possibly empty) so the client doesn't need to special-case a missing ke
 
 ### Management protocol (what the Library and Permissions views use)
 
-Everything else in the protocol is an event stream. These four are request/response: each
+Everything else in the protocol is an event stream. These (plus the voice ones above) are
+request/response: each
 carries a `request_id` that comes back on the reply, so several can be in flight at once
 and interleave freely with a command that's mid-confirmation. They're handled inline in
 `server.py`'s read loop via `control.py` — no LLM call, nothing that can block.
@@ -885,7 +1052,13 @@ and result), `stt_transcript` (what Whisper heard), `tts_error` (a synthesis fai
 non-fatal, just skipped), `confirmation_requested`/`tool_declined` (the destructive-tool
 confirmation flow), `confirmation_answered_by_voice`, `preference_changed`/
 `preference_reset`/`skill_deleted`/`trust_revoked` (management actions taken from the UI),
-and `dispatch_blocked_disabled` (something tried to run a capability you turned off).
+`dispatch_blocked_disabled` (something tried to run a capability you turned off), and the
+voice session's own: `wake_detected` (with its score), `voice_session_started`/
+`voice_session_ended` (trigger / reason and duration), `voice_transcript` (text, speech
+duration, Whisper's `no_speech_prob` per segment, anything dropped, whether it was
+filler or a dismissal), `voice_utterance_rejected` (too short to transcribe),
+`voice_confirmation_unclear`, `voice_settings_changed`, and `voice_error` (a stage —
+`load_models`, `capture`, `transcribe`, `command` — and the error; voice goes to `off`).
 The Library's usage counts and the Activity view's history are both derived from this
 file, so it's the single source of truth for both. Tail it live while testing:
 
@@ -907,6 +1080,16 @@ saved skill) will read over.
   ```
 
 ## Troubleshooting
+
+**The voice indicator says `off` and "hey Jarvis" does nothing**
+
+Look for the latest `voice_error` in `agent/logs/events.jsonl` — its `stage` says what
+failed. `capture` is the mic: no input device, the configured `input_device` doesn't
+exist, or microphone permission was denied (System Settings → Privacy & Security →
+Microphone, for Electron or your terminal). `load_models` is openWakeWord: a
+`wake_models` entry that isn't a pretrained name or an existing `.onnx` path, or the
+first-run model download failed (it needs network once). Changing any voice setting
+retries.
 
 **`OSError: ... address already in use` on port 8765 when running `npm start`**
 

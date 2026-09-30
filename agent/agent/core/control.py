@@ -1,4 +1,4 @@
-from agent.core import inventory, preferences, session, trust
+from agent.core import inventory, preferences, session, trust, voice_session, voice_settings
 from agent.core.logging_util import log_event
 from agent.skills.registry import delete_skill
 
@@ -7,7 +7,16 @@ from agent.skills.registry import delete_skill
 # They're deliberately handled inline in the server's read loop rather than
 # through process_command(), because none of them touch the LLM, none can
 # block, and none should be logged or spoken as part of a conversation.
-CONTROL_TYPES = {"inventory", "set_preference", "delete_skill", "revoke_trust", "revoke_grant"}
+CONTROL_TYPES = {
+    "inventory",
+    "set_preference",
+    "delete_skill",
+    "revoke_trust",
+    "revoke_grant",
+    "voice_session",
+    "get_voice_settings",
+    "set_voice_settings",
+}
 
 
 def handle(payload: dict) -> dict:
@@ -58,5 +67,29 @@ def handle(payload: dict) -> dict:
             return {"ok": False, "error": f"no live grant for {app}"}
         log_event("grant_revoked", app=app)
         return {"ok": True, "app": app}
+
+    if message_type == "voice_session":
+        live = voice_session.current()
+        if live is None:
+            return {"ok": False, "error": "voice is unavailable (see voice_error in the log)"}
+        result = live.request(payload.get("action"))
+        if result.get("ok"):
+            log_event("voice_session_requested", action=payload.get("action"))
+        return result
+
+    if message_type == "get_voice_settings":
+        return {"ok": True, "settings": voice_settings.load()}
+
+    if message_type == "set_voice_settings":
+        settings, error = voice_settings.update(payload.get("settings"))
+        if error:
+            return {"ok": False, "error": error}
+        # Applied live: enabling opens the mic, disabling closes it (ending
+        # any session), a new wake model or input device restarts capture.
+        live = voice_session.current()
+        if live is not None:
+            live.apply_settings(settings)
+        log_event("voice_settings_changed", settings=payload.get("settings"))
+        return {"ok": True, "settings": settings}
 
     return {"ok": False, "error": f"unknown control message: {message_type}"}

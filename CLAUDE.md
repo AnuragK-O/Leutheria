@@ -112,7 +112,8 @@ matching run *before* the current request logs its own entry (checking after sel
 BUGS.md #6).
 
 **Management messages never touch the LLM.** `inventory` / `set_preference` / `delete_skill` /
-`revoke_trust` are answered inline in the read loop by `core/control.py`, matched by
+`revoke_trust` / `revoke_grant` and the voice ones (`voice_session`, `get_voice_settings`,
+`set_voice_settings`) are answered inline in the read loop by `core/control.py`, matched by
 `request_id`, so UI reads can't block or be blocked by a running command.
 
 **The system prompt applies to conversation only.** `agent/SYSTEM_PROMPT.md` is loaded once at
@@ -120,8 +121,18 @@ import in `agent_loop.py` and passed as `system` on conversational calls. `skill
 passes no system prompt — its calls must return strict JSON, and persona/tone instructions
 would corrupt structured output. Edits to the file take effect on the next agent restart.
 
-TTS and skill learning are additive: a failure in either is logged and skipped, never blocking
-or delaying the text reply.
+**The sidecar owns the mic and the speaker.** `core/voice_session.py` captures audio and
+`tts.speak()` plays replies through sounddevice; no audio crosses the WebSocket (the old
+base64 `speech` message is gone). This is load-bearing, not incidental: the session is
+half-duplex — captured frames are discarded while `speak()` is playing plus a 300 ms tail —
+and only the process driving the speaker knows exactly when that is. Route any new playback
+through `speak()` or the mic will hear it and act on it. Voice commands run on the most
+recently connected UI (`server._primary()`); every spoken input, push-to-talk or session,
+goes through `server.handle_transcript()`. The session's frame source is injectable, which
+is how `scripts/voice_sim.py` tests it without a mic — keep it that way.
+
+TTS, skill learning and the voice session are additive: a failure in any of them is logged
+and skipped (voice goes to `off`), never blocking or delaying the text reply.
 
 ## Conventions
 
@@ -132,7 +143,9 @@ or delaying the text reply.
   `SKILLS` entry; they are code, so the UI can disable but not delete them.
 - Spoken confirmations go through `core/voice_confirm.py:interpret_yes_no()`, which uses
   word-boundary regexes ("note" must not match "no"). An ambiguous or empty reply returns
-  `None`, meaning "not an answer": handle it as a normal command, never as a guess.
+  `None`, meaning "not an answer": handle it as a normal command, never as a guess. (The
+  live voice session is the one exception: there a non-answer is shown but not run, since a
+  second command must not start while the first is paused on a question.)
 - Trust is keyed on the exact `(tool, args)` pair, never the tool name alone (`core/trust.py`).
 - Renderer is plain ES modules — no framework, no build step. `preload.js` is the only bridge;
   the page has no Node access.
@@ -153,5 +166,5 @@ or delaying the text reply.
   send a literal backslash-n and it dutifully typed one.
 - Replies are spoken aloud, so agent-facing prose (SYSTEM_PROMPT.md, tool descriptions the
   model echoes) should avoid markdown — TTS reads the punctuation literally.
-- Local state stays out of git: `preferences.json`, `trusted_commands.json`, `logs/`,
+- Local state stays out of git: `preferences.json`, `trusted_commands.json`, `voice_settings.json`, `logs/`,
   `skills/generated/`, `assets/voices/`, `.env`, `plans/`.
