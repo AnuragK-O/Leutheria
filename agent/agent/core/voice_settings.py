@@ -42,7 +42,9 @@ def _validate(key: str, value):
     if key == "wake_threshold":
         return None if _is_number(value) and 0 < value < 1 else "wake_threshold must be between 0 and 1"
     if key == "silence_timeout_s":
-        return None if _is_number(value) and value >= 5 else "silence_timeout_s must be at least 5"
+        # null = never: the session ends only when dismissed or stopped by hand.
+        ok = value is None or (_is_number(value) and value >= 5)
+        return None if ok else "silence_timeout_s must be at least 5, or null for never"
     if key == "endpoint_silence_ms":
         ok = _is_number(value) and 240 <= value <= 5000
         return None if ok else "endpoint_silence_ms must be between 240 and 5000"

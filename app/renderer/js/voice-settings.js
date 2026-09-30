@@ -106,7 +106,7 @@
   function resetDraft() {
     draft = copy(saved);
     raw = {
-      silence_timeout_s: String(saved.silence_timeout_s),
+      silence_timeout_s: saved.silence_timeout_s === null ? "180" : String(saved.silence_timeout_s),
       endpoint_silence_ms: String(saved.endpoint_silence_ms),
     };
     clientErrors = {};
@@ -137,6 +137,7 @@
   function validate() {
     const errors = {};
     for (const key of ["silence_timeout_s", "endpoint_silence_ms"]) {
+      if (key === "silence_timeout_s" && draft[key] === null) continue; // "never"
       if (!Number.isFinite(draft[key])) errors[key] = "Enter a number.";
     }
     if (!draft.wake_models.length) errors.wake_models = "Pick at least one wake word.";
@@ -423,6 +424,28 @@
     return el("div.inline-controls", {}, input, el("span.unit", { text: unit }));
   }
 
+  // The number field plus a "Never" box. Never saves null; unticking restores
+  // whatever number was last typed, so toggling doesn't lose it.
+  function timeoutField() {
+    const never = draft.silence_timeout_s === null;
+    const field = numberField("silence_timeout_s", "seconds", 5, null, 5);
+    const input = field.querySelector("input");
+    input.disabled = never;
+    const box = el("input", {
+      type: "checkbox",
+      checked: never,
+      onchange: (event) => {
+        draft.silence_timeout_s = event.target.checked
+          ? null
+          : raw.silence_timeout_s.trim() === "" ? NaN : Number(raw.silence_timeout_s);
+        touched("silence_timeout_s");
+        render();
+      },
+    });
+    field.appendChild(el("label.inline-check", {}, box, el("span", { text: "Never" })));
+    return field;
+  }
+
   function renderPhrases() {
     const chips = el("div.chips");
     for (const phrase of draft.dismiss_phrases) {
@@ -583,8 +606,8 @@
         row(
           "silence_timeout_s",
           "Silence timeout",
-          "A session with nothing said for this long ends on its own.",
-          numberField("silence_timeout_s", "seconds", 5, null, 5)
+          "A session with nothing said for this long ends on its own. With Never, only a dismiss phrase or Stop listening ends it.",
+          timeoutField()
         ),
         renderPhrases()
       ),

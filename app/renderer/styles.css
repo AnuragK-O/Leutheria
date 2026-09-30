@@ -1663,6 +1663,24 @@ kbd {
   min-width: 52px;
 }
 
+.inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.inline-check input {
+  accent-color: var(--accent);
+  margin: 0;
+}
+
+.field-input.number:disabled {
+  opacity: 0.45;
+}
+
 .select-wrap {
   position: relative;
 }

@@ -131,6 +131,14 @@ def scenarios() -> dict:
             "expect_ended": ["timeout"],
             "expect_transcripts": 0,
         },
+        "never_timeout": {
+            "about": "silence_timeout_s=null: a long silence does not end the session",
+            "parts": [silence(1), say("Hey Jarvis."), silence(8)],
+            "settings": {"silence_timeout_s": None},
+            "expect_states": ["idle", "listening"],
+            "expect_ended": [],
+            "expect_transcripts": 0,
+        },
         "noise": {
             "about": "white noise, a 200 ms speech blip, 'hm' and silence never become a command",
             "parts": [silence(1), say("Hey Jarvis."), silence(1), noise(3), silence(1), blip(0.2),

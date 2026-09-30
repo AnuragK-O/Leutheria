@@ -537,8 +537,8 @@ class VoiceSession:
                 self._set_state("hearing")
             elif state == "listening":
                 self._silence_frames += 1
-                timeout_frames = self.settings["silence_timeout_s"] * 1000 / FRAME_MS
-                if self._silence_frames >= timeout_frames:
+                timeout_s = self.settings["silence_timeout_s"]  # None = never
+                if timeout_s is not None and self._silence_frames >= timeout_s * 1000 / FRAME_MS:
                     self._end_session("timeout")
             return
 

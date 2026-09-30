@@ -487,7 +487,7 @@ below, applied live):
 | `enabled` | `true` | wake word listening on/off |
 | `wake_models` | `["hey_jarvis"]` | pretrained openWakeWord names, or paths to a trained `.onnx` |
 | `wake_threshold` | `0.5` | 0–1 |
-| `silence_timeout_s` | `180` | a session with nothing said for this long ends |
+| `silence_timeout_s` | `180` | a session with nothing said for this long ends; `null` = never (only a dismiss phrase or Stop listening ends it) |
 | `endpoint_silence_ms` | `800` | trailing silence that ends an utterance |
 | `dismiss_phrases` | thanks, thank you, that's all, that's it, we're done, goodbye | |
 | `input_device` | `null` | sounddevice index or name; `null` is the system default |
