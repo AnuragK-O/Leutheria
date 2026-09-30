@@ -27,13 +27,33 @@ MAX_MESSAGE_SIZE = 20 * 1024 * 1024  # 20 MiB
 
 _backend = None
 
-# Every open UI connection, oldest first, as (websocket, pending,
-# pending_skills). Confirmations and skill proposals are per-connection, but
+# Every open connection, oldest first, as (websocket, pending,
+# pending_skills) -- for a UI connection `websocket` is its _MirroringSocket,
+# for an overlay the raw socket. Confirmations and skill proposals are per-connection, but
 # the voice session isn't tied to any connection -- so voice commands run on
 # the most recently opened one (the "primary"). With nothing connected they
 # run with websocket=None, which makes any destructive step fail closed in
 # dispatcher._confirm(); that's the intended behaviour, not a gap.
 _connections: list = []
+
+# The subset of _connections whose client said {"type":"hello","role":"overlay"}
+# (keyed by the entry's websocket object). An overlay is a second *view* of
+# the voice session -- the native Qt activation overlay -- not a place a
+# conversation lives: it never becomes the primary, so replies, confirmations
+# and skill proposals keep going to the Electron window. It receives every
+# broadcast() plus a mirror of what the primary is told (_mirror_to_overlays).
+_overlays: set = set()
+
+OVERLAY_ROLE = "overlay"
+
+# What an overlay needs to draw, beyond the broadcasts: the confirmation card
+# (required/resolved), and what was heard and answered in the voice session.
+# "speaking" is included because the overlay shows the line being spoken,
+# which for a confirmation prompt never arrives as a "response" at all.
+_MIRRORED_TYPES = {"confirmation_required", "confirmation_resolved", "transcript", "response", "speaking"}
+# Of those, conversation proper is only mirrored for the live session -- a
+# typed command's reply belongs to the chat window alone.
+_SESSION_ONLY_TYPES = {"transcript", "response"}
 
 # Fire-and-forget tasks are kept referenced until done -- asyncio only holds
 # weak references, so an unreferenced task can be collected mid-flight.
@@ -48,9 +68,65 @@ def get_backend():
 
 
 def _primary() -> tuple:
-    if _connections:
-        return _connections[-1]
+    # Newest connection that isn't an overlay. Note an overlay counts as an
+    # ordinary connection for the one round trip between its handshake and
+    # its hello; the hello is the first frame it sends, so in practice that
+    # window is well under a millisecond on loopback.
+    for entry in reversed(_connections):
+        if entry[0] not in _overlays:
+            return entry
     return None, {}, {}
+
+
+class _MirroringSocket:
+    """Stands in for a UI connection's websocket everywhere a command runs.
+
+    Why a wrapper rather than a server-level "send to primary and overlays"
+    helper: the sends an overlay needs are spread across modules that only
+    ever see the `websocket` they were handed -- dispatcher._confirm() sends
+    confirmation_required itself, tts.speak() sends "speaking", skills pass
+    the websocket straight through to dispatch(). Threading an overlay list
+    through all of that would change every skill's run(args, websocket,
+    pending) signature (CLAUDE.md). Wrapping the one object they already
+    share mirrors every send at the source, including sends added later.
+
+    Only mirrors while this connection is the primary -- an overlay can only
+    answer the primary's confirmations, so showing another window's card
+    would offer buttons that can't work. Everything but send() is delegated.
+    Reading (`async for`) goes through the raw websocket, not this."""
+
+    def __init__(self, websocket):
+        self._websocket = websocket
+
+    def __getattr__(self, name):
+        return getattr(self._websocket, name)
+
+    async def send(self, message):
+        # Primary first: if the UI is gone this raises, and the overlay must
+        # not show a card for a confirmation nobody can see the details of.
+        await self._websocket.send(message)
+        if _primary()[0] is self:
+            await _mirror_to_overlays(message)
+
+
+async def _mirror_to_overlays(message) -> None:
+    if not _overlays:
+        return
+    if isinstance(message, (str, bytes)):
+        try:
+            message = json.loads(message)
+        except (ValueError, TypeError):
+            return
+    if not isinstance(message, dict):
+        return
+    kind = message.get("type")
+    if kind not in _MIRRORED_TYPES:
+        return
+    if kind in _SESSION_ONLY_TYPES and message.get("origin") != "voice_session":
+        return
+    for websocket, _, _ in list(_connections):
+        if websocket in _overlays:
+            await _send(websocket, message)
 
 
 def _in_background(coro) -> None:
@@ -64,6 +140,9 @@ async def _send(websocket, message: dict) -> None:
     command can outlive the window it was reported to, and nothing about the
     command itself depends on the UI hearing about it."""
     if websocket is None:
+        # No UI connected: a voice command still runs, and an overlay can
+        # still show what was heard and answered.
+        await _mirror_to_overlays(message)
         return
     try:
         await websocket.send(json.dumps(message))
@@ -76,7 +155,13 @@ async def broadcast(message: dict) -> None:
     connection: it's status, not conversation, and more than one listener
     (the app plus a debugging client) should all see the same thing."""
     for websocket, _, _ in list(_connections):
-        await _send(websocket, message)
+        await _send(_raw(websocket), message)
+
+
+def _raw(websocket):
+    """The real socket behind a connection entry -- for a send that already
+    reaches every client, so the primary's mirror mustn't repeat it."""
+    return websocket._websocket if isinstance(websocket, _MirroringSocket) else websocket
 
 
 async def _resolve_confirmation_by_voice(text: str, websocket, pending: dict) -> bool:
@@ -317,7 +402,10 @@ async def handler(websocket):
     # paused mid-flight waiting on one.
     pending: dict = {}
     pending_skills: dict = {}
-    entry = (websocket, pending, pending_skills)
+    # Every connection starts as a UI connection (no hello = exactly the old
+    # behaviour); a hello with role "overlay" swaps the entry's socket for
+    # the raw one and marks it (_set_role).
+    entry = (_MirroringSocket(websocket), pending, pending_skills)
     _connections.append(entry)
 
     # A (re)connecting UI learns the current voice state straight away rather
@@ -325,10 +413,78 @@ async def handler(websocket):
     if voice_session.current() is not None:
         await _send(websocket, voice_session.current().snapshot())
 
+    connection = {"entry": entry}
     try:
-        await _read_loop(websocket, pending, pending_skills)
+        await _read_loop(websocket, connection)
     finally:
-        _connections.remove(entry)
+        _connections.remove(connection["entry"])
+        _overlays.discard(connection["entry"][0])
+
+
+def _set_role(connection: dict, role) -> None:
+    """Handle {"type":"hello","role":...}. Only "overlay" changes anything;
+    any other role (or none) is an ordinary UI connection, as before."""
+    websocket, pending, pending_skills = connection["entry"]
+    is_overlay = role == OVERLAY_ROLE
+    if is_overlay == (websocket in _overlays):
+        return
+    raw = _raw(websocket)
+    # An overlay gets its raw socket: nothing it is sent is re-mirrored.
+    new_entry = (raw if is_overlay else _MirroringSocket(raw), pending, pending_skills)
+    index = _connections.index(connection["entry"])
+    _connections[index] = new_entry
+    _overlays.discard(websocket)
+    if is_overlay:
+        _overlays.add(raw)
+    connection["entry"] = new_entry
+    log_event("client_hello", role=role or "ui")
+
+
+def _find_pending_confirmation(confirmation_id):
+    """An overlay has no confirmations of its own: its answer is for one the
+    primary is waiting on. Looks through every UI connection (primary first)
+    rather than the primary alone, so a card shown just before another window
+    connected -- and took over as primary -- can still be answered."""
+    ui_entries = [e for e in _connections if e[0] not in _overlays]
+    for _, pending, _ in reversed(ui_entries):
+        future = pending.get(confirmation_id)
+        if future is not None:
+            return future
+    return None
+
+
+async def _handle_confirm(connection: dict, payload: dict) -> None:
+    websocket, pending, _ = connection["entry"]
+    confirmation_id = payload.get("id")
+    answer = {"approved": bool(payload.get("approved")), "remember": payload.get("remember")}
+
+    if websocket in _overlays:
+        future = _find_pending_confirmation(confirmation_id)
+        if future is None or future.done():
+            return
+        future.set_result(answer)
+        log_event("confirmation_answered_by_overlay", id=confirmation_id, approved=answer["approved"])
+        # Every client, not just the primary: the Electron window and any
+        # other overlay all have a card for this id to settle. Raw sends, so
+        # the primary's mirror doesn't deliver it to overlays a second time.
+        resolved = {"type": "confirmation_resolved", "id": confirmation_id, "approved": answer["approved"],
+                    "by": "overlay"}
+        for other, _, _ in list(_connections):
+            await _send(_raw(other), resolved)
+        return
+
+    future = pending.get(confirmation_id)
+    if future and not future.done():
+        future.set_result(answer)
+        # The UI settles its own cards on a click (main.js), and has never
+        # been sent a resolution for one -- so only overlays are told.
+        for other, _, _ in list(_connections):
+            if other in _overlays:
+                await _send(
+                    other,
+                    {"type": "confirmation_resolved", "id": confirmation_id, "approved": answer["approved"],
+                     "by": "ui"},
+                )
 
 
 async def _refresh_input_devices(websocket, request_id) -> None:
@@ -347,13 +503,30 @@ async def _refresh_input_devices(websocket, request_id) -> None:
     await _send(websocket, {"type": "control_result", "request_id": request_id, **result})
 
 
-async def _read_loop(websocket, pending: dict, pending_skills: dict):
+# What an overlay may send besides hello and control messages. It's a view,
+# not a conversation: a command from it would run on a connection with no
+# chat to show the reply in and no card of its own to confirm through.
+_OVERLAY_REJECTED = "overlay connections can only send hello, confirm and control messages"
+
+
+async def _read_loop(websocket, connection: dict):
     async for raw in websocket:
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError:
             await websocket.send(json.dumps({"type": "error", "text": "invalid JSON"}))
             continue
+        if not isinstance(payload, dict):
+            await websocket.send(json.dumps({"type": "error", "text": "expected a JSON object"}))
+            continue
+
+        if payload.get("type") == "hello":
+            _set_role(connection, payload.get("role"))
+            continue
+
+        # Re-read every message: a hello swaps the entry.
+        entry_socket, pending, pending_skills = connection["entry"]
+        is_overlay = entry_socket in _overlays
 
         if payload.get("type") == "list_input_devices" and payload.get("refresh"):
             # A refresh briefly closes and reopens the mic, so unlike the
@@ -375,11 +548,11 @@ async def _read_loop(websocket, pending: dict, pending_skills: dict):
             continue
 
         if payload.get("type") == "confirm":
-            future = pending.get(payload.get("id"))
-            if future and not future.done():
-                future.set_result(
-                    {"approved": bool(payload.get("approved")), "remember": payload.get("remember")}
-                )
+            await _handle_confirm(connection, payload)
+            continue
+
+        if is_overlay:
+            await _send(websocket, {"type": "error", "text": _OVERLAY_REJECTED})
             continue
 
         if payload.get("type") == "skill_response":
@@ -410,7 +583,9 @@ async def _read_loop(websocket, pending: dict, pending_skills: dict):
             continue
 
         log_event("message_in", payload=payload)
-        _in_background(process_command(websocket, payload, pending, pending_skills))
+        # entry_socket (the mirroring wrapper), not the raw one: this is the
+        # object dispatch(), skills and speak() will send through.
+        _in_background(process_command(entry_socket, payload, pending, pending_skills))
 
 
 async def main():
