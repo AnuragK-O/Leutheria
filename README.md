@@ -827,8 +827,13 @@ multi-minute working session needs:
 - **history** — a rolling window of plain user/assistant turns. Only text is carried; the
   `tool_use`/`tool_result` blocks stay local to their own request, since replaying a stale
   tool trace invites the model to treat an old result as still true.
+- **actions** — which tools each recent request actually ran, and whether they
+  succeeded, listed in the system prompt as past events. Names and arguments only, never
+  results. Text-only history on its own made the model disown its own replies: shown
+  "Ran it, the output was Hello" with no tool call behind it, it apologised for making
+  that up and ran the command again.
 
-Both expire after 10 minutes of silence, so a request made hours later doesn't silently
+All three expire after 10 minutes of silence, so a request made hours later doesn't silently
 resolve "it" against something long forgotten.
 
 Try it — three separate requests, the app named only once:

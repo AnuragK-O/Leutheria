@@ -94,7 +94,10 @@ be structurally safe or tagged `"destructive"`.
 grants). Threading it through `dispatch()` would change every skill's
 `run(args, websocket, pending)` signature for no gain on a single-user local agent.
 `agent_loop` carries only plain user/assistant text across turns — replaying a stale tool
-trace invites the model to treat an old result as still true.
+trace invites the model to treat an old result as still true. What *did* run is listed
+separately in the system prompt's "Current session" note (`session.record_actions`: tool,
+args, succeeded/failed, never result payloads). Without it the model saw its own "Ran it"
+with no evidence behind it, disowned it, and re-ran the command (BUGS.md #21).
 
 **Preferences gate twice.** `core/preferences.py` overrides (`enabled`, `requires_confirmation`)
 are applied both when building the schemas sent to Claude *and* independently in
