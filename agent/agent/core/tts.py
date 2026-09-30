@@ -1,40 +1,54 @@
 import asyncio
-import io
 import json
-import wave
-from pathlib import Path
 
-from piper import PiperVoice
-from piper.download_voices import download_voice
 from websockets.exceptions import ConnectionClosed
 
-from agent.core import audio_io
+from agent.core import audio_io, tts_backends, voice_settings
 from agent.core.logging_util import log_event
 
-VOICE_NAME = "en_US-amy-medium"
-VOICE_DIR = Path(__file__).resolve().parent.parent / "assets" / "voices"
-MODEL_PATH = VOICE_DIR / f"{VOICE_NAME}.onnx"
-CONFIG_PATH = VOICE_DIR / f"{VOICE_NAME}.onnx.json"
-
-_voice = None
-
-
-def _get_voice() -> PiperVoice:
-    global _voice
-    if _voice is None:
-        VOICE_DIR.mkdir(parents=True, exist_ok=True)
-        if not MODEL_PATH.exists() or not CONFIG_PATH.exists():
-            download_voice(VOICE_NAME, VOICE_DIR)
-        _voice = PiperVoice.load(MODEL_PATH, CONFIG_PATH)
-    return _voice
+_piper = tts_backends.BACKENDS[tts_backends.PiperBackend.name]
 
 
 def synthesize(text: str) -> bytes:
-    """Return WAV audio bytes for the given text, synthesized locally with Piper."""
-    buffer = io.BytesIO()
-    with wave.open(buffer, "wb") as wav_file:
-        _get_voice().synthesize_wav(text, wav_file)
-    return buffer.getvalue()
+    """Return WAV audio bytes for the given text, synthesized locally with
+    Piper's default voice. Not the reply path (that's _synthesize_reply, which
+    honours the selected backend); kept for scripts/voice_sim.py, which
+    stitches its test utterances from the project's own voice."""
+    return _piper.synthesize_wav(text)
+
+
+def availability() -> dict:
+    """{backend: usable}, booleans only -- see tts_backends.availability()."""
+    return tts_backends.availability()
+
+
+def _synthesize_reply(text: str) -> tuple:
+    """(samples, rate, backend name) using the backend and voice the voice
+    settings name, read per utterance so a change applies to the next reply.
+
+    If a non-Piper backend fails -- no key, network down, an HTTP error, a
+    timeout -- the failure is logged and this utterance falls back to Piper's
+    default voice: a premium voice must never be the reason a reply is
+    silent. A Piper failure propagates; speak() logs it and stays silent.
+    """
+    settings = voice_settings.load()
+    name = settings.get("tts_backend") or tts_backends.DEFAULT_BACKEND
+    voice = settings.get("tts_voice")
+    backend = tts_backends.BACKENDS.get(name)
+    if backend is None:
+        log_event("tts_error", backend=name, error="unknown backend", fallback="piper")
+        backend, voice = _piper, None
+    try:
+        audio, rate = backend.synthesize(text, voice)
+        return audio, rate, backend.name
+    except Exception as e:
+        # A Piper voice that isn't the default gets the same treatment: the
+        # default voice is the floor every other choice falls back to.
+        if backend is _piper and not voice:
+            raise
+        log_event("tts_error", backend=backend.name, voice=voice, error=str(e), fallback="piper")
+    audio, rate = _piper.synthesize(text)
+    return audio, rate, _piper.name
 
 
 # Playback is swappable so a test harness (scripts/voice_sim.py) can drive the
@@ -109,12 +123,11 @@ async def speak(websocket, text: str) -> None:
         started = False
         try:
             loop = asyncio.get_running_loop()
-            audio_bytes = await loop.run_in_executor(None, synthesize, text)
-            audio, rate = audio_io.wav_bytes_to_array(audio_bytes)
+            audio, rate, backend = await loop.run_in_executor(None, _synthesize_reply, text)
             duration_ms = int(len(audio) * 1000 / rate)
             await _send(
                 websocket,
-                {"type": "speaking", "state": "started", "text": text, "duration_ms": duration_ms},
+                {"type": "speaking", "state": "started", "text": text, "duration_ms": duration_ms, "backend": backend},
             )
             started = True
             _notify("playback_started")

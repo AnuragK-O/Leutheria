@@ -7,6 +7,7 @@ model or opens a device.
 """
 
 import json
+import re
 from pathlib import Path
 
 SETTINGS_FILE = Path(__file__).resolve().parent.parent.parent / "voice_settings.json"
@@ -21,7 +22,19 @@ DEFAULTS = {
     "endpoint_silence_ms": 800,
     "dismiss_phrases": ["thanks", "thank you", "that's all", "that's it", "we're done", "goodbye"],
     "input_device": None,
+    # Spoken replies. "piper" is local and free; "elevenlabs" is a cloud voice
+    # needing ELEVENLABS_API_KEY in the environment -- the key itself is never
+    # a setting, so it never lands in this file. tts_voice is the selected
+    # backend's voice id; null means that backend's default.
+    "tts_backend": "piper",
+    "tts_voice": None,
 }
+
+TTS_BACKENDS = ("piper", "elevenlabs")
+# Mirrors tts_backends.VOICE_ID_PATTERN (not imported: that module pulls in
+# requests and numpy, and this one stays import-light). The id lands in a
+# file path or a URL path, so nothing that could escape either is accepted.
+_VOICE_ID = re.compile(r"^[A-Za-z0-9_-]{1,100}$")
 
 
 def _is_number(value) -> bool:
@@ -51,6 +64,11 @@ def _validate(key: str, value):
     if key == "input_device":
         ok = value is None or (isinstance(value, (int, str)) and not isinstance(value, bool))
         return None if ok else "input_device must be null, a device index, or a device name"
+    if key == "tts_backend":
+        return None if value in TTS_BACKENDS else f"tts_backend must be one of: {', '.join(TTS_BACKENDS)}"
+    if key == "tts_voice":
+        ok = value is None or (isinstance(value, str) and _VOICE_ID.match(value))
+        return None if ok else "tts_voice must be null or a voice id (letters, digits, - and _)"
     return f"unknown voice setting: {key}"
 
 

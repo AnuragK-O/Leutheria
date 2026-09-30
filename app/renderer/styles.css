@@ -1819,6 +1819,16 @@ kbd {
   color: var(--danger);
 }
 
+.callout-warning {
+  background: var(--warning-soft);
+  border-color: color-mix(in srgb, var(--warning) 40%, transparent);
+  color: var(--text);
+}
+
+.callout-warning svg {
+  color: var(--warning);
+}
+
 /* --- logs --------------------------------------------------------------- */
 
 .logs {
