@@ -691,6 +691,10 @@ ipcMain.handle("get-voice-settings", () => sendControlRequest({ type: "get_voice
 ipcMain.handle("set-voice-settings", (_event, settings) =>
   sendControlRequest({ type: "set_voice_settings", settings })
 );
+ipcMain.handle("list-input-devices", () => sendControlRequest({ type: "list_input_devices" }));
+ipcMain.handle("list-wake-models", (_event, paths) =>
+  sendControlRequest({ type: "list_wake_models", paths: paths || [] })
+);
 
 ipcMain.handle("overlay-manifest", () => loadOverlayManifest());
 ipcMain.on("overlay-interactive", (_event, interactive) => {

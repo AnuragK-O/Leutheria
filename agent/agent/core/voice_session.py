@@ -114,6 +114,31 @@ def audio_level(frame: np.ndarray) -> float:
     return min(1.0, max(0.0, (db + 60) / 50))
 
 
+_pretrained_cache = None
+
+
+def available_wake_models() -> list:
+    """openWakeWord's pretrained model names, and whether each is already on
+    disk (the rest download on first use). Importing openwakeword costs about
+    half a second, so the name list is cached; with voice enabled the session
+    has usually imported it already. Nothing is loaded or downloaded here."""
+    global _pretrained_cache
+    if _pretrained_cache is None:
+        import openwakeword
+
+        _pretrained_cache = {name: entry["model_path"] for name, entry in openwakeword.MODELS.items()}
+    # Only the ONNX file counts: that's the backend the detector runs on.
+    return [
+        {"name": name, "downloaded": Path(path).with_suffix(".onnx").exists()}
+        for name, path in _pretrained_cache.items()
+    ]
+
+
+def wake_model_path_exists(path: str) -> bool:
+    """The same test OpenWakeWordDetector applies to a custom model entry."""
+    return Path(path).expanduser().exists()
+
+
 class OpenWakeWordDetector:
     """openWakeWord over ONNX. The tflite backend it defaults to has no wheel
     for Python 3.12 on macOS; ONNX runtime is already here for Piper."""
@@ -125,7 +150,7 @@ class OpenWakeWordDetector:
 
         resolved = []
         for name in models:
-            if Path(name).expanduser().exists():
+            if wake_model_path_exists(name):
                 resolved.append(str(Path(name).expanduser()))
                 continue
             # Pretrained names download on first use, same as the Piper voice.
