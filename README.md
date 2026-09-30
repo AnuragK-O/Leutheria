@@ -130,6 +130,7 @@ app/                  Electron shell
       permissions.js   Permissions view: standing approvals, customized capabilities
       logs.js          Logs view: the raw bridge stream
       voice.js         Header voice-state indicator (click to start/stop a session)
+      voice-settings.js  Voice view: wake word, timeouts, dismiss phrases, input device
     overlay/
       overlay.html/.css/.js  The activation overlay (reuses styles.css tokens + util.js)
       assets/          Drop-in visuals: manifest.json + README.md for the asset designer
@@ -329,7 +330,7 @@ The sidebar's status dot goes green once the bridge is connected.
 
 ### The interface
 
-Five views in the left sidebar:
+Six views in the left sidebar:
 
 | view | what it's for |
 |---|---|
@@ -337,6 +338,7 @@ Five views in the left sidebar:
 | **Library** | Every tool and skill in one master/detail list. Select one to read its description and parameters, see how often it's actually been used, turn it off, make it always ask first, or (for a learned skill) inspect its steps and delete it. |
 | **Activity** | How the skill set has grown: every skill proposed, saved, or turned down, plus a most-used breakdown. |
 | **Permissions** | Standing approvals (the `remember: session/always` ones) with a revoke button, and every capability whose settings differ from its default, with a reset. |
+| **Voice** | Settings for the always-listening session: wake word on/off, which wake words, sensitivity, the end-of-utterance pause, the silence timeout, dismiss phrases, and the microphone. See below. |
 | **Logs** | The raw bridge stream, out of the way of the conversation. Copy or clear it. |
 
 Light and dark themes both ship; toggle at the bottom of the sidebar (the choice sticks).
@@ -358,6 +360,22 @@ Light and dark themes both ship; toggle at the bottom of the sidebar (the choice
 Both settings live in `agent/preferences.json` and survive restarts. Deleting a learned
 skill also clears its overrides, so a later skill that happens to reuse the name doesn't
 silently inherit the dead one's settings.
+
+**The Voice view.** Edits collect in a draft; **Save changes** sends one
+`set_voice_settings` carrying only the keys you changed, and **Revert** drops the draft.
+The form only checks that values are well-formed (a number, at least one wake word); the
+agent owns the ranges, and since it refuses the whole update on the first bad key, its
+message is shown against that field and nothing is saved. Changes apply live: turning
+listening off closes the mic and the header pill goes to Off.
+- **Wake words** lists openWakeWord's pretrained models (`list_wake_models`); ones not yet
+  on disk are marked and download the first time they're used. `timer` and `weather` are
+  intent models, not wake words. A custom trained `.onnx` can be added by path; the agent
+  checks the file exists before it's accepted.
+- **Microphone** lists input devices (`list_input_devices`, which only enumerates, never
+  opens a stream). A new pick is stored by name, which survives devices being renumbered.
+  PortAudio snapshots the device list when the agent starts, so a device plugged in later
+  shows up after a restart.
+- There is no "never" for the silence timeout: the agent requires at least 5 seconds.
 
 ### Testing the agentic loop
 
@@ -534,9 +552,10 @@ is exposed as the CSS variable `--level` (0 to 1) for reactive visuals. That fol
 sizes, and how to preview.
 
 **Voice settings** (wake model, threshold, timeouts, dismiss phrases, input device) are
-reachable from the renderer as `window.leutheria.getVoiceSettings()` /
-`setVoiceSettings(partial)`, which become the `get_voice_settings` / `set_voice_settings`
-control messages. There's no settings screen yet.
+edited in the **Voice** view (see The interface above), which uses
+`window.leutheria.getVoiceSettings()` / `setVoiceSettings(partial)` / `listInputDevices()` /
+`listWakeModels(paths)`: the `get_voice_settings` / `set_voice_settings` /
+`list_input_devices` / `list_wake_models` control messages.
 
 ### Testing the Electron side without Python
 
@@ -975,6 +994,18 @@ Control messages, answered with `control_result` like the management ones below:
 # -> {..., "ok": true, "settings": {...the full merged settings...}}
 # a partial object; merged, persisted, applied live. One bad or unknown key rejects the
 # whole update: {"ok": false, "error": "wake_threshold must be between 0 and 1"}
+
+{"type": "list_input_devices", "request_id": "4"}
+# -> {..., "ok": true, "devices": [{"index": 3, "name": "MacBook Pro Microphone",
+#                                   "channels": 1, "default": true}, ...]}
+# input-capable devices only; enumerates via sounddevice.query_devices, never opens the
+# mic. The list is PortAudio's snapshot from agent start.
+
+{"type": "list_wake_models", "paths": ["~/models/hey_leutheria.onnx"], "request_id": "5"}
+# -> {..., "ok": true, "pretrained": [{"name": "hey_jarvis", "downloaded": true}, ...],
+#     "paths": [{"path": "~/models/hey_leutheria.onnx", "exists": false}]}
+# names only, no model loaded or downloaded; `paths` (optional) are custom entries to
+# check for existence. The openwakeword import (~0.5 s) happens once, then is cached.
 ```
 
 ### Skill proposal protocol
