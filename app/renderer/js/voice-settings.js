@@ -566,7 +566,8 @@
           {
             title: "Reload the device list",
             onclick: async () => {
-              const result = await window.leutheria.listInputDevices();
+              // true: re-read the OS list, so a mic plugged in since launch shows up.
+              const result = await window.leutheria.listInputDevices(true);
               devices = result && result.ok ? result.devices : devices;
               devicesError = result && !result.ok ? result.error : null;
               render();
