@@ -130,6 +130,7 @@ app/                  Electron shell
       permissions.js   Permissions view: standing approvals, customized capabilities
       logs.js          Logs view: the raw bridge stream
       voice.js         Header voice-state indicator (click to start/stop a session)
+      voice-settings.js  Voice view: wake word, timeouts, dismiss phrases, input device
     overlay/
       overlay.html/.css/.js  The activation overlay (reuses styles.css tokens + util.js)
       assets/          Drop-in visuals: manifest.json + README.md for the asset designer
@@ -150,6 +151,8 @@ agent/                Python sidecar
                        and checks the state/message sequence per scenario
     voice_server_check.py  End-to-end: real server on a side port, a WAV as the mic,
                        the voice control messages, settings persistence
+    skill_format_check.py  Generated-skill format: metadata, validation rules, load /
+                       migrate / reject, placeholder substitution (temp dirs only)
   .venv/              Virtualenv (gitignored)
   agent/
     core/
@@ -222,8 +225,11 @@ agent/                Python sidecar
                         that packaging turned out to be more annoying to navigate than
                         it was worth for single-function tools, so it was reverted.
     skills/
-      registry.py       SKILLS dict + anthropic_skill_schemas(); loads generated/*.json at
-                        startup, plus register_skill() to add a new one at runtime
+      registry.py       SKILLS dict + anthropic_skill_schemas(); loads (and validates,
+                        and migrates) generated/*.json at startup, plus register_skill()
+                        to add a new one at runtime
+      validate.py       The generated-skill format contract: name/path rules, tools-only
+                        steps, placeholder and JSON checks, content_hash + metadata
       template_skill.py The one reviewed interpreter every generated skill runs through --
                         a generated skill is data (steps + {param} placeholders), never
                         new code
@@ -329,7 +335,7 @@ The sidebar's status dot goes green once the bridge is connected.
 
 ### The interface
 
-Five views in the left sidebar:
+Six views in the left sidebar:
 
 | view | what it's for |
 |---|---|
@@ -337,6 +343,7 @@ Five views in the left sidebar:
 | **Library** | Every tool and skill in one master/detail list. Select one to read its description and parameters, see how often it's actually been used, turn it off, make it always ask first, or (for a learned skill) inspect its steps and delete it. |
 | **Activity** | How the skill set has grown: every skill proposed, saved, or turned down, plus a most-used breakdown. |
 | **Permissions** | Standing approvals (the `remember: session/always` ones) with a revoke button, and every capability whose settings differ from its default, with a reset. |
+| **Voice** | Settings for the always-listening session: wake word on/off, which wake words, sensitivity, the end-of-utterance pause, the silence timeout, dismiss phrases, and the microphone. See below. |
 | **Logs** | The raw bridge stream, out of the way of the conversation. Copy or clear it. |
 
 Light and dark themes both ship; toggle at the bottom of the sidebar (the choice sticks).
@@ -358,6 +365,22 @@ Light and dark themes both ship; toggle at the bottom of the sidebar (the choice
 Both settings live in `agent/preferences.json` and survive restarts. Deleting a learned
 skill also clears its overrides, so a later skill that happens to reuse the name doesn't
 silently inherit the dead one's settings.
+
+**The Voice view.** Edits collect in a draft; **Save changes** sends one
+`set_voice_settings` carrying only the keys you changed, and **Revert** drops the draft.
+The form only checks that values are well-formed (a number, at least one wake word); the
+agent owns the ranges, and since it refuses the whole update on the first bad key, its
+message is shown against that field and nothing is saved. Changes apply live: turning
+listening off closes the mic and the header pill goes to Off.
+- **Wake words** lists openWakeWord's pretrained models (`list_wake_models`); ones not yet
+  on disk are marked and download the first time they're used. `timer` and `weather` are
+  intent models, not wake words. A custom trained `.onnx` can be added by path; the agent
+  checks the file exists before it's accepted.
+- **Microphone** lists input devices (`list_input_devices`, which only enumerates, never
+  opens a stream). A new pick is stored by name, which survives devices being renumbered.
+  PortAudio snapshots the device list when the agent starts, so a device plugged in later
+  shows up after a restart.
+- There is no "never" for the silence timeout: the agent requires at least 5 seconds.
 
 ### Testing the agentic loop
 
@@ -534,9 +557,10 @@ is exposed as the CSS variable `--level` (0 to 1) for reactive visuals. That fol
 sizes, and how to preview.
 
 **Voice settings** (wake model, threshold, timeouts, dismiss phrases, input device) are
-reachable from the renderer as `window.leutheria.getVoiceSettings()` /
-`setVoiceSettings(partial)`, which become the `get_voice_settings` / `set_voice_settings`
-control messages. There's no settings screen yet.
+edited in the **Voice** view (see The interface above), which uses
+`window.leutheria.getVoiceSettings()` / `setVoiceSettings(partial)` / `listInputDevices()` /
+`listWakeModels(paths)`: the `get_voice_settings` / `set_voice_settings` /
+`list_input_devices` / `list_wake_models` control messages.
 
 ### Testing the Electron side without Python
 
@@ -727,6 +751,82 @@ semantically and run as a single tool call using the generated skill.
 Declining is remembered — a `skill_declined` event records the tool-sequence signature
 (not the generated name, which can vary between attempts), and that signature is checked
 before ever proposing again, so a declined pattern doesn't keep coming back.
+
+#### Generated skill format
+
+A generated skill is written to be safe to hand to someone else, even though nothing is
+shared yet: the rules below hold for a file nobody on this machine wrote, so they reject
+rather than repair. They live in `agent/skills/validate.py` and run at three points: when
+a proposal is generated (an invalid one is logged as `skill_proposal_rejected` and never
+shown — a Save button that can't work is worse than no proposal), when it's saved
+(`register_skill()`; nothing is written unless the whole definition passes), and when
+`generated/*.json` is loaded at startup (a bad file is logged as `skill_load_rejected` with
+the reason and skipped; it never stops startup or the other skills).
+
+```json
+{
+  "name": "make_and_list",
+  "description": "Create a folder and list what's inside it.",
+  "input_schema": {"type": "object",
+                   "properties": {"folder": {"type": "string", "description": "..."}},
+                   "required": ["folder"]},
+  "steps": [{"tool": "create_folder", "args": {"path": "~/Desktop/{folder}"}},
+            {"tool": "list_files",    "args": {"path": "~/Desktop/{folder}"}}],
+  "source_signature": ["create_folder", "list_files"],
+  "id": "3f0c…",                 "version": 1,        "source": "learned",
+  "content_hash": "9a1e…",       "requires": ["create_folder", "list_files"],
+  "created_at": 1790798842.2
+}
+```
+
+- **Steps call tools only, never skills** — hand-written or generated. Every generated
+  skill stays a flat list you can read top to bottom: no recursion, and nothing hidden
+  behind another skill's name. `run_template()` re-checks this at run time. A trace that
+  used a skill isn't proposed at all, since it could never validate.
+- **Name** matches `^[a-z][a-z0-9_]{0,63}$`, isn't a Windows device name (`con`, `nul`,
+  …), and isn't a tool's or hand-written skill's name — `dispatch()` resolves skills
+  first, so a generated skill named after a tool would shadow it. The file path is built
+  only from the validated name and must resolve directly inside `generated/`; on load the
+  file name must equal the name inside it, and symlinks are refused. A proposal whose
+  name is taken gets `_2`, `_3`… before it's shown.
+- **Steps**: 1–50 of exactly `{tool, args}`. `args` is plain JSON (no NaN/Infinity,
+  string keys, bounded depth/length), uses only argument names the tool declares, and
+  supplies every argument the tool requires.
+- **input_schema**: `type: object` with `properties` / `required` only; each parameter is
+  `string` / `number` / `integer` / `boolean` with optional `description`, `enum`,
+  `default`. At most 20.
+- **Placeholders**: every `{param}` must be declared, and every declared parameter must be
+  used by some step — an **error**, not a warning: a parameter the skill ignores is an
+  interface that lies to the model. `finalize_definition()` prunes unused *optional*
+  ones, so what fails is a genuinely broken generalization.
+- **description**: non-empty, at most 1000 characters. Unknown top-level keys are refused.
+
+**Placeholder grammar** (`template_skill.py`): `{param}` is replaced, `{{` / `}}` are
+literal braces, and anything else with braces — `{}`, `{print $1}`, a lone `{` — is
+literal. Substitution is one pass, so a value containing `{other}` is inserted as-is and
+never re-expanded; a string that is exactly one placeholder keeps the value's JSON type.
+This replaced `str.format`, which gave up on the whole string at the first brace it
+couldn't resolve (`plans/BUGS.md` #24). A skill run missing a parameter with no `default`
+fails before any step runs.
+
+**Metadata**, stamped by `register_skill()`:
+
+| Field | Meaning |
+|---|---|
+| `id` | uuid4, fixed for the skill's life. Duplicate ids on disk are refused. |
+| `content_hash` | sha256 of canonical JSON (sorted keys, no whitespace, UTF-8, domain-prefixed `leutheria-skill-content-v1`) over the **steps** and the **behavioural part of input_schema** — parameter names, types, enums, defaults, sorted `required`. Name, description and parameter descriptions are left out on purpose: two users who learned the same procedure and worded it differently get the same hash, which is what a shared database would dedupe on. So it identifies *behaviour*; it is not an integrity check of the file's prose. |
+| `version` | Starts at 1. A learned skill whose content was hand-edited on disk gets its hash recomputed and its version bumped on the next load (`skill_migrated`). |
+| `source` | `"learned"`, or (reserved for later) `"imported:<sha256>"`. An imported skill whose content no longer matches its hash is rejected, not re-hashed. |
+| `requires` | Sorted tool names the steps use — what a skill needs enabled to work. |
+| `created_at` | Unix seconds. |
+
+A file from before metadata existed is migrated on load: the metadata is computed and
+written back (`created_at` from the file's mtime), everything else unchanged. Inventory
+exposes `id` / `version` / `source` / `content_hash` / `requires` on each skill row (null for
+hand-written skills); the Library doesn't render them yet.
+
+`./.venv/bin/python scripts/skill_format_check.py` exercises all of this against temp
+directories.
 
 ### Confirmation flow
 
@@ -975,6 +1075,18 @@ Control messages, answered with `control_result` like the management ones below:
 # -> {..., "ok": true, "settings": {...the full merged settings...}}
 # a partial object; merged, persisted, applied live. One bad or unknown key rejects the
 # whole update: {"ok": false, "error": "wake_threshold must be between 0 and 1"}
+
+{"type": "list_input_devices", "request_id": "4"}
+# -> {..., "ok": true, "devices": [{"index": 3, "name": "MacBook Pro Microphone",
+#                                   "channels": 1, "default": true}, ...]}
+# input-capable devices only; enumerates via sounddevice.query_devices, never opens the
+# mic. The list is PortAudio's snapshot from agent start.
+
+{"type": "list_wake_models", "paths": ["~/models/hey_leutheria.onnx"], "request_id": "5"}
+# -> {..., "ok": true, "pretrained": [{"name": "hey_jarvis", "downloaded": true}, ...],
+#     "paths": [{"path": "~/models/hey_leutheria.onnx", "exists": false}]}
+# names only, no model loaded or downloaded; `paths` (optional) are custom entries to
+# check for existence. The openwakeword import (~0.5 s) happens once, then is cached.
 ```
 
 ### Skill proposal protocol
@@ -1000,7 +1112,8 @@ waiting on this, so it can arrive or not without affecting anything else:
 {"type": "skill_response", "id": "<uuid>", "approved": true,
  "resolutions": {"<param_name>": false}}   # or "approved": false, no resolutions needed
 
-# only on approval:
+# only on approval, and only if it validated and was written (a failure is
+# logged as skill_register_rejected; nothing is sent -- see "Generated skill format"):
 {"type": "skill_saved", "name": "..."}
 ```
 
@@ -1057,6 +1170,9 @@ and result), `stt_transcript` (what Whisper heard), `tts_error` (a synthesis fai
 non-fatal, just skipped), `confirmation_requested`/`tool_declined` (the destructive-tool
 confirmation flow), `confirmation_answered_by_voice`, `preference_changed`/
 `preference_reset`/`skill_deleted`/`trust_revoked` (management actions taken from the UI),
+the skill lifecycle (`skill_proposed`/`skill_registered`/`skill_declined`, plus
+`skill_proposal_rejected`, `skill_register_rejected`, `skill_load_rejected` and
+`skill_migrated` from format validation -- each rejection carries the reason),
 `dispatch_blocked_disabled` (something tried to run a capability you turned off), and the
 voice session's own: `wake_detected` (with its score), `voice_session_started`/
 `voice_session_ended` (trigger / reason and duration), `voice_transcript` (text, speech

@@ -1,4 +1,4 @@
-from agent.core import inventory, preferences, session, trust, voice_session, voice_settings
+from agent.core import audio_io, inventory, preferences, session, trust, voice_session, voice_settings
 from agent.core.logging_util import log_event
 from agent.skills.registry import delete_skill
 
@@ -16,6 +16,8 @@ CONTROL_TYPES = {
     "voice_session",
     "get_voice_settings",
     "set_voice_settings",
+    "list_input_devices",
+    "list_wake_models",
 }
 
 
@@ -91,5 +93,29 @@ def handle(payload: dict) -> dict:
             live.apply_settings(settings)
         log_event("voice_settings_changed", settings=payload.get("settings"))
         return {"ok": True, "settings": settings}
+
+    if message_type == "list_input_devices":
+        # query_devices only -- never opens a stream, so it can't be what
+        # triggers the macOS mic prompt or disturbs the live session's capture.
+        try:
+            return {"ok": True, "devices": audio_io.list_input_devices()}
+        except Exception as e:  # PortAudio missing or broken
+            return {"ok": False, "error": f"couldn't list input devices: {e}"}
+
+    if message_type == "list_wake_models":
+        # Names only: no model is loaded or downloaded. `paths` (optional) are
+        # custom .onnx entries the UI wants checked for existence.
+        paths = payload.get("paths") or []
+        if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):
+            return {"ok": False, "error": "paths must be a list of strings"}
+        try:
+            pretrained = voice_session.available_wake_models()
+        except Exception as e:
+            return {"ok": False, "error": f"couldn't list wake models: {e}"}
+        return {
+            "ok": True,
+            "pretrained": pretrained,
+            "paths": [{"path": p, "exists": voice_session.wake_model_path_exists(p)} for p in paths],
+        }
 
     return {"ok": False, "error": f"unknown control message: {message_type}"}

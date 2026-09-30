@@ -26,11 +26,25 @@ _MAX_QUEUED_FRAMES = 32
 
 def list_input_devices() -> list:
     """Enumerate input devices without opening any of them -- opening a stream
-    is what triggers the macOS microphone prompt, listing does not."""
+    is what triggers the macOS microphone prompt, listing does not.
+
+    PortAudio snapshots the device list when it initializes (first import of
+    sounddevice), so a device plugged in after that won't appear until the
+    agent restarts. Re-initializing to refresh it would tear down the voice
+    session's open stream, so it isn't done here."""
     import sounddevice as sd
 
+    try:
+        default_index = sd.query_devices(kind="input")["index"]
+    except Exception:  # no default input device at all
+        default_index = None
     return [
-        {"index": i, "name": d["name"], "channels": d["max_input_channels"]}
+        {
+            "index": i,
+            "name": d["name"],
+            "channels": d["max_input_channels"],
+            "default": i == default_index,
+        }
         for i, d in enumerate(sd.query_devices())
         if d["max_input_channels"] > 0
     ]

@@ -9,6 +9,7 @@
     { id: "library", label: "Library", title: "Library" },
     { id: "activity", label: "Activity", title: "Activity" },
     { id: "permissions", label: "Permissions", title: "Permissions" },
+    { id: "voice", label: "Voice", title: "Voice" },
     { id: "logs", label: "Logs", title: "Logs" },
   ];
 
@@ -65,6 +66,9 @@
     renderActions();
     const mod = module(id);
     if (mod && mod.render) mod.render();
+    // show() is for work that belongs to opening a view (re-reading data),
+    // not to every re-render -- render() also runs on each inventory refresh.
+    if (mod && mod.show) mod.show();
     if (id === "assistant") LX.chat.focus();
   }
 

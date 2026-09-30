@@ -114,6 +114,36 @@ def audio_level(frame: np.ndarray) -> float:
     return min(1.0, max(0.0, (db + 60) / 50))
 
 
+_pretrained_cache = None
+# openWakeWord ships these alongside its wake words, but they fire on whole
+# requests ("set a timer for...") -- as a wake model they'd open a session
+# mid-sentence. Not offered in the Voice view; still accepted if configured.
+NOT_WAKE_WORDS = {"timer", "weather"}
+
+
+def available_wake_models() -> list:
+    """openWakeWord's pretrained model names, and whether each is already on
+    disk (the rest download on first use). Importing openwakeword costs about
+    half a second, so the name list is cached; with voice enabled the session
+    has usually imported it already. Nothing is loaded or downloaded here."""
+    global _pretrained_cache
+    if _pretrained_cache is None:
+        import openwakeword
+
+        _pretrained_cache = {name: entry["model_path"] for name, entry in openwakeword.MODELS.items()}
+    # Only the ONNX file counts: that's the backend the detector runs on.
+    return [
+        {"name": name, "downloaded": Path(path).with_suffix(".onnx").exists()}
+        for name, path in _pretrained_cache.items()
+        if name not in NOT_WAKE_WORDS
+    ]
+
+
+def wake_model_path_exists(path: str) -> bool:
+    """The same test OpenWakeWordDetector applies to a custom model entry."""
+    return Path(path).expanduser().exists()
+
+
 class OpenWakeWordDetector:
     """openWakeWord over ONNX. The tflite backend it defaults to has no wheel
     for Python 3.12 on macOS; ONNX runtime is already here for Piper."""
@@ -125,7 +155,7 @@ class OpenWakeWordDetector:
 
         resolved = []
         for name in models:
-            if Path(name).expanduser().exists():
+            if wake_model_path_exists(name):
                 resolved.append(str(Path(name).expanduser()))
                 continue
             # Pretrained names download on first use, same as the Piper voice.
@@ -222,6 +252,10 @@ class VoiceSession:
         self._changed = asyncio.Event()
         self._restart_capture = False
         self._failed = False
+        # Why voice last went "off" on its own (stage + message), sent with
+        # voice_state so the UI can say what broke instead of guessing from
+        # a bare "off". Cleared once capture is running again.
+        self._last_error = None
         self._manual_start_pending = False
         self.source_done = asyncio.Event()  # a finite (test) source ran out
 
@@ -265,7 +299,7 @@ class VoiceSession:
         return task
 
     def snapshot(self) -> dict:
-        return {"type": "voice_state", "state": self.state, "session": self.in_session}
+        return {"type": "voice_state", "state": self.state, "session": self.in_session, "error": self._last_error}
 
     # -- control surface (called synchronously from control.py) ----------------
 
@@ -321,7 +355,9 @@ class VoiceSession:
 
     def _set_state(self, state: str) -> None:
         self.state = state
-        key = (state, self.in_session)
+        if state != "off":
+            self._last_error = None
+        key = (state, self.in_session, self._last_error and self._last_error["message"])
         if key != self._sent_state:
             self._sent_state = key
             self._emit(self.snapshot())
@@ -362,6 +398,7 @@ class VoiceSession:
     def _fail(self, stage: str, error: Exception) -> None:
         log_event("voice_error", stage=stage, error=str(error))
         self._failed = True
+        self._last_error = {"stage": stage, "message": str(error)[:300]}
         self._manual_start_pending = False
         if self.in_session:
             self._end_session("error")

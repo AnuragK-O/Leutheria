@@ -67,7 +67,7 @@ let expectVoiceConfirmAck = false;
 
 // Last voice_state the agent reported. "off" until told otherwise, and reset
 // whenever the bridge drops -- a stale "listening" would be a lie.
-let voice = { state: "off", session: false };
+let voice = { state: "off", session: false, error: null };
 
 // Control requests (inventory reads, preference writes) are request/response,
 // unlike the rest of the protocol which is a stream of events. Each one gets
@@ -393,7 +393,7 @@ function publishVoiceState() {
 
 function handleVoiceEvent(payload) {
   if (payload.type === "voice_state") {
-    voice = { state: payload.state, session: Boolean(payload.session) };
+    voice = { state: payload.state, session: Boolean(payload.session), error: payload.error || null };
     publishVoiceState();
     if (voice.session) showOverlay();
     else hideOverlaySoon();
@@ -638,7 +638,7 @@ function connectToAgent() {
   ws.on("close", () => {
     log("[bridge] disconnected from agent");
     setStatus("disconnected");
-    voice = { state: "off", session: false };
+    voice = { state: "off", session: false, error: null };
     publishVoiceState();
     hideOverlaySoon();
     // A spawned agent that dies is reported, not retried (unchanged). With
@@ -690,6 +690,10 @@ ipcMain.handle("get-voice-state", () => ({ ...voice, connected: isConnected() })
 ipcMain.handle("get-voice-settings", () => sendControlRequest({ type: "get_voice_settings" }));
 ipcMain.handle("set-voice-settings", (_event, settings) =>
   sendControlRequest({ type: "set_voice_settings", settings })
+);
+ipcMain.handle("list-input-devices", () => sendControlRequest({ type: "list_input_devices" }));
+ipcMain.handle("list-wake-models", (_event, paths) =>
+  sendControlRequest({ type: "list_wake_models", paths: paths || [] })
 );
 
 ipcMain.handle("overlay-manifest", () => loadOverlayManifest());
