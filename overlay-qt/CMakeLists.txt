@@ -16,6 +16,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_OBJCXX_STANDARD 20)
 set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
 
+# compile_commands.json in the build dir: lets editors (VS Code's C/C++
+# extension, clangd) see the Qt include paths and flags CMake actually uses.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # 6.5 is the floor: loadFromModule(), Qt.styleHints.colorScheme and the
 # QTP0001 resource layout are all used below.
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Qml Quick WebSockets Multimedia)

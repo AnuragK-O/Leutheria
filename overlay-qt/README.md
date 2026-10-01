@@ -22,6 +22,12 @@ ctest --test-dir overlay-qt/build            # 3 Qt Test suites, about 10 s
 cmake --build overlay-qt/build --target all_qmllint   # optional, currently clean
 ```
 
+Configuring also writes `overlay-qt/build/compile_commands.json`. The repo's
+`.vscode/settings.json` points VS Code's C/C++ extension at it; without it the editor
+can't find Homebrew's Qt headers and flags every `#include <Q...>` as missing, though the
+build is fine. Configure once, then reload the window. clangd users: pass
+`--compile-commands-dir=overlay-qt/build`.
+
 The output is `overlay-qt/build/LeutheriaOverlay.app`. Its `Info.plist` sets
 `LSUIElement`, so it has no Dock icon and no menu bar.
 
