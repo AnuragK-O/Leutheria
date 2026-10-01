@@ -310,7 +310,9 @@ function spawnQtOverlay() {
   const child = spawn(QT_OVERLAY_BIN, args, { stdio: ["ignore", "pipe", "pipe"] });
   qtOverlayProcess = child;
   child.stdout.on("data", (data) => log(`[overlay-qt] ${data.toString().trim()}`));
-  child.stderr.on("data", (data) => log(`[overlay-qt:err] ${data.toString().trim()}`));
+  // Qt's logging (qInfo included) all goes to stderr, so stderr isn't an
+  // error channel here; the lines carry their own category and level.
+  child.stderr.on("data", (data) => log(`[overlay-qt] ${data.toString().trim()}`));
   // spawn() reports a failure to start (EACCES, a bad bundle) as "error",
   // possibly without an "exit" -- both paths land in overlayGone().
   child.on("error", (err) => overlayGone(child, `failed to start: ${err.message}`));

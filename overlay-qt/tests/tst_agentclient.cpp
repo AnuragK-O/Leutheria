@@ -83,14 +83,20 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(client.isConnected(), kTimeout);
 
         agent.latest()->close(); // the agent restarts, crashes, or drops us
-        QTRY_VERIFY_WITH_TIMEOUT(!client.isConnected(), kTimeout);
-        QTRY_COMPARE_WITH_TIMEOUT(agent.sockets.size(), size_t(2), kTimeout);
-        QTRY_VERIFY_WITH_TIMEOUT(client.isConnected(), kTimeout);
+        // Asserted through the signal history, not by polling isConnected():
+        // with kFast backoff the client can be down and back up between two
+        // QTRY polls (50 ms apart), so "!isConnected()" was a race the test
+        // could lose on a fast machine.
+        QTRY_COMPARE_WITH_TIMEOUT(connected.count(), 3, kTimeout);
+        QCOMPARE(connected.at(0).at(0).toBool(), true);
+        QCOMPARE(connected.at(1).at(0).toBool(), false);
+        QCOMPARE(connected.at(2).at(0).toBool(), true);
+        QVERIFY(client.isConnected());
+        QCOMPARE(agent.sockets.size(), size_t(2));
 
         // Every new connection starts with its own hello.
         QTRY_COMPARE_WITH_TIMEOUT(agent.received.size(), size_t(2), kTimeout);
         QCOMPARE(agent.received.at(1).value(u"type"_s).toString(), u"hello"_s);
-        QCOMPARE(connected.count(), 3); // up, down, up
     }
 
     // Electron may start the overlay before the agent is listening.
