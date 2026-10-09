@@ -29,8 +29,8 @@ isn't on screen then.
 {
   "size": 56,
   "states": {
-    "listening":  { "type": "video", "src": "listening.webm", "loop": true, "react": "scale" },
-    "hearing":    { "type": "image", "src": "hearing.gif" },
+    "listening":  { "type": "image", "src": "listening.webp", "react": "scale" },
+    "hearing":    { "type": "image", "src": "hearing.webp" },
     "thinking":   { "type": "image", "src": "thinking.svg" },
     "speaking":   { "type": "css" }
   }
@@ -54,11 +54,26 @@ replace one state at a time.
 - **Transparency is required.** The overlay window is transparent and sits over whatever
   the user has open. Draw on a transparent background; the island behind the slot is dark
   violet in dark mode and near-white in light mode, so avoid relying on either.
-- **Animated:** transparent **WebM (VP9 with alpha)** is the best choice: small, smooth,
-  and loops cleanly. Export with an alpha channel, e.g.
-  `ffmpeg -i in.mov -c:v libvpx-vp9 -pix_fmt yuva420p -b:v 0 -crf 30 listening.webm`.
-  Animated GIF works but has 1-bit transparency (jagged edges on the island background);
-  APNG or animated WebP are better if you'd rather not use video. mp4 has no alpha, so avoid it.
+- **Animated: use animated WebP** (`"type": "image"`). It has real (8-bit) transparency,
+  loops, stays small, and is the one animated format that plays in **both** overlays — the
+  Electron one and the native Qt one (`overlay-qt/`). Export your animation as a PNG
+  sequence with alpha, then pack it with `img2webp` (from `brew install webp`):
+
+  ```bash
+  # from a video with an alpha channel (skip if you already have PNG frames)
+  mkdir frames && ffmpeg -i in.mov frames/%04d.png
+  # -d is milliseconds per frame (33 = 30 fps); -loop 0 loops forever
+  img2webp -loop 0 -d 33 -lossy -q 85 frames/*.png -o listening.webp
+  ```
+
+  Check it with `webpmux -info listening.webp`: it should say
+  `Features present: animation transparency`. (Homebrew's ffmpeg has no WebP encoder, so
+  `ffmpeg ... out.webp` won't work; use `img2webp`.) Most motion tools (After Effects,
+  Rive, Figma plugins) can also export animated WebP directly.
+- **Formats to avoid for animation:** transparent WebM (VP9 alpha) plays in the Electron
+  overlay but *not* in the Qt one, which shows the placeholder orb instead (see
+  `overlay-qt/README.md`). Animated GIF plays in both but has 1-bit transparency (jagged
+  edges on the island). APNG animates in Electron only. mp4 has no alpha.
 - **Static or vector:** SVG (scales perfectly, and may contain its own CSS animation) or PNG.
 - **Resolution:** at least 4x the slot size for Retina, so **224 x 224 px** for the default
   56 px slot. Square canvas; the asset is scaled to fit (`object-fit: contain`).

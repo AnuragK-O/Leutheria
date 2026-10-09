@@ -618,7 +618,8 @@ cd app && env -u ELECTRON_RUN_AS_NODE LEUTHERIA_OVERLAY=qt npm start
 ```
 
 **Visual assets** live in `app/renderer/overlay/assets/`. `manifest.json` maps each state
-to a built-in CSS placeholder, an image (png/gif/svg/webp) or a video (transparent webm);
+to a built-in CSS placeholder, an image (png/svg, or animated WebP — the recommended animated format, since it plays in
+both overlays) or a video (webm/mp4, Electron overlay only for webm);
 swapping in real artwork is a file copy plus a manifest edit, no code change. The mic level
 is exposed as the CSS variable `--level` (0 to 1) for reactive visuals. That folder's
 `README.md` is written for the asset designer: which states exist and when, formats and

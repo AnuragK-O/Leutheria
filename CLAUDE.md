@@ -6,8 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Leutheria: a macOS voice-controlled assistant. An **Electron shell** (`app/`) spawns a
 **Python sidecar** (`agent/`) and talks to it over `ws://127.0.0.1:8765` with JSON messages.
-All agent work — STT (Whisper), TTS (Piper), LLM tool-calling (Anthropic `claude-opus-5`),
-tool/skill execution — happens Python-side; Electron is UI + process supervision only.
+All agent work — wake word (openWakeWord), STT (Whisper), TTS (ElevenLabs by default,
+Piper as the local fallback), LLM tool-calling (Anthropic `claude-opus-5`), tool/skill
+execution — happens Python-side; Electron is UI + process supervision only.
+`overlay-qt/` is a third piece: a native C++/Qt Quick build of the activation overlay, a
+second client of the same WebSocket (off by default; `LEUTHERIA_OVERLAY=qt`). It has its
+own README.
 
 The Python server is a single asyncio loop. Anything blocking — LLM calls, Whisper, Piper,
 skill-learning generation — goes through `loop.run_in_executor`, or it stalls the read loop
@@ -47,15 +51,44 @@ brew install ffmpeg    # Whisper decodes audio through it
 # Observe / stop
 tail -f agent/logs/events.jsonl
 pkill -if "python -m agent"; pkill -f "Electron.app"
+
+# Checks (run from agent/; none of them open the microphone)
+./.venv/bin/python scripts/voice_sim.py                 # voice session state machine, all scenarios
+./.venv/bin/python scripts/voice_sim.py dismiss confirm # just the named scenarios (--list shows them)
+./.venv/bin/python scripts/skill_format_check.py        # generated-skill validation
+./.venv/bin/python scripts/tts_check.py                 # TTS backends + fallbacks, fake ElevenLabs server
+./.venv/bin/python scripts/overlay_protocol_check.py    # overlay role, real server on a spare port
+./.venv/bin/python scripts/voice_server_check.py        # real server + real LLM; speaks aloud, needs API key
+
+# Qt overlay (needs `brew install qt ninja`)
+cmake -S overlay-qt -B overlay-qt/build -G Ninja -DCMAKE_PREFIX_PATH=/opt/homebrew/opt/qt
+cmake --build overlay-qt/build
+ctest --test-dir overlay-qt/build                       # all three Qt Test suites
+ctest --test-dir overlay-qt/build -R overlaymodel       # one suite
+overlay-qt/build/tests/tst_overlaymodel endLingersThenHides   # one test function
+
+# UI work without Python: a scripted agent on port 8799
+cd app && node scripts/mock-agent.js
+cd app && env -u ELECTRON_RUN_AS_NODE LEUTHERIA_AGENT_URL=ws://127.0.0.1:8799 LEUTHERIA_NO_SPAWN=1 npx electron .
 ```
 
 Requires Homebrew Python 3.12 (system 3.9 is too old). Always invoke the venv binary
 (`./.venv/bin/python`) directly — there is no activate-then-run convention here.
-There is no test suite and no linter; verification is manual, via the app or a standalone
-WebSocket client (see README "Running the Python agent standalone").
+There is no linter and no unit-test framework on the Python/JS side: the `scripts/` checks
+above are the regression suite, and UI changes are verified by running the app (against the
+mock agent or a real one) and looking at screenshots. Add a scenario to the relevant script
+when fixing a bug it could have caught.
 
-`ANTHROPIC_API_KEY` lives in `.env` at the **repo root**, not in `agent/` — `__main__.py`
-calls `load_dotenv()`, which walks up from the process cwd.
+Testing without disturbing a running app — `npm start` pkills any running agent, and port
+8765 may be in use — goes through env overrides: `LEUTHERIA_PORT` (agent listens elsewhere),
+`LEUTHERIA_VOICE_SOURCE=<wav>` (a WAV replaces the mic, so no permission prompt and no live
+audio), `LEUTHERIA_AGENT_URL` + `LEUTHERIA_NO_SPAWN=1` (Electron connects to an agent it
+didn't start), `LEUTHERIA_CAPTURE_DIR` (PNG of each window on every voice-state change).
+
+`ANTHROPIC_API_KEY` (and the optional `ELEVENLABS_API_KEY`) live in `.env` at the **repo
+root**, not in `agent/` — `__main__.py` calls `load_dotenv()`, which walks up from the
+process cwd. A script run from elsewhere must pass the path explicitly. Keys are read once
+at startup.
 
 ## Architecture invariants
 
@@ -128,8 +161,11 @@ BUGS.md #6).
 
 **Management messages never touch the LLM.** `inventory` / `set_preference` / `delete_skill` /
 `revoke_trust` / `revoke_grant` and the voice ones (`voice_session`, `get_voice_settings`,
-`set_voice_settings`) are answered inline in the read loop by `core/control.py`, matched by
-`request_id`, so UI reads can't block or be blocked by a running command.
+`set_voice_settings`, `list_input_devices`, `list_wake_models`) are answered inline in the
+read loop by `core/control.py`, matched by `request_id`, so UI reads can't block or be
+blocked by a running command. The one exception is `list_input_devices` with `refresh: true`:
+it has to close and reopen the mic, so `server.py` answers it from a background task (same
+`request_id`).
 
 **The system prompt applies to conversation only.** `agent/SYSTEM_PROMPT.md` is loaded once at
 import in `agent_loop.py` and passed as `system` on conversational calls. `skill_learning.py`
@@ -141,10 +177,26 @@ would corrupt structured output. Edits to the file take effect on the next agent
 base64 `speech` message is gone). This is load-bearing, not incidental: the session is
 half-duplex — captured frames are discarded while `speak()` is playing plus a 300 ms tail —
 and only the process driving the speaker knows exactly when that is. Route any new playback
-through `speak()` or the mic will hear it and act on it. Voice commands run on the most
-recently connected UI (`server._primary()`); every spoken input, push-to-talk or session,
-goes through `server.handle_transcript()`. The session's frame source is injectable, which
+through `speak()` or the mic will hear it and act on it. Voice commands run on the primary
+connection (`server._primary()`: the newest one that isn't an overlay); every spoken input,
+push-to-talk or session, goes through `server.handle_transcript()`. The session's frame source is injectable, which
 is how `scripts/voice_sim.py` tests it without a mic — keep it that way.
+
+**Overlay clients are never primary.** A client that opens with `{"type":"hello","role":
+"overlay"}` (the Qt overlay) gets voice broadcasts plus a mirror of what the primary is
+sent that an overlay needs to draw (confirmations, `speaking`, voice-session transcript and
+reply), and may send only `hello`, `confirm` and control messages; its `confirm` resolves
+the primary's pending confirmation. Mirroring is done by wrapping the primary's socket
+(`server._MirroringSocket`), precisely so nothing new is threaded through `dispatch()` or
+skill signatures. A client that never says hello behaves as it always did. Two overlays
+exist (Electron's `app/renderer/overlay/`, Qt's `overlay-qt/`) with the same state rules
+and the same asset `manifest.json`; change a rule in one and change it in the other.
+
+**TTS engines sit behind `core/tts_backends.py:TTSBackend`**, mirroring `LLMBackend`. The
+selected backend and voice are read from voice settings per utterance; any failure of a
+non-Piper backend (no key, network, HTTP error, timeout) falls back to Piper for that
+utterance and logs `tts_error` — a reply is never silent because of the cloud voice. API
+keys are environment-only and never written to `voice_settings.json`.
 
 TTS, skill learning and the voice session are additive: a failure in any of them is logged
 and skipped (voice goes to `off`), never blocking or delaying the text reply.
@@ -162,8 +214,17 @@ and skipped (voice goes to `off`), never blocking or delaying the text reply.
   live voice session is the one exception: there a non-answer is shown but not run, since a
   second command must not start while the first is paused on a question.)
 - Trust is keyed on the exact `(tool, args)` pair, never the tool name alone (`core/trust.py`).
-- Renderer is plain ES modules — no framework, no build step. `preload.js` is the only bridge;
-  the page has no Node access.
+- Renderer is plain classic scripts loaded in order from `index.html`, sharing one `LX`
+  namespace — no framework, no build step, and not ES modules (module scripts don't load over
+  `file://`). `preload.js` is the only bridge, for the overlay window too; pages have no Node
+  access.
+- A message type `main.js` doesn't recognise falls through to the `pendingIsChat` branch and
+  can be shown in place of a real reply. Any new agent-to-UI message needs an explicit handler
+  there, and a UI flow isn't verified until it's verified through `main.js` (BUGS.md #17).
+- Animated overlay assets are **animated WebP** (decided 2026-10-08): the one format with
+  real transparency that plays in both overlays. Homebrew's Qt has only the AVFoundation
+  media backend, which can't decode WebM, so a transparent WebM works in Electron and falls
+  back to the placeholder orb in Qt. Recipe in `app/renderer/overlay/assets/README.md`.
 - Expand `~` with `Path(...).expanduser()` before building any shell string — `/bin/sh`'s `cd`
   won't expand it inside quotes (this caused a real silent `git init` failure).
 - Three macOS behaviours in `ui_access.py`, all measured rather than assumed, all of which
