@@ -163,10 +163,14 @@ confirmation card and skill proposals stay in the main window.
 
 ## Known limitations
 
-- **WebM can't play on macOS.** Qt Multimedia's only macOS backend here is AVFoundation
-  (`libdarwinmediaplugin`). Its decodable containers are avi, mp4, mov and some audio
-  types, with no WebM. That covers the transparent VP9 WebM the asset README recommends:
-  such a state shows the orb, with a log line naming the file. H.264 MP4 or MOV plays,
+- **WebM doesn't play with Homebrew's Qt.** Qt Multimedia decodes video through a backend
+  plugin. Homebrew's `qtmultimedia` ships only the native one, AVFoundation
+  (`libdarwinmediaplugin`), and Apple's framework has no WebM/VP9 support: its containers
+  are avi, mp4, mov and some audio types. (Qt's own installer builds also include an FFmpeg
+  backend, which does read WebM; this project doesn't depend on that.) A WebM state shows
+  the orb, with a log line naming the file. The asset guide therefore recommends animated
+  WebP, which is an *image* format (`AnimatedImage`, Qt's `qwebp` plugin) and needs no
+  video backend at all. H.264 MP4 or MOV plays,
   but H.264 has no alpha. HEVC-with-alpha `.mov` should decode through AVFoundation but
   hasn't been tested. Animated GIF and WebP (via `AnimatedImage`), PNG and SVG all work.
   APNG shows its first frame only.
