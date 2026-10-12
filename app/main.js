@@ -202,8 +202,8 @@ function createDevWindow() {
     // Frameless-with-traffic-lights, so the sidebar can run the full height of
     // the window instead of sitting under a stock title bar.
     titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 18, y: 22 },
-    backgroundColor: "#141119",
+    trafficLightPosition: { x: 16, y: 20 },
+    backgroundColor: "#0a0810", // --base in renderer/styles.css
     show: false,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -701,7 +701,7 @@ function connectToAgent() {
     }
 
     if (payload.type === "skill_saved") {
-      chat("assistant", `✅ Saved "${payload.name}" as a new skill.`);
+      chat("assistant", `Saved "${payload.name}" as a new skill.`, { notice: "success" });
       invalidateInventory();
       return;
     }
@@ -805,7 +805,7 @@ ipcMain.on("skill-response", (_event, { id, approved, resolutions }) => {
 
 ipcMain.on("user-audio", (_event, { data, format }) => {
   if (!isConnected()) {
-    chat("assistant", "⚠️ not connected to agent yet");
+    chat("assistant", "Not connected to the agent yet.", { notice: "warning" });
     return;
   }
   const message = { type: "audio", data, format };
@@ -816,7 +816,7 @@ ipcMain.on("user-audio", (_event, { data, format }) => {
 
 ipcMain.on("user-command", (_event, text) => {
   if (!isConnected()) {
-    chat("assistant", "⚠️ not connected to agent yet");
+    chat("assistant", "Not connected to the agent yet.", { notice: "warning" });
     return;
   }
   chat("user", text);

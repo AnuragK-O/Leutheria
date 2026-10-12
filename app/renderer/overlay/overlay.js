@@ -176,12 +176,12 @@
     clearTimeout(confirmHideTimer);
     confirmation = { id, tool, args };
 
-    clear(confirmHeadEl).append(icon("warning"), el("span", { text: `Leutheria wants to run ${tool}` }));
+    clear(confirmHeadEl).append(icon("warning"), el("span", { text: "Approval required" }));
     confirmCmdEl.textContent = `${tool}(${formatArgs(args, 200) || ""})`;
     confirmHintEl.textContent = "Say yes or no, or choose";
     clear(confirmActionsEl).append(
-      el("button.btn.btn-sm", { text: "Decline", onclick: () => answer(false) }),
-      el("button.btn.btn-sm.btn-primary", { text: "Approve", onclick: () => answer(true) })
+      el("button.btn.btn-sm.btn-danger", { text: "Decline", onclick: () => answer(false) }),
+      el("button.btn.btn-sm.btn-hot", { text: "Approve", onclick: () => answer(true) })
     );
 
     confirmEl.hidden = false;
@@ -198,7 +198,12 @@
     clear(confirmActionsEl);
     confirmHintEl.textContent = "";
     confirmActionsEl.appendChild(
-      el("div.ov-confirm-resolved", {}, icon(approved ? "check" : "x"), el("span", { text: `${approved ? "Approved" : "Declined"}${how}` }))
+      el(
+        "div.ov-confirm-resolved",
+        { class: approved ? "yes" : "no" },
+        icon(approved ? "check" : "x"),
+        el("span", { text: `${approved ? "Approved" : "Declined"}${how}` })
+      )
     );
     confirmHideTimer = setTimeout(() => (confirmEl.hidden = true), 1100);
     render();

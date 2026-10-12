@@ -108,7 +108,7 @@
           "div.usage-row",
           {},
           el("div.usage-name", { text: entry.name, title: entry.name }),
-          el("div.usage-bar", {}, el("div.usage-fill", { style: `width:${(entry.runs / max) * 100}%` })),
+          el("div.usage-bar", {}, el("div.usage-fill", { style: `--share:${(entry.runs / max).toFixed(4)}` })),
           el("div.usage-count", { text: `${entry.runs}×` })
         )
       );

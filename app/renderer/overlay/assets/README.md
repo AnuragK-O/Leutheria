@@ -40,10 +40,10 @@ isn't on screen then.
 | field | meaning |
 |---|---|
 | `size` | Side of the square slot in CSS pixels. Default 56, allowed 32 to 120. The island grows to fit. |
-| `type` | `"css"` (the built-in placeholder orb), `"image"` (png, gif, svg, apng, webp), or `"video"` (webm, mp4). |
+| `type` | `"css"` (the built-in placeholder, a reticle drawn in CSS), `"image"` (png, gif, svg, apng, webp), or `"video"` (webm, mp4). |
 | `src` | File name, relative to this folder. |
 | `loop` | Videos only. Default `true`; set `false` for a one-shot that should hold its last frame. |
-| `react` | Optional. How the frame reacts to the mic level for image/video assets: `"scale"` (grows up to 18%), `"glow"` (a violet halo), or `"none"` (default; use this if your asset animates itself). |
+| `react` | Optional. How the frame reacts to the mic level for image/video assets: `"scale"` (grows up to 18%), `"glow"` (a halo in the current state's colour: cyan while listening, violet while working or speaking, amber when it needs an answer), or `"none"` (default; use this if your asset animates itself). |
 
 A state missing from the manifest, a typo in `type`, or a file that doesn't exist falls back
 to the CSS placeholder for that state, with a line in the Logs view saying why. You can
@@ -52,8 +52,8 @@ replace one state at a time.
 ## Formats and sizes
 
 - **Transparency is required.** The overlay window is transparent and sits over whatever
-  the user has open. Draw on a transparent background; the island behind the slot is dark
-  violet in dark mode and near-white in light mode, so avoid relying on either.
+  the user has open. Draw on a transparent background; the plate behind the slot is near-black
+  (`#110E19`) in dark mode and near-white (`#F8F7FB`) in light mode, so avoid relying on either.
 - **Animated: use animated WebP** (`"type": "image"`). It has real (8-bit) transparency,
   loops, stays small, and is the one animated format that plays in **both** overlays — the
   Electron one and the native Qt one (`overlay-qt/`). Export your animation as a PNG
@@ -71,7 +71,7 @@ replace one state at a time.
   `ffmpeg ... out.webp` won't work; use `img2webp`.) Most motion tools (After Effects,
   Rive, Figma plugins) can also export animated WebP directly.
 - **Formats to avoid for animation:** transparent WebM (VP9 alpha) plays in the Electron
-  overlay but *not* in the Qt one, which shows the placeholder orb instead (see
+  overlay but *not* in the Qt one, which shows its built-in placeholder instead (see
   `overlay-qt/README.md`). Animated GIF plays in both but has 1-bit transparency (jagged
   edges on the island). APNG animates in Electron only. mp4 has no alpha.
 - **Static or vector:** SVG (scales perfectly, and may contain its own CSS animation) or PNG.
