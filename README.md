@@ -737,6 +737,15 @@ asyncio.run(main())
 | `cancel_timer` | `{"timer_id": "3"}` / `{"label": "pasta"}` / `{"all": true}` / `{}` | safe | `{}` works only when exactly one is running |
 | `open_file` | `{"path": "~/Documents/resume.pdf"}` | safe | default app, documents/media/folders only — refuses apps, scripts, programs, installers, unknown types |
 | `reveal_in_finder` | `{"path": "..."}` | safe | `open -R`: selects in Finder, never opens |
+| `find_files` | `{"path": "~/Downloads", "extension": "pdf", "modified_within_days": 2}` | safe | read-only search by name / extension / min size / age; never follows symlinks; skips hidden files, `node_modules` and app bundles; at most 500 results, 10 s / 200,000 entries (then `incomplete: true`) |
+| `file_info` | `{"path": "..."}` | safe | read-only; kind, size, created/modified. A missing path is `exists: false`, not an error |
+| `folder_size` | `{"path": "~/Downloads", "limit": 10}` | safe | read-only total plus the largest immediate items; counts hidden files; a lower bound (`incomplete: true`) past 15 s / 500,000 entries |
+| `zip_folder` | `{"source": "...", "destination": "...", "exclude": ["node_modules"]}` | safe | source only read; archive created with an exclusive open, so an existing zip is never replaced; symlinks left out; capped at 20,000 files / 1 GB |
+| `extract_archive` | `{"archive": "...", "destination": "..."}` | safe | zip and tar(.gz/.bz2/.xz) into a folder it creates itself — refuses an existing destination; every entry name validated first (zip-slip refuses the whole archive); links never created; capped at 20,000 entries / 2 GB |
+| `find_duplicates` | `{"path": "...", "min_size_kb": 1}` | safe | read-only, report only; same size, then first 64 KB, then full-content hash; largest waste first |
+| `write_new_file` | `{"path": "...", "content": "..."}` | safe | create-only (`open(..., "x")`): refuses if anything exists at the path, including a symlink. Returns `{"ok": true, "path": ...}` |
+| `search_file_contents` | `{"path": "...", "text": "wifi password"}` | safe | read-only literal, case-insensitive search of text files under 2 MB; binary files skipped |
+| `spotlight_search` | `{"query": "resume", "folder": "..."}` (folder optional) | safe | read-only `mdfind -name` with fixed argv and an 8 s timeout; names only, newest first |
 
 Example calls for each (swap the `tool`/`args` fields in the snippet above):
 
@@ -833,6 +842,48 @@ cd agent && ./.venv/bin/python scripts/skills_check_system.py
 checks all of the above without changing the volume, pressing a media key, showing a banner,
 speaking, or opening a window (each of those is stubbed; weather runs against a local
 server with canned JSON, plus one real request that is skipped offline).
+#### File and workspace skills
+
+Fifteen hand-written skills over the file tools above. Every step of each one, including
+the read-only planning steps, goes through `dispatch()` via `skills/files_common.py:StepLog`;
+none imports a tool function or does its own file I/O. All of them compose only safe tools,
+so none prompts by default. The check is `agent/scripts/skills_check_files.py`, which runs
+them through the real `dispatch()` inside a temp home folder.
+
+| skill | steps | try saying |
+|---|---|---|
+| `organize_folder` | `file_info` → `find_files` → `file_info`/`list_files` per type folder → `create_folder` → `move_file` × n | "sort my Downloads folder by type" |
+| `organize_by_date` | same, one folder per month modified | "group that folder by month" |
+| `clean_desktop` | same, into `Desktop/Desktop Cleanup/<type>` | "clean up my desktop" |
+| `collect_screenshots` | same, screenshots only, into `~/Pictures/Screenshots` | "put my screenshots away" |
+| `archive_old_downloads` | `find_files` (older than n days) → ... → `move_file` × n into `Downloads/Old Downloads/<YYYY-MM>` | "clear out my old downloads" |
+| `archive_folder` | `file_info` → `file_info` (free name) → `zip_folder` | "zip up the project folder" |
+| `project_snapshot` | `file_info` → `zip_folder` (no dependencies, build output or `.git`) → `append_text` | "snapshot this project before I refactor" |
+| `find_large_files` | `folder_size` → `find_files` by size | "what's taking up space in Downloads" |
+| `find_recent_files` | `file_info` + `find_files` for each of Downloads, Desktop, Documents | "where's that PDF I downloaded yesterday" |
+| `storage_report` | `get_disk_space` → `list_files` → `folder_size` × n | "what's using up my disk" |
+| `folder_summary` | `find_files` → `folder_size` | "what's in my Documents folder" |
+| `daily_journal` | `file_info` → `write_new_file` (only if absent) → `append_text` → `open_file` if registered | "start today's journal" |
+| `screenshot_to_folder` | `create_folder` → `file_info` (free name) → `take_screenshot` | "take a screenshot and file it" |
+| `duplicate_report` | `find_duplicates` → `file_info` → `write_new_file` (report in `~/Documents/Leutheria Reports`) | "are there duplicates in my Downloads" |
+| `extract_latest_download` | `find_files` (newest archive) → `file_info` (free name) → `extract_archive` | "unzip the thing I just downloaded" |
+
+The five that move files in bulk (`organize_folder`, `organize_by_date`, `clean_desktop`,
+`collect_screenshots`, `archive_old_downloads`) share one routine,
+`files_common.move_into_folders()`, and so share its guarantees: only `create_folder` and
+`move_file` are ever called, a name already taken in the destination gets a ` (2)` suffix
+(compared case-insensitively) rather than being overwritten, nothing is deleted, only
+visible regular files at the top level of the folder are candidates (no subfolders, hidden
+files, links, or downloads still in progress), at most 200 files move per run and the reply
+says when that limit was the reason it stopped, and `dry_run: true` performs reads only and
+reports the plan. `organize_folder` and `organize_by_date` refuse the home folder, system
+folders, `~/Library`, anything inside an `.app`, and git repositories. A skill's result
+carries at most 25 step records (`steps_total` has the real count), so a 200-file run does
+not put 200 records into the model's context or the event log.
+
+`LEUTHERIA_FILES_HOME=<dir>` makes these skills treat `<dir>` as the home folder when they
+resolve Desktop, Downloads, Documents and Pictures, for an end-to-end run that must not
+touch the real ones.
 
 ### Automatic skill learning
 

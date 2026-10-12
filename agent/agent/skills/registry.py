@@ -24,6 +24,28 @@ from agent.skills import (
     wind_down,
 )
 
+# --- files ---
+from agent.skills import (
+    archive_folder,
+    archive_old_downloads,
+    clean_desktop,
+    collect_screenshots,
+    daily_journal,
+    duplicate_report,
+    extract_latest_download,
+    find_large_files,
+    find_recent_files,
+    folder_summary,
+    organize_by_date,
+    organize_folder,
+    project_snapshot,
+    screenshot_to_folder,
+    storage_report,
+)
+from agent.skills.template_skill import run_template
+from agent.skills.validate import SkillValidationError, skill_path
+from agent.tools.registry import TOOLS
+
 GENERATED_DIR = Path(__file__).resolve().parent / "generated"
 
 # A skill is a multi-step procedure exposed to the LLM as if it were a single
@@ -267,6 +289,351 @@ SKILLS = {
             "type": "object",
             "properties": {
                 "threshold": {"type": "integer", "description": "Percent at or below which to warn. Defaults to 20."}
+            },
+            "required": [],
+        },
+    },
+    # --- files ---
+    # Every step of every skill below goes through dispatch() (see
+    # files_common.StepLog); none imports a tool function. The five that
+    # move files in bulk share files_common.move_into_folders(): move_file
+    # and create_folder only, never overwrite, never delete, a per-run cap,
+    # and a dry_run that performs reads only.
+    "organize_folder": {
+        "fn": organize_folder.run,
+        "description": (
+            "Sort the loose files at the top of a folder the user names into subfolders by "
+            "type, such as Images, Documents and Archives, inside that same folder. Files of "
+            "unknown type, subfolders and hidden files are left alone, nothing is ever "
+            "replaced or deleted, and at most 200 files move per run. Not for the Desktop, "
+            "which is clean_desktop, not for sorting by date, which is organize_by_date, and "
+            "it refuses code projects and system folders."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "The folder to organise, e.g. '~/Downloads'."},
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "If true, only report what would be moved and move nothing. Use it when the user asks what would happen or wants to check first.",
+                },
+            },
+            "required": ["path"],
+        },
+    },
+    "organize_by_date": {
+        "fn": organize_by_date.run,
+        "description": (
+            "Sort the loose files at the top of a folder into one subfolder per month, named "
+            "like 2026-09, by when each file was last modified. Use it when the user asks to "
+            "sort or group a folder by date or by month. Nothing is replaced or deleted and at "
+            "most 200 files move per run. To sort by file type instead use organize_folder; to "
+            "move only old files out of Downloads use archive_old_downloads."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "The folder to organise, e.g. '~/Pictures/Imports'."},
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "If true, only report what would be moved and move nothing. Use it when the user asks what would happen or wants to check first.",
+                },
+            },
+            "required": ["path"],
+        },
+    },
+    "clean_desktop": {
+        "fn": clean_desktop.run,
+        "description": (
+            "Clear the loose files off the Desktop by moving them into a folder on the Desktop "
+            "called Desktop Cleanup, grouped by type. Use it when the user asks to clean up, "
+            "tidy or clear their desktop. Folders on the Desktop stay where they are, nothing "
+            "is deleted or replaced, and at most 200 files move per run. It only works on the "
+            "Desktop; for any other folder use organize_folder. It does not close windows or "
+            "quit apps."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "If true, only report what would be moved and move nothing. Use it when the user asks what would happen or wants to check first.",
+                },
+            },
+            "required": [],
+        },
+    },
+    "collect_screenshots": {
+        "fn": collect_screenshots.run,
+        "description": (
+            "Move the screenshots and screen recordings that are lying on the Desktop into one "
+            "Screenshots folder, by default the one in Pictures. Only files named like macOS "
+            "screenshots move; nothing is deleted or replaced. Use it when the user wants "
+            "their existing screenshots gathered up or put away. To take a new screenshot use "
+            "screenshot_to_folder, and to clear everything off the Desktop use clean_desktop."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "source": {
+                    "type": "string",
+                    "description": "Folder to gather screenshots from. Defaults to the Desktop.",
+                },
+                "folder": {
+                    "type": "string",
+                    "description": "Folder to move them into. Defaults to '~/Pictures/Screenshots'.",
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "If true, only report what would be moved and move nothing. Use it when the user asks what would happen or wants to check first.",
+                },
+            },
+            "required": [],
+        },
+    },
+    "archive_old_downloads": {
+        "fn": archive_old_downloads.run,
+        "description": (
+            "Move files that have sat in the Downloads folder for a long time, 30 days unless "
+            "told otherwise, into a folder inside Downloads called Old Downloads, grouped by "
+            "month. They are moved out of the way, not deleted and not compressed. Use it when "
+            "the user wants old downloads cleared out or put away. It only works on Downloads; "
+            "to sort all of Downloads by type use organize_folder, and to zip something use "
+            "archive_folder."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days": {
+                    "type": "integer",
+                    "description": "Move files not changed for at least this many days. Defaults to 30.",
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "If true, only report what would be moved and move nothing. Use it when the user asks what would happen or wants to check first.",
+                },
+            },
+            "required": [],
+        },
+    },
+    "archive_folder": {
+        "fn": archive_folder.run,
+        "description": (
+            "Zip a folder into a single zip file next to it, choosing a free name if one is "
+            "taken, and leave the original folder untouched. Use it when the user asks to zip "
+            "up, compress or archive a folder, for example to send it to someone. It makes a "
+            "zip, not a second copy of the folder, which is backup_folder, and it includes "
+            "everything in the folder; for a code project where dependencies should be left "
+            "out use project_snapshot."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "The folder to zip."},
+                "destination_folder": {
+                    "type": "string",
+                    "description": "Folder to put the zip file in. Defaults to next to the original.",
+                },
+            },
+            "required": ["path"],
+        },
+    },
+    "project_snapshot": {
+        "fn": project_snapshot.run,
+        "description": (
+            "Save a point-in-time zip of a code project into the Snapshots folder in the home "
+            "folder, with a timestamp in its name and a line in that project's snapshot log, "
+            "leaving out dependencies, build output and the git history. Use it when the user "
+            "wants to snapshot or checkpoint a project before a risky change. It is not a git "
+            "commit and does not touch the repository. For an ordinary folder, or a zip to "
+            "send to someone, use archive_folder; for a plain second copy use backup_folder."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "The project folder."},
+                "note": {
+                    "type": "string",
+                    "description": "A few words on why the snapshot was taken, recorded in the log. Optional.",
+                },
+                "include_git": {"type": "boolean", "description": "Include the .git folder. Defaults to false."},
+                "snapshots_dir": {
+                    "type": "string",
+                    "description": "Where snapshots are kept. Defaults to '~/Snapshots'.",
+                },
+            },
+            "required": ["path"],
+        },
+    },
+    "find_large_files": {
+        "fn": find_large_files.run,
+        "description": (
+            "Report how much space a folder takes and name the largest files in it. Use it "
+            "when the user asks what is taking up space in a folder or what the biggest files "
+            "are; it looks in Downloads unless another folder is given. It only reports and "
+            "removes nothing. For how full the whole disk is and which of the main folders is "
+            "biggest, use storage_report."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Folder to look in. Defaults to '~/Downloads'."},
+                "min_size_mb": {
+                    "type": "number",
+                    "description": "Only count files at least this many megabytes. Defaults to 50.",
+                },
+                "limit": {"type": "integer", "description": "How many files to list. Defaults to 5."},
+            },
+            "required": [],
+        },
+    },
+    "find_recent_files": {
+        "fn": find_recent_files.run,
+        "description": (
+            "Find files that were downloaded, saved or changed in the last few days, newest "
+            "first, looking in Downloads, the Desktop and Documents unless one folder is "
+            "given. Use it when the user asks where a file they recently downloaded or saved "
+            "went, or what they were working on lately. It only reports where the files are. "
+            "If the user gives a name but no sense of when, use spotlight_search instead."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days": {
+                    "type": "integer",
+                    "description": "How many days back to look. Defaults to 3. Use 1 for today and 2 to include yesterday.",
+                },
+                "extension": {
+                    "type": "string",
+                    "description": "Only this file type, without the dot, e.g. 'pdf'. Optional.",
+                },
+                "name": {"type": "string", "description": "Part of the file name, if the user gave one. Optional."},
+                "path": {
+                    "type": "string",
+                    "description": "Search only this folder instead of Downloads, Desktop and Documents. Optional.",
+                },
+                "limit": {"type": "integer", "description": "How many files to return. Defaults to 5."},
+            },
+            "required": [],
+        },
+    },
+    "storage_report": {
+        "fn": storage_report.run,
+        "description": (
+            "Report how much free space the disk has and how big each of the main home folders "
+            "is: Desktop, Documents, Downloads, Movies, Music and Pictures. Use it when the "
+            "user asks what is using up their disk or storage overall. It only reports. For "
+            "what is big inside one particular folder use find_large_files, and for just the "
+            "free space figure use get_disk_space."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    "folder_summary": {
+        "fn": folder_summary.run,
+        "description": (
+            "Give an overview of one folder: its total size, how many files of each kind and "
+            "how many subfolders are directly inside, and the newest file. Use it when the "
+            "user asks what is in a folder in general terms. It only reports. To get the "
+            "actual list of names use list_files, and to look for a particular file use "
+            "find_files."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"path": {"type": "string", "description": "The folder to describe, e.g. '~/Documents'."}},
+            "required": ["path"],
+        },
+    },
+    "daily_journal": {
+        "fn": daily_journal.run,
+        "description": (
+            "Start today's journal, a Markdown file named for today's date in the Journal "
+            "folder in Documents, if it does not exist yet, and optionally add a timestamped "
+            "entry to it. Use it when the user says to start or open today's journal, or to "
+            "add something to their journal or diary. An existing day's file is only ever "
+            "added to, never replaced. It is a file, not the Notes app. For a one-line "
+            "reminder with no journal involved use quick_note."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "description": "The entry to add, in the user's words. Leave out to just start the day's file.",
+                },
+                "journal_dir": {
+                    "type": "string",
+                    "description": "Folder the journal is kept in. Defaults to '~/Documents/Journal'.",
+                },
+                "open": {
+                    "type": "boolean",
+                    "description": "Open the journal file on screen afterwards, when that is possible. Defaults to true.",
+                },
+            },
+            "required": [],
+        },
+    },
+    "screenshot_to_folder": {
+        "fn": screenshot_to_folder.run,
+        "description": (
+            "Take a screenshot of the whole screen right now and save it into a Screenshots "
+            "folder, by default the one in Pictures, instead of onto the Desktop. Use it when "
+            "the user asks for a screenshot to be saved or filed somewhere, or simply to take "
+            "a screenshot without cluttering the Desktop. It takes a new picture; to tidy "
+            "away screenshots that already exist use collect_screenshots."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "folder": {
+                    "type": "string",
+                    "description": "Folder to save into. Defaults to '~/Pictures/Screenshots'.",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "A short label to start the file name with, e.g. 'login bug'. Optional.",
+                },
+            },
+            "required": [],
+        },
+    },
+    "duplicate_report": {
+        "fn": duplicate_report.run,
+        "description": (
+            "Check a folder for files that are exact copies of each other and save the full "
+            "list as a text report in Documents, then say how many sets there are and how much "
+            "space they waste. Use it when the user asks whether a folder has duplicates or "
+            "wants to find them; it checks Downloads unless another folder is given. It never "
+            "removes or moves any copy. Not for making a copy of something, which is "
+            "backup_folder."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Folder to check. Defaults to '~/Downloads'."},
+                "save_report": {
+                    "type": "boolean",
+                    "description": "Write the list of duplicates to a report file. Defaults to true.",
+                },
+            },
+            "required": [],
+        },
+    },
+    "extract_latest_download": {
+        "fn": extract_latest_download.run,
+        "description": (
+            "Unpack the most recently downloaded zip or tar archive in Downloads into a new "
+            "folder next to it, keeping the archive. Use it when the user says to unzip or "
+            "open the thing they just downloaded without naming it. If they name a specific "
+            "archive or one outside Downloads, use extract_archive with its path instead. It "
+            "does not open disk images or run installers."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "folder": {
+                    "type": "string",
+                    "description": "Folder to look for the newest archive in. Defaults to '~/Downloads'.",
+                }
             },
             "required": [],
         },
