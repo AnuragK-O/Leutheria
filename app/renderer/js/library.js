@@ -21,7 +21,7 @@
       icon("search"),
       el("input", {
         type: "search",
-        placeholder: "Search capabilities",
+        placeholder: "Filter by name",
         value: query,
         oninput: (event) => {
           query = event.target.value.trim().toLowerCase();
@@ -85,16 +85,17 @@
 
     for (const [label, group] of groups) {
       if (!group.length) continue;
-      listEl.appendChild(el("div.list-group-label", { text: `${label} · ${group.length}` }));
+      listEl.appendChild(el("div.list-group-label", {}, label, el("span", { text: String(group.length) })));
       for (const entry of group) listEl.appendChild(renderRow(entry));
     }
   }
 
   function renderRow(entry) {
     const flags = el("div.list-row-flags");
-    if (!entry.enabled) flags.appendChild(el("span.flag-dot.off", { title: "Disabled" }));
+    // Only what's out of the ordinary gets a tag, so the column scans.
+    if (!entry.enabled) flags.appendChild(el("span.badge.badge-off", { text: "off", title: "Disabled" }));
     else if (entry.requires_confirmation)
-      flags.appendChild(el("span.flag-dot.ask", { title: "Asks before running" }));
+      flags.appendChild(el("span.badge.badge-warning", { text: "ask", title: "Asks before running" }));
 
     return el(
       "button.list-row",
@@ -130,11 +131,11 @@
         })
       );
     } else if (entry.safety === "destructive") {
-      list.push(el("span.badge.badge-warning", { text: "destructive" }));
+      list.push(el("span.badge.badge-warning", { text: "destructive", title: "Unbounded: can change or remove data" }));
     } else if (entry.safety === "scoped") {
-      list.push(el("span.badge.badge-warning", { text: "controls apps" }));
+      list.push(el("span.badge.badge-warning", { text: "controls apps", title: "Scoped: types into another app, per-app grant" }));
     }
-    if (!entry.enabled) list.push(el("span.badge.badge-danger", { text: "disabled" }));
+    if (!entry.enabled) list.push(el("span.badge.badge-off", { text: "disabled" }));
     return list;
   }
 
@@ -259,7 +260,7 @@
           el(
             "div.step",
             {},
-            el("div.step-index", { text: String(index + 1) }),
+            el("div.step-index", { text: String(index + 1).padStart(2, "0") }),
             el(
               "div.step-body",
               {},
@@ -273,11 +274,10 @@
         el(
           "section",
           {},
-          el("div.section-label", { text: `Steps · ${entry.steps.length}` }),
+          el("div.section-label", { text: `Steps / ${entry.steps.length}` }),
           steps,
           el("p", {
-            class: "composer-hint",
-            style: "text-align:left;margin-left:2px",
+            class: "section-note",
             text: "A learned skill is data, not code — each step is dispatched through the same safety checks as anything else.",
           })
         )

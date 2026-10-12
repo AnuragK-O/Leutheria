@@ -22,11 +22,23 @@
       el(
         "div.chat-empty",
         {},
-        el("img", { src: "../../assets/1.png", alt: "" }),
-        el("strong", { text: "Nothing yet" }),
-        el("span", {
-          text: "Type a command below, or hold a conversation out loud with the mic. Everything Leutheria can do lives in the Library.",
-        })
+        // The logo mark as a watermark: a CSS mask, tinted by the theme.
+        el("div.empty-mark", { "aria-hidden": "true" }),
+        el("div.empty-eyebrow", { text: "No commands this session" }),
+        el("div.empty-title", { text: "Standing by" }),
+        el("div.empty-sub", {
+          text: "Type a command, or say it. Everything Leutheria can do is listed in the Library.",
+        }),
+        el(
+          "div.empty-keys",
+          {},
+          el("kbd", { text: "Enter" }),
+          el("span", { text: "Send what you typed" }),
+          el("kbd", { text: "Mic" }),
+          el("span", { text: "Record one command, click again to send" }),
+          el("kbd", { text: "\u2325 Space" }),
+          el("span", { text: "Start or stop a hands-free session" })
+        )
       )
     );
   }
@@ -39,11 +51,26 @@
 
   // --- messages ----------------------------------------------------------
 
-  function addMessage({ role, text, trace, voice, error }) {
+  // When the line reached this window. The agent doesn't stamp messages, and
+  // a session log without times isn't one.
+  function clock() {
+    return new Date().toLocaleTimeString([], { hour12: false });
+  }
+
+  // notice: "success" | "warning" -- an app notice shown in the assistant's
+  // voice (a skill was saved, the agent isn't connected), marked with an icon.
+  function addMessage({ role, text, trace, voice, error, notice }) {
     const message = el("div.msg", { class: role });
     message.appendChild(
-      el("div.msg-role", { text: role === "user" ? (voice ? "you · voice" : "you") : "leutheria" })
+      el(
+        "div.msg-gutter",
+        {},
+        el("span.msg-role", { text: role === "user" ? (voice ? "you / voice" : "you") : "leutheria" }),
+        el("span.msg-time", { text: clock() })
+      )
     );
+    const content = el("div.msg-content");
+    message.appendChild(content);
 
     if (trace && trace.length) {
       const list = el("div.msg-trace");
@@ -55,16 +82,23 @@
             { class: failed ? "failed" : "" },
             el("span.dot"),
             el("b", { text: step.tool }),
-            el("span", { text: formatArgs(step.args) })
+            el("span.trace-args", { text: formatArgs(step.args) }),
+            el("span.trace-status", { text: failed ? "FAILED" : "OK" })
           )
         );
       }
-      message.appendChild(list);
+      content.appendChild(list);
     }
 
     if (text || !trace || !trace.length) {
-      message.appendChild(
-        el("div.msg-body", { text: text || "(no reply)", class: error ? "error" : "" })
+      const mark = error ? "x" : notice === "success" ? "check" : notice === "warning" ? "warning" : null;
+      content.appendChild(
+        el(
+          "div.msg-body",
+          { class: error ? "error" : notice ? `notice-${notice}` : "" },
+          mark && icon(mark),
+          el("span", { text: text || "(no reply)" })
+        )
       );
     }
 
@@ -73,24 +107,43 @@
 
   // --- confirmation card -------------------------------------------------
 
+  function resolvedRow(note, approved) {
+    return el(
+      "div.prompt-resolved",
+      { class: approved ? "yes" : "no" },
+      icon(approved ? "check" : "x"),
+      el("span", { text: note })
+    );
+  }
+
   function addConfirmCard({ id, tool, args }) {
     const card = el("div.prompt-card.confirm");
-    card.appendChild(el("div.prompt-head", {}, icon("warning"), el("span", { text: "Approval needed" })));
+    // The tool's safety tier, when the catalog has loaded: why it's asking.
+    const inventory = LX.state && LX.state.inventory;
+    const entry = inventory && [...inventory.tools, ...inventory.skills].find((item) => item.name === tool);
+    const tier = entry && (entry.safety === "destructive" || entry.safety === "scoped") ? entry.safety : null;
+    card.appendChild(
+      el(
+        "div.prompt-head",
+        {},
+        icon("warning"),
+        el("span", { text: "Approval required" }),
+        tier && el("span.badge.badge-warning", { text: tier })
+      )
+    );
 
     const actions = el("div.prompt-actions");
     const body = el(
       "div.prompt-body",
       {},
-      el("div", {
-        text: `Leutheria wants to run ${tool}. This one always asks first.`,
-      }),
+      el("div.prompt-lead", {}, "Leutheria wants to run ", el("b", { text: tool }), ". This one always asks first."),
       el("div.code-block", { text: `${tool}(${formatArgs(args, 400) || ""})` }),
       actions
     );
     card.appendChild(body);
 
     const buttons = [
-      { label: "Approve", kind: "btn btn-primary", approved: true, remember: null },
+      { label: "Approve", kind: "btn btn-hot", approved: true, remember: null },
       {
         label: "Approve for this session",
         kind: "btn",
@@ -108,10 +161,12 @@
       { label: "Decline", kind: "btn btn-danger", approved: false, remember: null },
     ];
 
-    const settle = (note) => {
+    // Once answered the card goes neutral: amber means "waiting on you".
+    const settle = (note, approved) => {
       confirmCards.delete(id);
       actions.remove();
-      card.appendChild(el("div.prompt-resolved", { text: note }));
+      card.classList.add("resolved");
+      card.appendChild(resolvedRow(note, approved));
       scrollToEnd();
     };
 
@@ -130,7 +185,8 @@
                   ? "Approved — and remembered for good."
                   : spec.remember === "session"
                     ? "Approved — and remembered for this session."
-                    : "Approved."
+                    : "Approved.",
+              spec.approved
             );
           },
         })
@@ -147,25 +203,39 @@
     // "ui" here means the Electron overlay's card (main.js relays its click);
     // "overlay" is the native Qt overlay, answered over its own connection.
     const how = by === "voice" ? "by voice" : by === "ui" || by === "overlay" ? "from the overlay" : "by you";
-    settle(`${approved ? "Approved" : "Declined"} ${how}.`);
+    settle(`${approved ? "Approved" : "Declined"} ${how}.`, approved);
   }
 
   // --- skill proposal card -----------------------------------------------
 
   function addProposalCard({ id, name, description, steps, uncertain_params }) {
     const card = el("div.prompt-card.proposal");
-    card.appendChild(el("div.prompt-head", {}, icon("sparkle"), el("span", { text: "New skill suggested" })));
+    card.appendChild(el("div.prompt-head", {}, icon("sparkle"), el("span", { text: "Skill proposal" })));
 
     const body = el("div.prompt-body");
     body.appendChild(
       el(
         "div",
         {},
-        el("div", { class: "step-tool", text: name }),
-        el("div", { class: "detail-desc", text: description })
+        el("div.prompt-title", { text: name }),
+        el("div.prompt-lead", { text: description })
       )
     );
-    body.appendChild(el("div.code-block", { text: steps.map((step) => step.tool).join("  →  ") }));
+    // The steps in the order they run; the numbers are that order.
+    body.appendChild(
+      el(
+        "div.pipeline",
+        {},
+        steps.map((step, index) =>
+          el(
+            "span.pipe-step",
+            {},
+            el("span.pipe-n", { text: String(index + 1).padStart(2, "0") }),
+            el("span", { text: step.tool })
+          )
+        )
+      )
+    );
 
     // Default every open question to "it varies" -- keeping a value as a real
     // parameter is the recoverable choice; silently baking in a wrong literal
@@ -175,8 +245,8 @@
     for (const item of uncertain_params || []) {
       resolutions[item.name] = true;
 
-      const varies = el("button.choice.selected", { text: "It varies" });
-      const fixed = el("button.choice", { text: `Always "${item.guessed_value}"` });
+      const varies = el("button.choice.selected", {}, el("span.pip"), "It varies");
+      const fixed = el("button.choice", {}, el("span.pip"), `Always "${item.guessed_value}"`);
 
       varies.addEventListener("click", () => {
         resolutions[item.name] = true;
@@ -200,9 +270,10 @@
     }
 
     const actions = el("div.prompt-actions");
-    const settle = (note) => {
+    const settle = (note, approved) => {
       actions.remove();
-      card.appendChild(el("div.prompt-resolved", { text: note }));
+      card.classList.add("resolved");
+      card.appendChild(resolvedRow(note, approved));
       scrollToEnd();
     };
 
@@ -211,7 +282,7 @@
         text: "Save skill",
         onclick: () => {
           window.leutheria.sendSkillResponse(id, true, resolutions);
-          settle(`Saved as "${name}" — you can manage it in the Library.`);
+          settle(`Saved as "${name}" — you can manage it in the Library.`, true);
         },
       })
     );
@@ -220,7 +291,7 @@
         text: "No thanks",
         onclick: () => {
           window.leutheria.sendSkillResponse(id, false, resolutions);
-          settle("Declined — this sequence won't be suggested again.");
+          settle("Declined — this sequence won't be suggested again.", false);
         },
       })
     );

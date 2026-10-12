@@ -299,7 +299,8 @@
     const hint = document.getElementById("voice-stalled");
     if (!badge || !saved) return;
     const label = voice.connected ? STATE_LABELS[voice.state] || "Off" : "Off";
-    badge.className = label === "Off" ? "badge" : "badge badge-success";
+    // Off is hollow, Idle is neutral, anything with the mic or speaker in use is live.
+    badge.className = label === "Off" ? "badge badge-off" : label === "Idle" ? "badge" : "badge badge-live";
     badge.textContent = voice.session ? `${label} · in a session` : label;
     hint.hidden = !(voice.connected && saved.enabled && voice.state === "off" && !voice.session);
     // The agent says why when it knows (a mic that wouldn't open, a wake
@@ -333,6 +334,7 @@
               render();
             },
           },
+          el("span.pip"),
           humanModel(model.name),
           model.downloaded ? null : el("span.choice-note", { text: "download" })
         )

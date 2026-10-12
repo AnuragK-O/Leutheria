@@ -68,9 +68,10 @@ window.LX = window.LX || {};
     svg.setAttribute("viewBox", "0 0 24 24");
     svg.setAttribute("fill", "none");
     svg.setAttribute("stroke", "currentColor");
-    svg.setAttribute("stroke-width", "1.7");
-    svg.setAttribute("stroke-linecap", "round");
-    svg.setAttribute("stroke-linejoin", "round");
+    // Square caps and mitred joins: the same hard geometry as the rest of the UI.
+    svg.setAttribute("stroke-width", "1.6");
+    svg.setAttribute("stroke-linecap", "square");
+    svg.setAttribute("stroke-linejoin", "miter");
     for (const d of (PATHS[name] || "").split("|")) {
       const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
       path.setAttribute("d", d);
