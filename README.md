@@ -136,6 +136,9 @@ app/                  Electron shell
       assets/          Drop-in visuals: manifest.json + README.md for the asset designer
   scripts/
     mock-agent.js      Scripted stand-in agent (port 8799) for testing the Electron side
+    mock-fixtures.js   Its fixture catalog, history, approvals, devices (for the non-chat views)
+    ui-capture.js      Drives the real app against the mock: screenshots + behaviour checks
+    make-mark.js       Regenerates renderer/img/mark-*.png from assets/1.png
                        and the Qt overlay (understands `hello` / the overlay role)
 
 agent/                Python sidecar
@@ -360,7 +363,45 @@ Six views in the left sidebar:
 | **Voice** | Settings for the always-listening session: wake word on/off, which wake words, sensitivity, the end-of-utterance pause, the silence timeout, dismiss phrases, and the microphone. See below. |
 | **Logs** | The raw bridge stream, out of the way of the conversation. Copy or clear it. |
 
-Light and dark themes both ship; toggle at the bottom of the sidebar (the choice sticks).
+Dark is the default theme; a light one ("paper terminal") ships too. Toggle at the bottom
+of the sidebar (the choice sticks, and the overlay follows it).
+
+**Design language.** The window is a control surface for a machine that acts on your
+computer, so it shows state rather than decorating: near-black ground with a violet cast,
+1 px hairlines, no rounded corners and no shadows, a cut corner on controls and on the
+two cards that wait on you (a confirmation, a skill proposal), which also carry corner
+brackets. Colour only ever means state: violet (from the logo) is brand and selection,
+cyan is live (connected, mic open, switched on), amber is waiting on you (an approval),
+red failed or destroys, green succeeded. Two typefaces: Chakra Petch for what a person
+reads, JetBrains Mono for what the machine said (tool names, arguments, paths, counts,
+times, logs). The transcript is a session log (who and when in a left column, tool calls
+as mono rows with an OK or FAILED status), not chat bubbles. The activation overlay uses
+the same tokens and primitives.
+
+| what | where |
+|---|---|
+| Every token: colour for both themes, type scale, spacing, cut sizes, motion | the first two blocks of `app/renderer/styles.css` |
+| Token table, usage rules, and the overlay spec the Qt overlay is ported from | `app/renderer/DESIGN.md` |
+| Fonts (woff2, bundled; nothing is fetched at runtime) | `app/renderer/fonts/` |
+| Logo mark, downsized and made transparent for use as a CSS mask | `app/renderer/img/mark-{64,128,256,512}.png` (regenerate: `cd app && env -u ELECTRON_RUN_AS_NODE npx electron scripts/make-mark.js`) |
+| Icons (stroked SVG paths; no emoji in UI strings) | `PATHS` in `app/renderer/js/util.js` |
+
+Font licences: Chakra Petch (Copyright 2018 The Chakra Petch Project Authors) and
+JetBrains Mono (Copyright 2020 The JetBrains Mono Project Authors) are both under the SIL
+Open Font License 1.1; the licence texts are next to the fonts
+(`fonts/ChakraPetch-OFL.txt`, `fonts/JetBrainsMono-OFL.txt`). The dock and tray icons are
+unchanged (`assets/4.png`, `assets/1.png`).
+
+**Checking the UI.** `cd app && node scripts/ui-capture.js --out <dir>` starts its own
+mock agent and its own Electron (isolated userData, never port 8765), drives every view
+and state in both themes at 1180 and 940 px wide, checks on the way that each control
+still does what it did (typed command, confirmation answered from the main window and
+from the overlay, skill proposal, Library toggle and Reset, Revoke, Voice settings save,
+refusal and Revert, theme toggle, the voice pill, toasts), and writes a PNG of each. One
+line per check, non-zero exit on a failure. The PNGs are for looking at: a UI change isn't
+verified until someone has. `--real ws://127.0.0.1:<port>` runs a reduced pass against an
+agent that's already running, sending only management messages. The windows appear on
+screen while it runs.
 
 **Library controls, and what they actually do:**
 - **Available to Leutheria** — off means the capability isn't included in the tool schemas

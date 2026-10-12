@@ -1,35 +1,22 @@
 /* ==========================================================================
    Activation overlay
-   A floating "island" (asset slot + state label + one line of text) with an
+   A floating plate (asset slot + state label + one line of text) with an
    optional compact confirmation card under it. The window is transparent and
    click-through; everything visible lives inside .stage.
+
+   Same language as the main window, and the same tokens: every colour, size
+   and timing here comes from the first block of ../styles.css (the plate and
+   the card use its cut-corner and bracket primitives). DESIGN.md lists them
+   for the Qt overlay, which has to match.
 
    Custom properties the frame maintains (usable by placeholders and assets):
      --level      0..1, smoothed mic level (audio_level), ~15 Hz
      --slot-size  side of the square asset slot (manifest "size", default 56px)
+     --ring       the current state's colour (what "react": "glow" glows in)
+
+   --tone is the state: cyan while the mic is live (listening, hearing),
+   violet while Leutheria is working or talking, amber when it needs an answer.
    ========================================================================== */
-
-:root {
-  --level: 0;
-  --slot-size: 56px;
-  --island-bg: rgba(23, 19, 31, 0.9);
-  --island-border: rgba(166, 139, 240, 0.22);
-  --island-shadow: 0 10px 34px rgba(0, 0, 0, 0.45), 0 1px 0 rgba(255, 255, 255, 0.04) inset;
-  --orb-core: #b9a3f5;
-  --orb-mid: var(--violet-500);
-  --orb-edge: var(--violet-700);
-  --ring: rgba(166, 139, 240, 0.55);
-}
-
-[data-theme="light"] {
-  --island-bg: rgba(255, 255, 255, 0.94);
-  --island-border: rgba(120, 86, 196, 0.2);
-  --island-shadow: 0 10px 30px rgba(25, 19, 35, 0.16), 0 1px 3px rgba(25, 19, 35, 0.08);
-  --orb-core: #a68bf0;
-  --orb-mid: var(--violet-600);
-  --orb-edge: var(--violet-700);
-  --ring: rgba(120, 86, 196, 0.45);
-}
 
 html,
 body {
@@ -46,57 +33,70 @@ body {
   margin: 10px auto 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  transition: opacity 0.4s var(--ease), transform 0.4s var(--ease);
+  gap: var(--s2);
+  /* The one shadow in the product: the plate floats over someone else's
+     window and has to separate from it. drop-shadow follows the cut corner. */
+  filter: drop-shadow(0 8px 18px rgba(0, 0, 0, 0.4));
+  transition: opacity var(--t-slow) var(--ease), transform var(--t-slow) var(--ease);
 }
 
-/* Entering: the island drops in from the top edge. Leaving (session_ended):
-   fades back up. main.js keeps the window mapped for OVERLAY_LINGER_MS so
+/* Entering: the plate drops in from the top edge. Leaving (session_ended):
+   back up and out. main.js keeps the window mapped for OVERLAY_LINGER_MS so
    this can finish. */
 body.leaving .stage {
   opacity: 0;
-  transform: translateY(-8px) scale(0.97);
+  transform: translateY(-8px);
 }
 
-/* --- island ----------------------------------------------------------- */
+/* --- the plate --------------------------------------------------------- */
 
 .island {
+  --tone: var(--cyan);
+  --ring: var(--tone);
+  --cut: var(--cut-lg);
+  --cut-bg: var(--surface);
+  --cut-line: color-mix(in srgb, var(--tone) 55%, var(--line-strong));
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 10px 18px 10px 12px;
+  gap: var(--s3);
   min-height: calc(var(--slot-size) + 20px);
-  border-radius: calc((var(--slot-size) + 20px) / 2);
-  background: var(--island-bg);
-  border: 1px solid var(--island-border);
-  box-shadow: var(--island-shadow);
-  transition: border-color 0.3s;
+  padding: 10px calc(var(--cut) + 6px) 10px 10px;
+}
+
+/* The reticle already carries brackets; the plate itself stays plain. */
+.island::after {
+  background: var(--cut-bg);
+}
+
+.island[data-state="transcribing"],
+.island[data-state="thinking"],
+.island[data-state="speaking"] {
+  --tone: var(--violet-hi);
 }
 
 .island[data-state="awaiting_confirmation"] {
-  border-color: color-mix(in srgb, var(--warning) 50%, transparent);
+  --tone: var(--amber);
 }
 
 .island-text {
   min-width: 0;
   flex: 1;
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  padding-left: var(--s3);
+  border-left: var(--hair) solid var(--line-strong);
 }
 
 .island-label {
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--accent);
-}
-
-.island[data-state="awaiting_confirmation"] .island-label {
-  color: var(--warning);
+  color: var(--tone);
+  transition: color var(--t-base);
 }
 
 .island-line {
-  margin-top: 1px;
-  font-size: 13.5px;
+  font-size: var(--fs-md);
   line-height: 1.4;
   color: var(--text);
   display: -webkit-box;
@@ -106,7 +106,7 @@ body.leaving .stage {
 }
 
 .island-line.hint {
-  color: var(--text-muted);
+  color: var(--text-2);
 }
 
 .island-line.quote::before {
@@ -141,122 +141,135 @@ body.leaving .stage {
 /* Optional manifest "react" hooks for image/video assets. */
 .slot [data-react="scale"] {
   transform: scale(calc(1 + var(--level) * 0.18));
-  transition: transform 0.09s linear;
+  transition: transform var(--t-fast) linear;
 }
 .slot [data-react="glow"] {
   filter: drop-shadow(0 0 calc(var(--level) * 14px) var(--ring));
-  transition: filter 0.09s linear;
+  transition: filter var(--t-fast) linear;
 }
 
-/* --- CSS placeholder: the orb ------------------------------------------
-   One element, restyled per state via [data-state] on .island. Replace any
-   state with a real asset in assets/manifest.json -- nothing here needs to
-   change. */
+/* --- CSS placeholder: the reticle ---------------------------------------
+   One element (.orb, the name the manifest docs use), restyled per state via
+   [data-state] on .island. Three flat parts, no gradients or glow:
+     the frame   four corner brackets on the slot (the element's background)
+     the core    a solid diamond (::before)
+     the ring    a hairline diamond around it (::after)
+   Replace any state with a real asset in assets/manifest.json -- nothing
+   here needs to change. */
 
 .orb {
+  --arm: 16%; /* bracket arm, as a share of the slot */
   position: relative;
-  width: 64%;
-  height: 64%;
-  border-radius: 50%;
-  background: radial-gradient(circle at 35% 30%, var(--orb-core), var(--orb-mid) 55%, var(--orb-edge));
-  box-shadow: 0 0 calc(6px + var(--level) * 22px) color-mix(in srgb, var(--orb-mid) 70%, transparent);
-  transform: scale(calc(0.92 + var(--level) * 0.22));
-  transition: transform 0.09s linear, box-shadow 0.09s linear, filter 0.3s;
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(var(--tone), var(--tone)) left top / var(--arm) var(--hair) no-repeat,
+    linear-gradient(var(--tone), var(--tone)) left top / var(--hair) var(--arm) no-repeat,
+    linear-gradient(var(--tone), var(--tone)) right top / var(--arm) var(--hair) no-repeat,
+    linear-gradient(var(--tone), var(--tone)) right top / var(--hair) var(--arm) no-repeat,
+    linear-gradient(var(--tone), var(--tone)) left bottom / var(--arm) var(--hair) no-repeat,
+    linear-gradient(var(--tone), var(--tone)) left bottom / var(--hair) var(--arm) no-repeat,
+    linear-gradient(var(--tone), var(--tone)) right bottom / var(--arm) var(--hair) no-repeat,
+    linear-gradient(var(--tone), var(--tone)) right bottom / var(--hair) var(--arm) no-repeat;
 }
 
-/* The ring around the orb: grows with the mic level while listening. */
 .orb::before,
 .orb::after {
   content: "";
-  position: absolute;
-  inset: -6px;
-  border-radius: 50%;
-  border: 1.5px solid var(--ring);
-  opacity: calc(0.25 + var(--level) * 0.75);
-  transform: scale(calc(0.96 + var(--level) * 0.14));
-  transition: transform 0.09s linear, opacity 0.09s linear;
+  grid-area: 1 / 1;
+  transform: rotate(45deg);
 }
 
+/* core */
+.orb::before {
+  width: 26%;
+  height: 26%;
+  background: var(--tone);
+  transition: transform var(--t-fast) linear, background-color var(--t-base);
+}
+
+/* ring */
 .orb::after {
-  inset: -6px;
-  border-color: transparent;
-  opacity: 0;
+  width: 50%;
+  height: 50%;
+  border: var(--hair) solid var(--tone);
+  opacity: 0.45;
+  transition: transform var(--t-fast) linear, opacity var(--t-fast) linear, border-color var(--t-base);
 }
 
-/* listening: breathing, level-reactive */
-.island[data-state="listening"] .orb {
-  animation: breathe 3.2s ease-in-out infinite;
+/* listening: the mic is open and nothing is being said. The core idles;
+   the ring follows the room. */
+.island[data-state="listening"] .orb::before {
+  animation: idle 2.8s ease-in-out infinite;
+}
+.island[data-state="listening"] .orb::after {
+  opacity: calc(0.3 + var(--level) * 0.7);
+  transform: rotate(45deg) scale(calc(0.92 + var(--level) * 0.3));
 }
 
-/* hearing: the ring doubles and tracks the voice harder */
-.island[data-state="hearing"] .orb {
-  transform: scale(calc(0.96 + var(--level) * 0.2));
+/* hearing: speech. Core and ring both track the voice, hard. */
+.island[data-state="hearing"] .orb::before {
+  transform: rotate(45deg) scale(calc(0.8 + var(--level) * 0.9));
 }
 .island[data-state="hearing"] .orb::after {
-  inset: -10px;
-  border-color: var(--ring);
-  opacity: calc(var(--level) * 0.9);
-  transform: scale(calc(0.92 + var(--level) * 0.1));
+  border-width: var(--rule);
+  opacity: calc(0.4 + var(--level) * 0.6);
+  transform: rotate(45deg) scale(calc(0.9 + var(--level) * 0.5));
 }
 
-/* transcribing: a spinning arc replaces the ring */
+/* transcribing: the ring turns, quickly -- short work */
 .island[data-state="transcribing"] .orb::before {
-  border-color: transparent;
-  border-top-color: var(--accent);
-  border-right-color: var(--accent);
+  transform: rotate(45deg) scale(0.7);
+}
+.island[data-state="transcribing"] .orb::after {
   opacity: 1;
-  animation: spin 0.9s linear infinite;
+  animation: turn 1.1s linear infinite;
 }
 
-/* thinking: the orb's light rotates -- slower, calmer than transcribing */
-.island[data-state="thinking"] .orb {
-  background: conic-gradient(from 0deg, var(--orb-edge), var(--orb-core), var(--orb-mid), var(--orb-edge));
-  animation: spin 2.4s linear infinite;
-}
+/* thinking: the core turns, slowly -- longer work, calmer */
 .island[data-state="thinking"] .orb::before {
-  opacity: 0.35;
+  animation: turn 2.6s linear infinite;
+}
+.island[data-state="thinking"] .orb::after {
+  animation: idle 1.3s ease-in-out infinite;
 }
 
-/* speaking: steady rhythmic pulse outward */
-.island[data-state="speaking"] .orb::before,
+/* speaking: a ring leaves the core, over and over */
 .island[data-state="speaking"] .orb::after {
-  border-color: var(--ring);
-  animation: ripple 1.6s var(--ease) infinite;
-}
-.island[data-state="speaking"] .orb::after {
-  animation-delay: 0.8s;
+  animation: emit 1.5s var(--ease) infinite;
 }
 
-/* awaiting_confirmation: amber, waiting on the user */
-.island[data-state="awaiting_confirmation"] {
-  --orb-core: #f3d596;
-  --orb-mid: var(--warning);
-  --orb-edge: #9a6c17;
-  --ring: color-mix(in srgb, var(--warning) 60%, transparent);
+/* awaiting_confirmation: amber, and it blinks -- it's your move */
+.island[data-state="awaiting_confirmation"] .orb::before {
+  animation: blink 1s steps(2, jump-none) infinite;
 }
-.island[data-state="awaiting_confirmation"] .orb {
-  animation: breathe 1.8s ease-in-out infinite;
+.island[data-state="awaiting_confirmation"] .orb::after {
+  opacity: 1;
 }
 
-@keyframes breathe {
+@keyframes idle {
   50% {
-    filter: brightness(1.18);
+    opacity: 0.45;
   }
 }
 
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-@keyframes ripple {
+@keyframes turn {
   from {
-    transform: scale(0.9);
-    opacity: 0.8;
+    transform: rotate(45deg);
   }
   to {
-    transform: scale(1.3);
+    transform: rotate(405deg);
+  }
+}
+
+@keyframes emit {
+  from {
+    transform: rotate(45deg) scale(0.55);
+    opacity: 1;
+  }
+  to {
+    transform: rotate(45deg) scale(1.35);
     opacity: 0;
   }
 }
@@ -264,75 +277,87 @@ body.leaving .stage {
 /* --- compact confirmation card ---------------------------------------- */
 
 .ov-confirm {
-  border-radius: var(--radius-lg);
-  background: var(--island-bg);
-  border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border));
-  box-shadow: var(--island-shadow);
-  overflow: hidden;
-  animation: drop 0.24s var(--ease);
+  --tone: var(--amber);
+  --cut: var(--cut-md);
+  --cut-bg: var(--surface);
+  --cut-line: color-mix(in srgb, var(--tone) 60%, var(--line));
+  animation: drop var(--t-base) var(--ease);
 }
 
 .ov-confirm-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 14px;
-  background: var(--warning-soft);
-  color: var(--warning);
-  font-size: 12px;
-  font-weight: 600;
+  min-height: 30px;
+  padding: 0 calc(var(--cut) + 10px) 0 14px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--tone);
+  border-bottom: var(--hair) solid color-mix(in srgb, var(--tone) 35%, var(--line));
 }
 
 .ov-confirm-head svg {
-  width: 14px;
-  height: 14px;
-  flex: none;
+  width: 13px;
+  height: 13px;
 }
 
 .ov-confirm-body {
-  padding: 10px 14px 12px;
+  padding: 10px 14px 14px;
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 
 .ov-confirm-cmd {
-  max-height: 3.2em;
+  max-height: 3.5em;
   overflow: hidden;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
+  user-select: none;
 }
 
 .ov-confirm-foot {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--s2);
+  min-height: var(--hit);
 }
 
 .ov-confirm-hint {
   flex: 1;
-  font-size: 11.5px;
-  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  color: var(--text-2);
 }
 
 .ov-confirm-actions {
   display: flex;
-  gap: 8px;
+  gap: var(--s2);
 }
 
 .ov-confirm-resolved {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-muted);
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-2);
 }
 
 .ov-confirm-resolved svg {
-  width: 14px;
-  height: 14px;
+  width: 12px;
+  height: 12px;
+}
+
+.ov-confirm-resolved.yes svg {
+  color: var(--green);
+}
+
+.ov-confirm-resolved.no svg {
+  color: var(--red);
 }
 
 @keyframes drop {

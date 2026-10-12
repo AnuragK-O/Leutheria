@@ -30,6 +30,15 @@
      path (transcript + confirmation_resolved + empty response), then the
      real reply. Any other command gets an echo reply. Overlays can't send
      commands (an error, as from the real agent).
+   - Typed command containing "propose": a reply with a two-step tool trace,
+     then a skill_proposed with one open question; saving it sends
+     skill_saved and adds the skill to the inventory. "fail": a reply whose
+     trace has a failed step. "error": an error message.
+   - The Library, Activity, Permissions and Voice views get fixture data
+     (scripts/mock-fixtures.js), and the management messages change it, so
+     toggles, Reset, Revoke and Delete can be exercised. set_voice_settings
+     applies the real agent's range checks to the numeric settings.
+     MOCK_FIXTURES=0 goes back to an empty catalog.
    - MOCK_CONFIRM_TIMEOUT_MS (default 20000): how long the scripted session
      waits for a click before "answering by voice".
    - MOCK_LOOP=1: run the scripted session again after each one ends.
@@ -60,7 +69,13 @@ let settings = {
   endpoint_silence_ms: 800,
   dismiss_phrases: ["thanks", "thank you", "that's all", "that's it", "we're done", "goodbye"],
   input_device: null,
+  tts_backend: "elevenlabs",
+  tts_voice: null,
 };
+
+const fixtures = require("./mock-fixtures");
+const FIXTURES = process.env.MOCK_FIXTURES !== "0";
+const proposals = new Map(); // proposal id -> the skill saving it would add
 
 const wss = new WebSocket.Server({ host: "127.0.0.1", port: PORT });
 console.log(`mock-agent listening on ws://127.0.0.1:${PORT}`);
@@ -255,7 +270,7 @@ async function handleMessage(client, message) {
       client.name = `${client.role}#${client.id}`;
       return;
     case "inventory":
-      return controlResult(client, message, { tools: [], skills: [], history: [], trusted: [], grants: [] });
+      return controlResult(client, message, FIXTURES ? fixtures.inventory : fixtures.EMPTY_INVENTORY);
     case "voice_session":
       if (message.action === "start") {
         controlResult(client, message, {});
@@ -268,14 +283,36 @@ async function handleMessage(client, message) {
       }
       return;
     case "get_voice_settings":
-      return controlResult(client, message, { settings });
-    case "set_voice_settings":
+      return controlResult(client, message, { settings, tts_available: { piper: true, elevenlabs: false } });
+    case "set_voice_settings": {
+      const problem = fixtures.voiceSettingProblem(message.settings || {});
+      if (problem) {
+        send(client, { type: "control_result", request_id: message.request_id, ok: false, error: problem });
+        return;
+      }
       settings = { ...settings, ...(message.settings || {}) };
       return controlResult(client, message, { settings });
+    }
+    case "list_input_devices":
+      return controlResult(client, message, { devices: fixtures.INPUT_DEVICES });
+    case "list_wake_models":
+      return controlResult(client, message, {
+        pretrained: fixtures.WAKE_MODELS,
+        paths: (message.paths || []).map((path) => ({ path, exists: !/missing/.test(path) })),
+      });
     case "set_preference":
+      fixtures.applyPreference(message);
+      return controlResult(client, message, {});
     case "delete_skill":
+      fixtures.inventory.skills = fixtures.inventory.skills.filter(
+        (skill) => !(skill.name === message.name && skill.deletable)
+      );
+      return controlResult(client, message, {});
     case "revoke_trust":
+      fixtures.inventory.trusted = fixtures.inventory.trusted.filter((entry) => entry.key !== message.key);
+      return controlResult(client, message, {});
     case "revoke_grant":
+      fixtures.inventory.grants = fixtures.inventory.grants.filter((entry) => entry.app !== message.app);
       return controlResult(client, message, {});
     case "confirm": {
       const ptt = pttConfirm;
@@ -295,8 +332,41 @@ async function handleMessage(client, message) {
   }
 
   switch (message.type) {
+    case "skill_response": {
+      const skill = proposals.get(message.id);
+      proposals.delete(message.id);
+      if (!skill || !message.approved) return;
+      await sleep(300);
+      fixtures.inventory.skills.push(skill);
+      fixtures.inventory.history.unshift({ event: "saved", name: skill.name, ts: fixtures.now() });
+      send(client, { type: "skill_saved", name: skill.name });
+      return;
+    }
     case "command": {
       const text = message.text || "";
+      if (/propose/i.test(text)) {
+        const demo = fixtures.proposalFor(uid());
+        await sleep(400);
+        converse(client, { type: "response", text: demo.reply, trace: demo.trace });
+        proposals.set(demo.proposed.id, demo.skill);
+        await sleep(500);
+        send(client, demo.proposed);
+        return;
+      }
+      if (/fail/i.test(text)) {
+        await sleep(400);
+        converse(client, {
+          type: "response",
+          text: "I couldn't read that file: it doesn't exist. The folder itself is there, so check the name.",
+          trace: fixtures.FAILED_TRACE,
+        });
+        return;
+      }
+      if (/error/i.test(text)) {
+        await sleep(300);
+        converse(client, { type: "error", text: "The model call failed: connection reset. Nothing was run." });
+        return;
+      }
       if (/confirm/i.test(text)) {
         pttConfirm = { id: uid(), client };
         converse(client, { type: "confirmation_required", id: pttConfirm.id, tool: "run_command", args: { cmd: "echo hi" } });
