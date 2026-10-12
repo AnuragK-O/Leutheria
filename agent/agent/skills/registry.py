@@ -46,6 +46,27 @@ from agent.skills.template_skill import run_template
 from agent.skills.validate import SkillValidationError, skill_path
 from agent.tools.registry import TOOLS
 
+# --- dev/web ---
+from agent.skills import (
+    clipboard_to_file,
+    clipboard_to_note,
+    clone_repo,
+    code_scratchpad,
+    define_term,
+    git_snapshot,
+    git_sync,
+    github_open,
+    new_node_project,
+    new_python_project,
+    new_web_page,
+    open_workspace,
+    read_later,
+    repo_overview,
+    research_topic,
+    save_page_notes,
+    web_search,
+)
+
 GENERATED_DIR = Path(__file__).resolve().parent / "generated"
 
 # A skill is a multi-step procedure exposed to the LLM as if it were a single
@@ -634,6 +655,407 @@ SKILLS = {
                     "type": "string",
                     "description": "Folder to look for the newest archive in. Defaults to '~/Downloads'.",
                 }
+            },
+            "required": [],
+        },
+    },
+    # --- dev/web ---
+    "new_python_project": {
+        "fn": new_python_project.run,
+        "description": (
+            "Scaffold a new Python project with starter files: a folder holding a runnable "
+            "main.py, a README, requirements.txt and a gitignore. Use this when the user "
+            "asks for a Python project, script or app by name. It only writes files; git "
+            "init and a virtual environment happen only if asked for, and each of those "
+            "asks the user first. It refuses if the folder already has anything in it. "
+            "Not for an empty project folder with no language named (that is "
+            "setup_project), and not for Node or web pages (new_node_project, new_web_page)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "The project and folder name, e.g. 'atlas'."},
+                "base_dir": {"type": "string", "description": "Parent folder. Defaults to '~/Projects'."},
+                "git_init": {"type": "boolean", "description": "Also run git init in it. Only if the user asked."},
+                "create_venv": {
+                    "type": "boolean",
+                    "description": "Also create a .venv virtual environment in it. Only if the user asked.",
+                },
+                "open_in": {
+                    "type": "string",
+                    "description": "Application to open the folder in afterwards, e.g. 'Visual Studio Code'. Omit to open nothing.",
+                },
+            },
+            "required": ["name"],
+        },
+    },
+    "new_node_project": {
+        "fn": new_node_project.run,
+        "description": (
+            "Scaffold a new Node.js project with starter files: a folder holding "
+            "package.json, a runnable index.js, a README and a gitignore. Use this when "
+            "the user asks for a Node or JavaScript project by name. It only writes "
+            "files; git init and npm install happen only if asked for, and each asks the "
+            "user first. It refuses if the folder already has anything in it. Not for a "
+            "page to open in a browser (new_web_page), Python (new_python_project), or an "
+            "empty project folder with no language named (setup_project)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "The project and folder name, e.g. 'atlas-api'."},
+                "base_dir": {"type": "string", "description": "Parent folder. Defaults to '~/Projects'."},
+                "git_init": {"type": "boolean", "description": "Also run git init in it. Only if the user asked."},
+                "install": {"type": "boolean", "description": "Also run npm install in it. Only if the user asked."},
+                "open_in": {
+                    "type": "string",
+                    "description": "Application to open the folder in afterwards, e.g. 'Visual Studio Code'. Omit to open nothing.",
+                },
+            },
+            "required": ["name"],
+        },
+    },
+    "new_web_page": {
+        "fn": new_web_page.run,
+        "description": (
+            "Scaffold a new static web page: a folder holding index.html, styles.css and "
+            "script.js, wired together and ready to open in a browser. Use this when the "
+            "user wants a new web page, landing page or HTML and CSS starter. It refuses "
+            "if the folder already has anything in it. Not for opening or searching an "
+            "existing website (open_url, web_search), and not for a Node project "
+            "(new_node_project)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "The folder name, e.g. 'portfolio'."},
+                "title": {"type": "string", "description": "The page's title and heading. Defaults to the name."},
+                "base_dir": {"type": "string", "description": "Parent folder. Defaults to '~/Projects'."},
+                "open_in_browser": {"type": "boolean", "description": "Open the new page in the browser afterwards."},
+                "open_in": {
+                    "type": "string",
+                    "description": "Application to open the folder in afterwards, e.g. 'Visual Studio Code'. Omit to open nothing.",
+                },
+            },
+            "required": ["name"],
+        },
+    },
+    "git_snapshot": {
+        "fn": git_snapshot.run,
+        "description": (
+            "Commit everything that has changed in a git repository: stage all changes "
+            "and commit them with the given message. It checks the repository's state "
+            "itself, so call it directly without running git_status first. The user is "
+            "shown the command and asked before it runs. It stops without committing if there is nothing to "
+            "commit, if there are merge conflicts, or if a changed file looks like it "
+            "holds secrets. It does not push (git_sync does) and it cannot commit only "
+            "some files. Not for a copy of a folder outside git: that is backup_folder."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "A folder inside the repository, e.g. '~/Projects/atlas'."},
+                "message": {"type": "string", "description": "The commit message."},
+                "allow_sensitive": {
+                    "type": "boolean",
+                    "description": "Commit even though a file looks like it holds secrets. Only after the user, told which file, said to include it.",
+                },
+            },
+            "required": ["path", "message"],
+        },
+    },
+    "git_sync": {
+        "fn": git_sync.run,
+        "description": (
+            "Pull the latest changes into a git repository, or push its commits to the "
+            "remote. It checks the repository itself, so call it directly without running "
+            "git_status first, and never skip a pull because git_status showed nothing "
+            "behind, since git_status does not contact the remote. The user is shown the "
+            "command and asked before it runs. A pull only "
+            "fast-forwards: if it would need a merge it stops and says so. It does not "
+            "commit anything first; use git_snapshot for that."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "A folder inside the repository."},
+                "action": {"type": "string", "enum": ["pull", "push"], "description": "Which direction to sync."},
+            },
+            "required": ["path", "action"],
+        },
+    },
+    "clone_repo": {
+        "fn": clone_repo.run,
+        "description": (
+            "Clone a git repository from GitHub, or any https address, into a new folder. "
+            "The user is shown the command and asked before it runs. It refuses if the "
+            "destination folder already exists. Not for looking at a repository in the "
+            "browser: that is github_open."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo": {
+                    "type": "string",
+                    "description": "The repository as 'owner/name' on GitHub, or a full https clone address.",
+                },
+                "base_dir": {"type": "string", "description": "Parent folder to clone into. Defaults to '~/Projects'."},
+                "name": {"type": "string", "description": "Folder name for the clone. Defaults to the repository's name."},
+                "open_in": {
+                    "type": "string",
+                    "description": "Application to open the clone in afterwards, e.g. 'Visual Studio Code'. Omit to open nothing.",
+                },
+            },
+            "required": ["repo"],
+        },
+    },
+    "repo_overview": {
+        "fn": repo_overview.run,
+        "description": (
+            "Describe a git repository on this Mac in one go: branch and uncommitted "
+            "changes, recent commits, what kind of project it is, what is at its top "
+            "level, and the start of its README. Read-only, nothing appears on screen. "
+            "Use it for questions like what is this repo or what is the state of this "
+            "project. For only the branch and changed files, git_status alone is enough. "
+            "Not for a folder that is not a git repository: use list_files."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "A folder inside the repository, e.g. '~/Projects/atlas'."},
+            },
+            "required": ["path"],
+        },
+    },
+    "open_workspace": {
+        "fn": open_workspace.run,
+        "description": (
+            "Open an existing project folder in a code editor (Visual Studio Code unless "
+            "another is named) and report its git branch and changes if it is a "
+            "repository. Use it when the user wants to start working on a project that "
+            "already exists. Not for creating a project (setup_project, "
+            "new_python_project, new_node_project, new_web_page) and not for opening a "
+            "single file or a non-editor app, which is open_with."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "The project folder, e.g. '~/Projects/atlas'."},
+                "app": {"type": "string", "description": "Editor to open it in. Defaults to 'Visual Studio Code'."},
+            },
+            "required": ["path"],
+        },
+    },
+    "web_search": {
+        "fn": web_search.run,
+        "description": (
+            "Open a search results page in the user's browser for them to look at, on "
+            "Google unless another site is named. With no query it reads the clipboard "
+            "itself and searches for that text. Use it when the user says search for, look up or google "
+            "something. It shows results, it does not read them: when the user wants you "
+            "to tell them the answer, answer directly or read a page with fetch_url. For "
+            "several starting points on one topic use research_topic."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "What to search for. Omit to search for the clipboard's text."},
+                "engine": {
+                    "type": "string",
+                    "enum": [
+                        "google", "duckduckgo", "bing", "youtube", "wikipedia", "maps", "images",
+                        "news", "scholar", "reddit", "stackoverflow", "github",
+                    ],
+                    "description": "Which site to search. Defaults to google.",
+                },
+            },
+            "required": [],
+        },
+    },
+    "research_topic": {
+        "fn": research_topic.run,
+        "description": (
+            "Open a small set of browser tabs as starting points for researching a topic: "
+            "by default a web search, Wikipedia and news, four tabs at most. Use it when "
+            "the user says research this or wants to read up on something. It opens "
+            "pages for the user to read and does not read or summarize anything itself. "
+            "For one ordinary search use web_search."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "topic": {"type": "string", "description": "The topic, in a few words."},
+                "sources": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["web", "wikipedia", "news", "scholar", "videos", "discussion"],
+                    },
+                    "description": "Which kinds of source to open, four at most. Defaults to web, wikipedia and news.",
+                },
+            },
+            "required": ["topic"],
+        },
+    },
+    "define_term": {
+        "fn": define_term.run,
+        "description": (
+            "Open the dictionary page for a word or phrase in the user's browser, or its "
+            "thesaurus, Wiktionary or Wikipedia page. Use it when the user asks to look a "
+            "word up or to see its definition. It opens a page and does not return the "
+            "definition: if the user just asks what a word means, tell them yourself "
+            "instead."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "term": {"type": "string", "description": "The word or phrase."},
+                "source": {
+                    "type": "string",
+                    "enum": ["dictionary", "thesaurus", "wiktionary", "wikipedia"],
+                    "description": "Where to look it up. Defaults to dictionary.",
+                },
+            },
+            "required": ["term"],
+        },
+    },
+    "github_open": {
+        "fn": github_open.run,
+        "description": (
+            "Open a GitHub page in the user's browser: a repository by owner and name, "
+            "the repository a local folder was cloned from, one section of it such as "
+            "issues or pull requests, a user's profile, or a GitHub search. With no "
+            "arguments it opens the GitHub home page. It only opens a page and does not "
+            "download or read anything. To download "
+            "a repository use clone_repo, and for the state of a local one use git_status."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo": {"type": "string", "description": "The repository as 'owner/name', or just an owner for their profile."},
+                "path": {
+                    "type": "string",
+                    "description": "A local repository folder, to open the GitHub page it was cloned from. Used when repo is omitted.",
+                },
+                "section": {
+                    "type": "string",
+                    "enum": ["code", "issues", "pulls", "actions", "releases", "commits", "branches", "wiki"],
+                    "description": "Which part of the repository to open. Defaults to code.",
+                },
+                "query": {"type": "string", "description": "Search text: within the repository if one is given, otherwise across GitHub."},
+            },
+            "required": [],
+        },
+    },
+    "clipboard_to_note": {
+        "fn": clipboard_to_note.run,
+        "description": (
+            "Append whatever text is on the clipboard, with a timestamp, to a running "
+            "plain text file. Use it when the user says save what I copied or save my "
+            "clipboard to a note. It reads the clipboard itself, so call it directly "
+            "without get_clipboard first. Like quick_note this is a scratch file and nothing "
+            "appears on screen, not the Notes app. When the user dictates the text "
+            "themselves use quick_note; when they want the clipboard as its own separate "
+            "file use clipboard_to_file."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "label": {"type": "string", "description": "A few words saying what this is, put before the text. Optional."},
+                "notes_path": {"type": "string", "description": "File to append to. Defaults to '~/Notes/clipboard.txt'."},
+            },
+            "required": [],
+        },
+    },
+    "clipboard_to_file": {
+        "fn": clipboard_to_file.run,
+        "description": (
+            "Save whatever text is on the clipboard as a new file of its own. Use it when "
+            "the user wants the copied text as a file, especially one they name. It reads "
+            "the clipboard itself, so call it directly without get_clipboard first. It "
+            "never overwrites: if the file exists it stops and says so. To add the "
+            "clipboard to a running notes file use clipboard_to_note, and for a new code "
+            "file that opens in an editor use code_scratchpad."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Full path of the new file, e.g. '~/Documents/quote.txt'. Defaults to a timestamped file in '~/Notes'.",
+                },
+                "open_in": {"type": "string", "description": "Application to open the new file in, e.g. 'TextEdit'. Omit to open nothing."},
+            },
+            "required": [],
+        },
+    },
+    "save_page_notes": {
+        "fn": save_page_notes.run,
+        "description": (
+            "Fetch a web page and save its text as a new Markdown file, with its title, "
+            "address and the date, so the content is kept. With no address it reads the "
+            "one on the clipboard itself. Use it when the user wants a page's content saved or "
+            "archived. It saves the page's own text, not a summary, and nothing appears "
+            "on screen. To remember just the link use read_later, and to read a page "
+            "without saving it use fetch_url."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "The page's address. Omit to use the address on the clipboard."},
+                "note": {"type": "string", "description": "A line of the user's own to put at the top. Optional."},
+                "folder": {"type": "string", "description": "Folder to save into. Defaults to '~/Notes/pages'."},
+            },
+            "required": [],
+        },
+    },
+    "read_later": {
+        "fn": read_later.run,
+        "description": (
+            "Add a web address to the user's reading list, a plain text file with one "
+            "dated line per link. With no address it reads the one on the clipboard "
+            "itself, so there is no need to call get_clipboard first. Use "
+            "it when the user says save this for later or add this to my reading list. "
+            "It keeps only the link and fetches nothing; it is not a browser bookmark "
+            "and nothing appears on screen. To keep the page's content use "
+            "save_page_notes."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "The address to save. Omit to use the address on the clipboard."},
+                "title": {"type": "string", "description": "What to call it in the list. Optional."},
+                "list_path": {"type": "string", "description": "The reading list file. Defaults to '~/Notes/read-later.md'."},
+            },
+            "required": [],
+        },
+    },
+    "code_scratchpad": {
+        "fn": code_scratchpad.run,
+        "description": (
+            "Create a new throwaway code file in a chosen language, with a minimal "
+            "starter or the clipboard's contents, and open it in an editor. Use it when "
+            "the user wants a quick place to try something or to paste a snippet into a "
+            "file. The file is only created and opened, never run, and shell scripts are "
+            "not offered. Not for a whole "
+            "project with a README and folder of its own (new_python_project, "
+            "new_node_project, new_web_page)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "language": {
+                    "type": "string",
+                    "enum": [
+                        "python", "javascript", "typescript", "html", "css", "json", "sql",
+                        "markdown", "text", "swift", "go", "rust", "c", "cpp", "ruby",
+                    ],
+                    "description": "Language of the file. Defaults to python.",
+                },
+                "name": {"type": "string", "description": "File name without extension. Defaults to a timestamped name."},
+                "folder": {"type": "string", "description": "Folder to create it in. Defaults to '~/Scratch'."},
+                "from_clipboard": {"type": "boolean", "description": "Fill the file with the clipboard's text instead of the starter."},
+                "open_in": {"type": "string", "description": "Editor to open it in. Defaults to 'Visual Studio Code'."},
             },
             "required": [],
         },

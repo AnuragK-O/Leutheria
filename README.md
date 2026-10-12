@@ -159,6 +159,9 @@ agent/                Python sidecar
     overlay_protocol_check.py  The overlay client role: real server on a side port,
                        a UI and an overlay client in both orders -- never primary,
                        mirrored messages, confirming from the overlay (no API key needed)
+    skills_check_dev.py  Dev / web / clipboard tools and skills through the real
+                       dispatch(): temp HOME, stubbed browser/app/clipboard, fetch_url
+                       against a local http.server, git in temp repos (no API key needed)
   .venv/              Virtualenv (gitignored)
   agent/
     core/
@@ -231,6 +234,7 @@ agent/                Python sidecar
       move_file.py       copy_file.py        list_running_apps.py
       get_battery_status.py  get_disk_space.py  get_current_datetime.py
       focus_app.py       describe_ui.py      type_text.py        press_keys.py
+      fetch_url.py       git_status.py       open_with.py        (dev/web)
                         One flat .py file per tool -- no per-tool folders/__init__.py;
                         that packaging turned out to be more annoying to navigate than
                         it was worth for single-function tools, so it was reverted.
@@ -248,6 +252,15 @@ agent/                Python sidecar
                         single tool
       quick_note.py       append_text + show_notification: jot down a timestamped note
       backup_folder.py    copy_file with a generated timestamped destination name
+      dev_common.py       Shared by the dev/web/clipboard skills below: the Steps runner
+                        (every step through dispatch()), argument checks, shell quoting,
+                        the never-overwrite scaffold helper. Not a skill itself
+      new_python_project.py  new_node_project.py  new_web_page.py   (scaffolds)
+      git_snapshot.py    git_sync.py    clone_repo.py    repo_overview.py
+      open_workspace.py  github_open.py  code_scratchpad.py
+      web_search.py      research_topic.py  define_term.py
+      clipboard_to_note.py  clipboard_to_file.py  save_page_notes.py  read_later.py
+                        Dev / web / clipboard skills -- see "Skills" for the table
       generated/         Agent-proposed, user-approved skills as JSON (gitignored --
                         local learned state, not source code)
     assets/voices/       Piper voice model (gitignored, auto-downloaded on first use)
@@ -746,6 +759,9 @@ asyncio.run(main())
 | `write_new_file` | `{"path": "...", "content": "..."}` | safe | create-only (`open(..., "x")`): refuses if anything exists at the path, including a symlink. Returns `{"ok": true, "path": ...}` |
 | `search_file_contents` | `{"path": "...", "text": "wifi password"}` | safe | read-only literal, case-insensitive search of text files under 2 MB; binary files skipped |
 | `spotlight_search` | `{"query": "resume", "folder": "..."}` (folder optional) | safe | read-only `mdfind -name` with fixed argv and an 8 s timeout; names only, newest first |
+| `fetch_url` | `{"url": "https://...", "max_chars": 8000}` (`max_chars` optional) | safe | dev/web. One GET of a public http(s) page, returned as readable text (tags, scripts, menus and footers stripped). Read-only and bounded: public addresses only (loopback/private/link-local refused on every redirect hop), 5 redirects, 12 s overall, 1 MB read, 20,000 chars returned, text content types only. Reports `content_type`, `truncated`, final `url`. For reading a page, not showing one — that's `open_url` |
+| `git_status` | `{"path": "~/Projects/atlas", "log_count": 5}` (`log_count` optional) | safe | dev/web. Branch, ahead/behind, staged/modified/untracked files, recent commits, origin URL (credentials stripped). Fixed argv, 10 s timeout, never refreshes the index, and programs named by the repository's own config (`core.fsmonitor`, `gpg.program`) are switched off, so it stays a read on a repo someone else made |
+| `open_with` | `{"path": "~/Projects/atlas", "app": "Visual Studio Code"}` | safe | dev/web. `open -a App path` (fixed argv) for an existing folder or content file. Symlinks are resolved first. Refuses apps that execute, install or mount what they're handed (`ui_access.DENIED_APPS` plus terminals, script runners, launchers, installers, archive/disk-image apps); Finder gets folders only. Refuses paths macOS would run: `.command`, `.sh`, `.app` (and anything inside a bundle), `.jar`, `.pkg`, `.dmg`, `.mobileconfig`, `.shortcut`, `.webloc`, any file with an execute bit, compiled binaries, extensionless scripts |
 
 Example calls for each (swap the `tool`/`args` fields in the snippet above):
 
@@ -884,6 +900,70 @@ not put 200 records into the model's context or the event log.
 `LEUTHERIA_FILES_HOME=<dir>` makes these skills treat `<dir>` as the home folder when they
 resolve Desktop, Downloads, Documents and Pictures, for an end-to-end run that must not
 touch the real ones.
+#### Dev / web / clipboard skills
+
+Seventeen hand-written skills, one module each in `agent/skills/`, sharing
+`dev_common.py` (argument checks, the `Steps` runner that sends every step through
+`dispatch()`, and the scaffold helper). A skill stops at the first failed step and its
+`message` says which. "Asks" below means a `run_command` step, which the user approves
+exactly as if the model had called it; everything else is built from safe tools and runs
+in one shot.
+
+| skill | what it does | steps | asks? | try saying |
+|---|---|---|---|---|
+| `new_python_project` | folder with a runnable `main.py`, README, `requirements.txt`, `.gitignore` | `create_folder`, `write_new_file` x4, then optional `run_command` (git init), `run_command` (venv), `open_with` | only the opt-in git init / venv, once each | "start a new Python project called atlas" |
+| `new_node_project` | folder with `package.json`, a runnable `index.js`, README, `.gitignore` | `create_folder`, `write_new_file` x4, then optional `run_command` (git init), `run_command` (npm install), `open_with` | only the opt-in git init / npm install | "make a node project called api server" |
+| `new_web_page` | folder with `index.html`, `styles.css`, `script.js` wired together | `create_folder`, `write_new_file` x3, optional `open_url` (the file), `open_with` | no | "create a web page called portfolio and open it in the browser" |
+| `git_snapshot` | stage everything and commit with a message; stops on a clean tree, merge conflicts, or a changed file that looks like a secret (`.env`, `*.pem`, `id_rsa`, ...) | `git_status`, `run_command` (`git add -A && git commit -m`) | the commit | "commit everything in atlas with message fix login" |
+| `git_sync` | pull (`--ff-only`) or push the current branch; stops with no `origin` or on a detached HEAD | `git_status`, `run_command` | the pull / push | "push my changes in atlas" |
+| `clone_repo` | clone `owner/name` from GitHub, or any https URL, into a folder that must not exist yet | `create_folder` (parent), `run_command` (`git clone --`), optional `open_with` | the clone | "clone torvalds slash linux" |
+| `repo_overview` | git state, recent commits, project type, top-level listing, start of the README | `git_status`, `list_files`, `read_file` | no | "what's the state of this repo" |
+| `open_workspace` | open an existing folder in an editor (VS Code by default) and report its branch | `list_files`, `open_with`, `git_status` if it's a repo | no | "open that folder in VS Code" |
+| `web_search` | open a results page: Google by default, or DuckDuckGo, Bing, YouTube, Wikipedia, Maps, Images, News, Scholar, Reddit, Stack Overflow, GitHub. No query means the clipboard's text | optional `get_clipboard`, `open_url` | no | "search the web for mechanical keyboards" |
+| `research_topic` | open a few starting points as tabs (web, Wikipedia, news by default) and say which. Four tabs at most, whatever is asked | `open_url` x1-4 | no | "research solid state batteries for me" |
+| `define_term` | open the dictionary, thesaurus, Wiktionary or Wikipedia page for a term | `open_url` | no | "look up serendipity in the dictionary" |
+| `github_open` | open a repo, one of its sections, a profile or a search on GitHub; with a local folder, the repo it was cloned from | optional `git_status`, `open_url` | no | "open the issues for torvalds linux on github" |
+| `clipboard_to_note` | append the clipboard, timestamped, to `~/Notes/clipboard.txt` | `get_clipboard`, `append_text` | no | "save what's on my clipboard to a note" |
+| `clipboard_to_file` | save the clipboard as a new file; never overwrites | `get_clipboard`, `create_folder`, `write_new_file`, optional `open_with` | no | "save my clipboard as quote dot txt on the desktop" |
+| `save_page_notes` | fetch a page and save its text as a new Markdown file in `~/Notes/pages` | optional `get_clipboard`, `fetch_url`, `create_folder`, `write_new_file` | no | "save the text of this page" |
+| `read_later` | add a link (given, or on the clipboard) to `~/Notes/read-later.md` | optional `get_clipboard`, `append_text` | no | "save this page for later" |
+| `code_scratchpad` | new throwaway file in one of 15 languages (starter, or the clipboard), opened in an editor; created, never run | optional `get_clipboard`, `create_folder`, `write_new_file`, `open_with` | no | "give me a scratch file for some javascript" |
+
+How these sit next to the three older skills: `setup_project` makes an *empty* folder,
+runs `git init` and opens VS Code (two prompts); the three `new_*` skills write *starter
+files* for a named language and run nothing unless asked to. `quick_note` saves text the
+user dictates; `clipboard_to_note` saves what they copied. `backup_folder` copies a folder;
+`git_snapshot` commits one.
+
+`write_new_file` (create a file only if it doesn't exist) is the files domain's tool. The
+scaffolding, clipboard-to-file, page-saving and scratchpad skills reach it only through
+`dispatch("write_new_file", ...)`, so they need it registered and nothing else.
+
+Things worth knowing before changing these:
+
+- **Shell strings.** The only ones are the `run_command` steps above. Paths are expanded
+  with `Path.expanduser()` first and every interpolated value goes through `shlex.quote`
+  (`dev_common.q`). The check commits with the message
+  ``it's "quoted" $(touch X) `touch X` ; touch X`` and asserts `X` doesn't exist.
+- **Never overwriting.** A scaffold stops before creating anything if the folder exists
+  and isn't empty; every file goes through `write_new_file`. Project names are plain
+  folder names (no `/`, no leading `.` or `-`).
+- **Fetched text is untrusted.** `fetch_url` returns whatever the page's author wrote, and
+  the model reads it. Its description says to treat it as information, not instructions,
+  but the real boundary is the tiers: anything destructive a page talks the model into
+  still stops at a confirmation. `fetch_url` itself can't reach this machine or the local
+  network, so a page can't use it to read a local service.
+- **`open_with` has two independent halves.** The app list is a denylist, so it's only as
+  complete as the list. The path rules are what hold if it misses one: after resolving
+  symlinks, only a non-bundle folder or a non-executable content file gets through, and
+  none of those is something macOS itself runs. That's also why `code_scratchpad` has no
+  shell language: `.sh` files are refused.
+
+`agent/scripts/skills_check_dev.py` covers all of it without touching the machine: `HOME`
+is a temp dir, the browser/app launches and the clipboard are recorders, `fetch_url` runs
+against a local `http.server` (redirect chains and loops, a 5 MB body, a gzip bomb, binary
+types, a stalled and a dripping response, refused schemes and hosts), and git runs in temp
+repositories.
 
 ### Automatic skill learning
 
