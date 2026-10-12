@@ -58,6 +58,7 @@ pkill -if "python -m agent"; pkill -f "Electron.app"
 ./.venv/bin/python scripts/skill_format_check.py        # generated-skill validation
 ./.venv/bin/python scripts/tts_check.py                 # TTS backends + fallbacks, fake ElevenLabs server
 ./.venv/bin/python scripts/overlay_protocol_check.py    # overlay role, real server on a spare port
+./.venv/bin/python scripts/skills_check_system.py       # system tools + skills; volume/media/banners/speech stubbed
 ./.venv/bin/python scripts/voice_server_check.py        # real server + real LLM; speaks aloud, needs API key
 
 # Qt overlay (needs `brew install qt ninja`)
@@ -198,6 +199,21 @@ non-Piper backend (no key, network, HTTP error, timeout) falls back to Piper for
 utterance and logs `tts_error` — a reply is never silent because of the cloud voice. API
 keys are environment-only and never written to `voice_settings.json`.
 
+**Timers are the one thing that acts with no request in flight.** `core/timers.py` runs each
+as an asyncio task and, when it ends, goes through the same two doors as everything else:
+`dispatch("show_notification")` for the banner (so the Library's switches apply) and
+`tts.speak()` for the line — never any other playback, or the mic hears it. It finds the
+primary connection itself at fire time (`server._primary()`, looked up via `sys.modules`
+so nothing imports the server), which is what keeps timers out of `dispatch()` and skill
+signatures. A timer can only notify and speak; don't give one the ability to run a tool
+chosen at set time — that would be a deferred action nobody is present to confirm. Timers
+are in-memory only, and count wall-clock time (macOS's monotonic clock stops during sleep).
+
+**`open_file` is an allowlist, not `open <path>`.** Opening a `.command`, a unix executable,
+a `.jar` or an app bundle *runs* it, which would be `run_command` without the prompt. The
+tool opens only content types (by UTI) whose handler isn't a terminal or launcher, and names
+that handler explicitly. Widen it by type, with a check in `skills_check_system.py`.
+
 TTS, skill learning and the voice session are additive: a failure in any of them is logged
 and skipped (voice goes to `off`), never blocking or delaying the text reply.
 
@@ -242,5 +258,6 @@ and skipped (voice goes to `off`), never blocking or delaying the text reply.
   send a literal backslash-n and it dutifully typed one.
 - Replies are spoken aloud, so agent-facing prose (SYSTEM_PROMPT.md, tool descriptions the
   model echoes) should avoid markdown — TTS reads the punctuation literally.
-- Local state stays out of git: `preferences.json`, `trusted_commands.json`, `voice_settings.json`, `logs/`,
+- Local state stays out of git: `preferences.json`, `trusted_commands.json`, `voice_settings.json`,
+  `home_location.json`, `logs/`,
   `skills/generated/`, `assets/voices/`, `.env`, `plans/`.

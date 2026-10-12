@@ -162,6 +162,9 @@ agent/                Python sidecar
     overlay_protocol_check.py  The overlay client role: real server on a side port,
                        a UI and an overlay client in both orders -- never primary,
                        mirrored messages, confirming from the overlay (no API key needed)
+    skills_check_dev.py  Dev / web / clipboard tools and skills through the real
+                       dispatch(): temp HOME, stubbed browser/app/clipboard, fetch_url
+                       against a local http.server, git in temp repos (no API key needed)
   .venv/              Virtualenv (gitignored)
   agent/
     core/
@@ -234,6 +237,7 @@ agent/                Python sidecar
       move_file.py       copy_file.py        list_running_apps.py
       get_battery_status.py  get_disk_space.py  get_current_datetime.py
       focus_app.py       describe_ui.py      type_text.py        press_keys.py
+      fetch_url.py       git_status.py       open_with.py        (dev/web)
                         One flat .py file per tool -- no per-tool folders/__init__.py;
                         that packaging turned out to be more annoying to navigate than
                         it was worth for single-function tools, so it was reverted.
@@ -251,6 +255,15 @@ agent/                Python sidecar
                         single tool
       quick_note.py       append_text + show_notification: jot down a timestamped note
       backup_folder.py    copy_file with a generated timestamped destination name
+      dev_common.py       Shared by the dev/web/clipboard skills below: the Steps runner
+                        (every step through dispatch()), argument checks, shell quoting,
+                        the never-overwrite scaffold helper. Not a skill itself
+      new_python_project.py  new_node_project.py  new_web_page.py   (scaffolds)
+      git_snapshot.py    git_sync.py    clone_repo.py    repo_overview.py
+      open_workspace.py  github_open.py  code_scratchpad.py
+      web_search.py      research_topic.py  define_term.py
+      clipboard_to_note.py  clipboard_to_file.py  save_page_notes.py  read_later.py
+                        Dev / web / clipboard skills -- see "Skills" for the table
       generated/         Agent-proposed, user-approved skills as JSON (gitignored --
                         local learned state, not source code)
     assets/voices/       Piper voice model (gitignored, auto-downloaded on first use)
@@ -766,6 +779,30 @@ asyncio.run(main())
 | `describe_ui` | `{"app": "TextEdit"}` (optional) | safe | the app's Accessibility tree; password fields redacted |
 | `type_text` | `{"text": "..."}` | **scoped** | types into whatever has keyboard focus |
 | `press_keys` | `{"keys": "cmd+n"}` | **scoped** | one keyboard shortcut to the frontmost app |
+| `get_volume` | `{}` | safe | output volume 0–100 and mute state (`osascript`, no Automation permission) |
+| `set_volume` | `{"level": 30}` / `{"change": -15}` / `{"muted": true}` | safe | reversible; returns the previous level and mute state; a level change never unmutes on its own |
+| `media_control` | `{"action": "play_pause"}` (`next`, `previous`) | safe | presses a system media key (Quartz event, needs Accessibility); can't tell whether anything was playing |
+| `get_system_info` | `{}` | safe | CPU load, memory, uptime, macOS version, model — read-only `sysctl` / `vm_stat` |
+| `get_network_status` | `{}` | safe | connected? internet reachable? interface, local IP, router. No public-IP lookup |
+| `get_weather` | `{"place": "Austin, Texas", "days": 3}` (all optional) | safe | Open-Meteo, no key; no place = saved home location, neither = fails and says to ask |
+| `set_home_location` | `{"place": "Paris"}` | safe | saves one geocoded place to `agent/home_location.json`; returns the previous one |
+| `set_timer` | `{"minutes": 10, "label": "pasta"}` | safe | in-process countdown; banner + spoken line when it ends; lost on restart; max 24 h, 20 at once |
+| `list_timers` | `{}` | safe | running timers, soonest first |
+| `cancel_timer` | `{"timer_id": "3"}` / `{"label": "pasta"}` / `{"all": true}` / `{}` | safe | `{}` works only when exactly one is running |
+| `open_file` | `{"path": "~/Documents/resume.pdf"}` | safe | default app, documents/media/folders only — refuses apps, scripts, programs, installers, unknown types |
+| `reveal_in_finder` | `{"path": "..."}` | safe | `open -R`: selects in Finder, never opens |
+| `find_files` | `{"path": "~/Downloads", "extension": "pdf", "modified_within_days": 2}` | safe | read-only search by name / extension / min size / age; never follows symlinks; skips hidden files, `node_modules` and app bundles; at most 500 results, 10 s / 200,000 entries (then `incomplete: true`) |
+| `file_info` | `{"path": "..."}` | safe | read-only; kind, size, created/modified. A missing path is `exists: false`, not an error |
+| `folder_size` | `{"path": "~/Downloads", "limit": 10}` | safe | read-only total plus the largest immediate items; counts hidden files; a lower bound (`incomplete: true`) past 15 s / 500,000 entries |
+| `zip_folder` | `{"source": "...", "destination": "...", "exclude": ["node_modules"]}` | safe | source only read; archive created with an exclusive open, so an existing zip is never replaced; symlinks left out; capped at 20,000 files / 1 GB |
+| `extract_archive` | `{"archive": "...", "destination": "..."}` | safe | zip and tar(.gz/.bz2/.xz) into a folder it creates itself — refuses an existing destination; every entry name validated first (zip-slip refuses the whole archive); links never created; capped at 20,000 entries / 2 GB |
+| `find_duplicates` | `{"path": "...", "min_size_kb": 1}` | safe | read-only, report only; same size, then first 64 KB, then full-content hash; largest waste first |
+| `write_new_file` | `{"path": "...", "content": "..."}` | safe | create-only (`open(..., "x")`): refuses if anything exists at the path, including a symlink. Returns `{"ok": true, "path": ...}` |
+| `search_file_contents` | `{"path": "...", "text": "wifi password"}` | safe | read-only literal, case-insensitive search of text files under 2 MB; binary files skipped |
+| `spotlight_search` | `{"query": "resume", "folder": "..."}` (folder optional) | safe | read-only `mdfind -name` with fixed argv and an 8 s timeout; names only, newest first |
+| `fetch_url` | `{"url": "https://...", "max_chars": 8000}` (`max_chars` optional) | safe | dev/web. One GET of a public http(s) page, returned as readable text (tags, scripts, menus and footers stripped). Read-only and bounded: public addresses only (loopback/private/link-local refused on every redirect hop), 5 redirects, 12 s overall, 1 MB read, 20,000 chars returned, text content types only. Reports `content_type`, `truncated`, final `url`. For reading a page, not showing one — that's `open_url` |
+| `git_status` | `{"path": "~/Projects/atlas", "log_count": 5}` (`log_count` optional) | safe | dev/web. Branch, ahead/behind, staged/modified/untracked files, recent commits, origin URL (credentials stripped). Fixed argv, 10 s timeout, never refreshes the index, and programs named by the repository's own config (`core.fsmonitor`, `gpg.program`) are switched off, so it stays a read on a repo someone else made |
+| `open_with` | `{"path": "~/Projects/atlas", "app": "Visual Studio Code"}` | safe | dev/web. `open -a App path` (fixed argv) for an existing folder or content file. Symlinks are resolved first. Refuses apps that execute, install or mount what they're handed (`ui_access.DENIED_APPS` plus terminals, script runners, launchers, installers, archive/disk-image apps); Finder gets folders only. Refuses paths macOS would run: `.command`, `.sh`, `.app` (and anything inside a bundle), `.jar`, `.pkg`, `.dmg`, `.mobileconfig`, `.shortcut`, `.webloc`, any file with an execute bit, compiled binaries, extensionless scripts |
 
 Example calls for each (swap the `tool`/`args` fields in the snippet above):
 
@@ -818,6 +855,156 @@ notification -- try `remember that I need to renew my passport`) and `backup_fol
 (copy something to a timestamped backup next to itself -- try `back up my project folder
 before I change anything`). Both compose only safe tools, so unlike `setup_project`
 they run in a single shot with no confirmation prompts along the way.
+
+#### System and productivity skills
+
+Ten more hand-written skills, all composed of safe tools (so none of them prompts unless
+you mark one of their steps "ask first" in the Library, in which case that step pauses
+inside the skill like any other). Each stops at the first failed step and its error names
+the step and what had already been done.
+
+| skill | steps (each a `dispatch()`) | try saying |
+|---|---|---|
+| `morning_briefing` | `get_current_datetime` → `get_battery_status` → `get_disk_space` → `get_weather` (skipped if no place and no home location) | "give me my morning briefing" |
+| `system_health_check` | `get_system_info` → `get_disk_space` → `get_battery_status` → `get_network_status` | "how's my Mac doing" |
+| `weather_report` | `get_weather` (2–7 days, read out day by day) | "what's the weather this week" |
+| `quick_timer` | `set_timer` → `show_notification` (parses "10 minutes", "1h30m", "an hour and a half") | "set a timer for ten minutes" |
+| `pomodoro` | `set_timer` (focus) → `set_timer` (break) → `show_notification` | "start a pomodoro" |
+| `focus_mode` | `get_volume` → `set_volume` (mute) → `set_timer` → `show_notification` | "I need to focus for half an hour" |
+| `meeting_prep` | call: `get_network_status` → `get_volume` → `set_volume` (if muted/quiet) → `get_battery_status` → `open_app`? → `set_timer`?; in person: mutes instead | "I'm heading into a meeting" |
+| `end_of_day` | `get_current_datetime` → `list_timers` → `get_battery_status` → `get_disk_space` → `get_system_info` → `get_weather` (if home is saved) — read-only | "I'm done for the day" |
+| `wind_down` | `get_volume` → `set_volume` (only ever lower) → `set_timer` → `show_notification` | "I'm winding down" |
+| `battery_check` | `get_battery_status` → `show_notification` (only if low and not charging) | "do I need to plug in" |
+
+**Timers** live in `agent/core/timers.py` as asyncio tasks, so they last exactly as long
+as the agent process — nothing is persisted, and the tool results say so. When one ends it
+shows a banner through `dispatch("show_notification")` (so disabling that tool silences
+timer banners too) and speaks a line through `tts.speak()` on the primary connection, or
+with no UI connected at all. The countdown is against the wall clock, so a timer whose time
+passed while the Mac slept goes off within a few seconds of waking rather than late by the
+length of the nap. Events: `timer_set`, `timer_cancelled`, `timer_fired`.
+
+**Weather** uses [Open-Meteo](https://open-meteo.com) (no key). Location only ever comes
+from the request or from a home location the user asked to have saved
+(`agent/home_location.json`, gitignored) — there is no IP geolocation. Set
+`LEUTHERIA_WEATHER_URL` / `LEUTHERIA_GEOCODE_URL` to point it at another server.
+
+**`focus_mode` is not macOS Focus / Do Not Disturb** — it mutes sound and starts a timer.
+Toggling the real setting needs System Events scripting and its permission prompt.
+
+```bash
+cd agent && ./.venv/bin/python scripts/skills_check_system.py
+```
+
+checks all of the above without changing the volume, pressing a media key, showing a banner,
+speaking, or opening a window (each of those is stubbed; weather runs against a local
+server with canned JSON, plus one real request that is skipped offline).
+#### File and workspace skills
+
+Fifteen hand-written skills over the file tools above. Every step of each one, including
+the read-only planning steps, goes through `dispatch()` via `skills/files_common.py:StepLog`;
+none imports a tool function or does its own file I/O. All of them compose only safe tools,
+so none prompts by default. The check is `agent/scripts/skills_check_files.py`, which runs
+them through the real `dispatch()` inside a temp home folder.
+
+| skill | steps | try saying |
+|---|---|---|
+| `organize_folder` | `file_info` → `find_files` → `file_info`/`list_files` per type folder → `create_folder` → `move_file` × n | "sort my Downloads folder by type" |
+| `organize_by_date` | same, one folder per month modified | "group that folder by month" |
+| `clean_desktop` | same, into `Desktop/Desktop Cleanup/<type>` | "clean up my desktop" |
+| `collect_screenshots` | same, screenshots only, into `~/Pictures/Screenshots` | "put my screenshots away" |
+| `archive_old_downloads` | `find_files` (older than n days) → ... → `move_file` × n into `Downloads/Old Downloads/<YYYY-MM>` | "clear out my old downloads" |
+| `archive_folder` | `file_info` → `file_info` (free name) → `zip_folder` | "zip up the project folder" |
+| `project_snapshot` | `file_info` → `zip_folder` (no dependencies, build output or `.git`) → `append_text` | "snapshot this project before I refactor" |
+| `find_large_files` | `folder_size` → `find_files` by size | "what's taking up space in Downloads" |
+| `find_recent_files` | `file_info` + `find_files` for each of Downloads, Desktop, Documents | "where's that PDF I downloaded yesterday" |
+| `storage_report` | `get_disk_space` → `list_files` → `folder_size` × n | "what's using up my disk" |
+| `folder_summary` | `find_files` → `folder_size` | "what's in my Documents folder" |
+| `daily_journal` | `file_info` → `write_new_file` (only if absent) → `append_text` → `open_file` if registered | "start today's journal" |
+| `screenshot_to_folder` | `create_folder` → `file_info` (free name) → `take_screenshot` | "take a screenshot and file it" |
+| `duplicate_report` | `find_duplicates` → `file_info` → `write_new_file` (report in `~/Documents/Leutheria Reports`) | "are there duplicates in my Downloads" |
+| `extract_latest_download` | `find_files` (newest archive) → `file_info` (free name) → `extract_archive` | "unzip the thing I just downloaded" |
+
+The five that move files in bulk (`organize_folder`, `organize_by_date`, `clean_desktop`,
+`collect_screenshots`, `archive_old_downloads`) share one routine,
+`files_common.move_into_folders()`, and so share its guarantees: only `create_folder` and
+`move_file` are ever called, a name already taken in the destination gets a ` (2)` suffix
+(compared case-insensitively) rather than being overwritten, nothing is deleted, only
+visible regular files at the top level of the folder are candidates (no subfolders, hidden
+files, links, or downloads still in progress), at most 200 files move per run and the reply
+says when that limit was the reason it stopped, and `dry_run: true` performs reads only and
+reports the plan. `organize_folder` and `organize_by_date` refuse the home folder, system
+folders, `~/Library`, anything inside an `.app`, and git repositories. A skill's result
+carries at most 25 step records (`steps_total` has the real count), so a 200-file run does
+not put 200 records into the model's context or the event log.
+
+`LEUTHERIA_FILES_HOME=<dir>` makes these skills treat `<dir>` as the home folder when they
+resolve Desktop, Downloads, Documents and Pictures, for an end-to-end run that must not
+touch the real ones.
+#### Dev / web / clipboard skills
+
+Seventeen hand-written skills, one module each in `agent/skills/`, sharing
+`dev_common.py` (argument checks, the `Steps` runner that sends every step through
+`dispatch()`, and the scaffold helper). A skill stops at the first failed step and its
+`message` says which. "Asks" below means a `run_command` step, which the user approves
+exactly as if the model had called it; everything else is built from safe tools and runs
+in one shot.
+
+| skill | what it does | steps | asks? | try saying |
+|---|---|---|---|---|
+| `new_python_project` | folder with a runnable `main.py`, README, `requirements.txt`, `.gitignore` | `create_folder`, `write_new_file` x4, then optional `run_command` (git init), `run_command` (venv), `open_with` | only the opt-in git init / venv, once each | "start a new Python project called atlas" |
+| `new_node_project` | folder with `package.json`, a runnable `index.js`, README, `.gitignore` | `create_folder`, `write_new_file` x4, then optional `run_command` (git init), `run_command` (npm install), `open_with` | only the opt-in git init / npm install | "make a node project called api server" |
+| `new_web_page` | folder with `index.html`, `styles.css`, `script.js` wired together | `create_folder`, `write_new_file` x3, optional `open_url` (the file), `open_with` | no | "create a web page called portfolio and open it in the browser" |
+| `git_snapshot` | stage everything and commit with a message; stops on a clean tree, merge conflicts, or a changed file that looks like a secret (`.env`, `*.pem`, `id_rsa`, ...) | `git_status`, `run_command` (`git add -A && git commit -m`) | the commit | "commit everything in atlas with message fix login" |
+| `git_sync` | pull (`--ff-only`) or push the current branch; stops with no `origin` or on a detached HEAD | `git_status`, `run_command` | the pull / push | "push my changes in atlas" |
+| `clone_repo` | clone `owner/name` from GitHub, or any https URL, into a folder that must not exist yet | `create_folder` (parent), `run_command` (`git clone --`), optional `open_with` | the clone | "clone torvalds slash linux" |
+| `repo_overview` | git state, recent commits, project type, top-level listing, start of the README | `git_status`, `list_files`, `read_file` | no | "what's the state of this repo" |
+| `open_workspace` | open an existing folder in an editor (VS Code by default) and report its branch | `list_files`, `open_with`, `git_status` if it's a repo | no | "open that folder in VS Code" |
+| `web_search` | open a results page: Google by default, or DuckDuckGo, Bing, YouTube, Wikipedia, Maps, Images, News, Scholar, Reddit, Stack Overflow, GitHub. No query means the clipboard's text | optional `get_clipboard`, `open_url` | no | "search the web for mechanical keyboards" |
+| `research_topic` | open a few starting points as tabs (web, Wikipedia, news by default) and say which. Four tabs at most, whatever is asked | `open_url` x1-4 | no | "research solid state batteries for me" |
+| `define_term` | open the dictionary, thesaurus, Wiktionary or Wikipedia page for a term | `open_url` | no | "look up serendipity in the dictionary" |
+| `github_open` | open a repo, one of its sections, a profile or a search on GitHub; with a local folder, the repo it was cloned from | optional `git_status`, `open_url` | no | "open the issues for torvalds linux on github" |
+| `clipboard_to_note` | append the clipboard, timestamped, to `~/Notes/clipboard.txt` | `get_clipboard`, `append_text` | no | "save what's on my clipboard to a note" |
+| `clipboard_to_file` | save the clipboard as a new file; never overwrites | `get_clipboard`, `create_folder`, `write_new_file`, optional `open_with` | no | "save my clipboard as quote dot txt on the desktop" |
+| `save_page_notes` | fetch a page and save its text as a new Markdown file in `~/Notes/pages` | optional `get_clipboard`, `fetch_url`, `create_folder`, `write_new_file` | no | "save the text of this page" |
+| `read_later` | add a link (given, or on the clipboard) to `~/Notes/read-later.md` | optional `get_clipboard`, `append_text` | no | "save this page for later" |
+| `code_scratchpad` | new throwaway file in one of 15 languages (starter, or the clipboard), opened in an editor; created, never run | optional `get_clipboard`, `create_folder`, `write_new_file`, `open_with` | no | "give me a scratch file for some javascript" |
+
+How these sit next to the three older skills: `setup_project` makes an *empty* folder,
+runs `git init` and opens VS Code (two prompts); the three `new_*` skills write *starter
+files* for a named language and run nothing unless asked to. `quick_note` saves text the
+user dictates; `clipboard_to_note` saves what they copied. `backup_folder` copies a folder;
+`git_snapshot` commits one.
+
+`write_new_file` (create a file only if it doesn't exist) is the files domain's tool. The
+scaffolding, clipboard-to-file, page-saving and scratchpad skills reach it only through
+`dispatch("write_new_file", ...)`, so they need it registered and nothing else.
+
+Things worth knowing before changing these:
+
+- **Shell strings.** The only ones are the `run_command` steps above. Paths are expanded
+  with `Path.expanduser()` first and every interpolated value goes through `shlex.quote`
+  (`dev_common.q`). The check commits with the message
+  ``it's "quoted" $(touch X) `touch X` ; touch X`` and asserts `X` doesn't exist.
+- **Never overwriting.** A scaffold stops before creating anything if the folder exists
+  and isn't empty; every file goes through `write_new_file`. Project names are plain
+  folder names (no `/`, no leading `.` or `-`).
+- **Fetched text is untrusted.** `fetch_url` returns whatever the page's author wrote, and
+  the model reads it. Its description says to treat it as information, not instructions,
+  but the real boundary is the tiers: anything destructive a page talks the model into
+  still stops at a confirmation. `fetch_url` itself can't reach this machine or the local
+  network, so a page can't use it to read a local service.
+- **`open_with` has two independent halves.** The app list is a denylist, so it's only as
+  complete as the list. The path rules are what hold if it misses one: after resolving
+  symlinks, only a non-bundle folder or a non-executable content file gets through, and
+  none of those is something macOS itself runs. That's also why `code_scratchpad` has no
+  shell language: `.sh` files are refused.
+
+`agent/scripts/skills_check_dev.py` covers all of it without touching the machine: `HOME`
+is a temp dir, the browser/app launches and the clipboard are recorders, `fetch_url` runs
+against a local `http.server` (redirect chains and loops, a 5 MB body, a gzip bomb, binary
+types, a stalled and a dripping response, refused schemes and hosts), and git runs in temp
+repositories.
 
 ### Automatic skill learning
 
