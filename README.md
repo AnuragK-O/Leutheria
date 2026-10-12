@@ -725,6 +725,18 @@ asyncio.run(main())
 | `describe_ui` | `{"app": "TextEdit"}` (optional) | safe | the app's Accessibility tree; password fields redacted |
 | `type_text` | `{"text": "..."}` | **scoped** | types into whatever has keyboard focus |
 | `press_keys` | `{"keys": "cmd+n"}` | **scoped** | one keyboard shortcut to the frontmost app |
+| `get_volume` | `{}` | safe | output volume 0–100 and mute state (`osascript`, no Automation permission) |
+| `set_volume` | `{"level": 30}` / `{"change": -15}` / `{"muted": true}` | safe | reversible; returns the previous level and mute state; a level change never unmutes on its own |
+| `media_control` | `{"action": "play_pause"}` (`next`, `previous`) | safe | presses a system media key (Quartz event, needs Accessibility); can't tell whether anything was playing |
+| `get_system_info` | `{}` | safe | CPU load, memory, uptime, macOS version, model — read-only `sysctl` / `vm_stat` |
+| `get_network_status` | `{}` | safe | connected? internet reachable? interface, local IP, router. No public-IP lookup |
+| `get_weather` | `{"place": "Austin, Texas", "days": 3}` (all optional) | safe | Open-Meteo, no key; no place = saved home location, neither = fails and says to ask |
+| `set_home_location` | `{"place": "Paris"}` | safe | saves one geocoded place to `agent/home_location.json`; returns the previous one |
+| `set_timer` | `{"minutes": 10, "label": "pasta"}` | safe | in-process countdown; banner + spoken line when it ends; lost on restart; max 24 h, 20 at once |
+| `list_timers` | `{}` | safe | running timers, soonest first |
+| `cancel_timer` | `{"timer_id": "3"}` / `{"label": "pasta"}` / `{"all": true}` / `{}` | safe | `{}` works only when exactly one is running |
+| `open_file` | `{"path": "~/Documents/resume.pdf"}` | safe | default app, documents/media/folders only — refuses apps, scripts, programs, installers, unknown types |
+| `reveal_in_finder` | `{"path": "..."}` | safe | `open -R`: selects in Finder, never opens |
 
 Example calls for each (swap the `tool`/`args` fields in the snippet above):
 
@@ -777,6 +789,50 @@ notification -- try `remember that I need to renew my passport`) and `backup_fol
 (copy something to a timestamped backup next to itself -- try `back up my project folder
 before I change anything`). Both compose only safe tools, so unlike `setup_project`
 they run in a single shot with no confirmation prompts along the way.
+
+#### System and productivity skills
+
+Ten more hand-written skills, all composed of safe tools (so none of them prompts unless
+you mark one of their steps "ask first" in the Library, in which case that step pauses
+inside the skill like any other). Each stops at the first failed step and its error names
+the step and what had already been done.
+
+| skill | steps (each a `dispatch()`) | try saying |
+|---|---|---|
+| `morning_briefing` | `get_current_datetime` → `get_battery_status` → `get_disk_space` → `get_weather` (skipped if no place and no home location) | "give me my morning briefing" |
+| `system_health_check` | `get_system_info` → `get_disk_space` → `get_battery_status` → `get_network_status` | "how's my Mac doing" |
+| `weather_report` | `get_weather` (2–7 days, read out day by day) | "what's the weather this week" |
+| `quick_timer` | `set_timer` → `show_notification` (parses "10 minutes", "1h30m", "an hour and a half") | "set a timer for ten minutes" |
+| `pomodoro` | `set_timer` (focus) → `set_timer` (break) → `show_notification` | "start a pomodoro" |
+| `focus_mode` | `get_volume` → `set_volume` (mute) → `set_timer` → `show_notification` | "I need to focus for half an hour" |
+| `meeting_prep` | call: `get_network_status` → `get_volume` → `set_volume` (if muted/quiet) → `get_battery_status` → `open_app`? → `set_timer`?; in person: mutes instead | "I'm heading into a meeting" |
+| `end_of_day` | `get_current_datetime` → `list_timers` → `get_battery_status` → `get_disk_space` → `get_system_info` → `get_weather` (if home is saved) — read-only | "I'm done for the day" |
+| `wind_down` | `get_volume` → `set_volume` (only ever lower) → `set_timer` → `show_notification` | "I'm winding down" |
+| `battery_check` | `get_battery_status` → `show_notification` (only if low and not charging) | "do I need to plug in" |
+
+**Timers** live in `agent/core/timers.py` as asyncio tasks, so they last exactly as long
+as the agent process — nothing is persisted, and the tool results say so. When one ends it
+shows a banner through `dispatch("show_notification")` (so disabling that tool silences
+timer banners too) and speaks a line through `tts.speak()` on the primary connection, or
+with no UI connected at all. The countdown is against the wall clock, so a timer whose time
+passed while the Mac slept goes off within a few seconds of waking rather than late by the
+length of the nap. Events: `timer_set`, `timer_cancelled`, `timer_fired`.
+
+**Weather** uses [Open-Meteo](https://open-meteo.com) (no key). Location only ever comes
+from the request or from a home location the user asked to have saved
+(`agent/home_location.json`, gitignored) — there is no IP geolocation. Set
+`LEUTHERIA_WEATHER_URL` / `LEUTHERIA_GEOCODE_URL` to point it at another server.
+
+**`focus_mode` is not macOS Focus / Do Not Disturb** — it mutes sound and starts a timer.
+Toggling the real setting needs System Events scripting and its permission prompt.
+
+```bash
+cd agent && ./.venv/bin/python scripts/skills_check_system.py
+```
+
+checks all of the above without changing the volume, pressing a media key, showing a banner,
+speaking, or opening a window (each of those is stubbed; weather runs against a local
+server with canned JSON, plus one real request that is skipped offline).
 
 ### Automatic skill learning
 

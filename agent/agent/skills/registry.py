@@ -10,6 +10,20 @@ from agent.skills.template_skill import run_template
 from agent.skills.validate import SkillValidationError, skill_path
 from agent.tools.registry import TOOLS
 
+# --- system ---
+from agent.skills import (
+    battery_check,
+    end_of_day,
+    focus_mode,
+    meeting_prep,
+    morning_briefing,
+    pomodoro,
+    quick_timer,
+    system_health_check,
+    weather_report,
+    wind_down,
+)
+
 GENERATED_DIR = Path(__file__).resolve().parent / "generated"
 
 # A skill is a multi-step procedure exposed to the LLM as if it were a single
@@ -79,6 +93,182 @@ SKILLS = {
                 "path": {"type": "string", "description": "Path of the file or folder to back up."},
             },
             "required": ["path"],
+        },
+    },
+    # --- system ---
+    "morning_briefing": {
+        "fn": morning_briefing.run,
+        "description": (
+            "Give a spoken start-of-day summary: the date and time, the battery, low disk "
+            "space if any, and the current weather with today's forecast. Use it when the "
+            "user asks for their briefing or how the day looks. Pass place only if they "
+            "name a city; otherwise the saved home location is used. It does not read "
+            "calendars, reminders, mail or news, so do not use it for 'what's on my "
+            "schedule'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "place": {"type": "string", "description": "City for the weather, only if the user named one."}
+            },
+            "required": [],
+        },
+    },
+    "system_health_check": {
+        "fn": system_health_check.run,
+        "description": (
+            "Check the Mac's overall health in one go: processor load, memory, disk space, "
+            "battery and network, and report either that all is well or which things need "
+            "attention. Use it for broad questions like 'how's my Mac doing' or 'is "
+            "everything OK with my computer'. For one specific figure, such as just the "
+            "battery or just free disk space, call that single tool instead."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    "weather_report": {
+        "fn": weather_report.run,
+        "description": (
+            "Give a day-by-day weather outlook for the next 2 to 7 days, 3 unless told "
+            "otherwise. Use it for 'what's the weather this week' or 'will it rain this "
+            "weekend'. Pass place only if the user names one; otherwise the saved home "
+            "location is used. For the weather right now or just today, call get_weather "
+            "instead."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "place": {"type": "string", "description": "City, only if the user named one."},
+                "days": {"type": "integer", "description": "How many days to cover, 2 to 7. Defaults to 3."},
+            },
+            "required": [],
+        },
+    },
+    "quick_timer": {
+        "fn": quick_timer.run,
+        "description": (
+            "Start a timer from a duration said in words, such as '10 minutes', '90 "
+            "seconds' or '1 hour 30 minutes', and show a banner on screen confirming when "
+            "it will end. Use it for an ordinary 'set a timer for ...' request. For a "
+            "reminder that should say something specific when it ends, or when a timer is "
+            "one step of something larger, call set_timer instead. Do not use it for a "
+            "focus session with a break; that is pomodoro."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "duration": {"type": "string", "description": "The length in words or digits, e.g. '10 minutes' or '1h30m'."},
+                "label": {"type": "string", "description": "Short name if the user gave one, e.g. 'tea'."},
+            },
+            "required": ["duration"],
+        },
+    },
+    "pomodoro": {
+        "fn": pomodoro.run,
+        "description": (
+            "Start one pomodoro work cycle: a focus timer, 25 minutes unless told "
+            "otherwise, followed by a break timer, 5 minutes, each announced when it ends. "
+            "Use it when the user says pomodoro or asks for a work session with a break. "
+            "It only sets timers; it does not mute sound or block anything. For a single "
+            "plain timer use quick_timer, and to silence the Mac while working use "
+            "focus_mode."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "focus_minutes": {"type": "number", "description": "Length of the focus part. Defaults to 25."},
+                "break_minutes": {"type": "number", "description": "Length of the break. Defaults to 5."},
+                "task": {"type": "string", "description": "What the user is working on, if they said."},
+            },
+            "required": [],
+        },
+    },
+    "focus_mode": {
+        "fn": focus_mode.run,
+        "description": (
+            "Mute the Mac's sound and start a focus timer, 25 minutes by default, for when "
+            "the user wants quiet to concentrate. It does not turn on the macOS Do Not "
+            "Disturb or Focus setting and does not silence notification banners, so say so "
+            "rather than promising no interruptions. Sound stays muted afterwards until "
+            "the user asks to unmute. Use pomodoro instead if they want a timed break, and "
+            "meeting_prep if they are going into a meeting."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "minutes": {"type": "number", "description": "How long to focus. Defaults to 25."}
+            },
+            "required": [],
+        },
+    },
+    "meeting_prep": {
+        "fn": meeting_prep.run,
+        "description": (
+            "Get the Mac ready for a meeting. For kind call, a video or audio call on this "
+            "Mac, it checks the network and battery and makes sure sound is on. For kind "
+            "in_person, where the Mac should stay quiet, it mutes the sound and checks the "
+            "battery. Optionally opens a named app such as Zoom and sets a timer for the "
+            "meeting's length. Use it when the user says they are heading into or about to "
+            "join a meeting. It cannot join the call, read the calendar, or mute the "
+            "microphone."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "enum": ["call", "in_person"],
+                    "description": "call for a meeting on this Mac (the default), in_person for one away from it.",
+                },
+                "app": {"type": "string", "description": "App to open for the meeting, e.g. 'Zoom'. Omit to open nothing."},
+                "minutes": {"type": "number", "description": "Meeting length, to be told when time is up. Omit for no timer."},
+            },
+            "required": [],
+        },
+    },
+    "end_of_day": {
+        "fn": end_of_day.run,
+        "description": (
+            "Give a spoken end-of-day wrap-up: the time, any timers still running, the "
+            "battery, low disk space, whether a restart is due, and tomorrow's forecast if "
+            "a home location is saved. Use it when the user says they are done for the day "
+            "or wrapping up. It only reports and changes nothing; it does not close apps, "
+            "save work, or lower the volume. To get the Mac quiet for the evening use "
+            "wind_down."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    "wind_down": {
+        "fn": wind_down.run,
+        "description": (
+            "Lower the Mac's volume to a quiet level, 20 unless told otherwise, and set a "
+            "timer, 30 minutes by default, that nudges the user to stop for the night. Use "
+            "it when the user says they are winding down or getting ready for bed. It "
+            "never raises the volume, and it does not dim the screen, turn on Night Shift "
+            "or put the Mac to sleep."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "minutes": {"type": "number", "description": "Minutes until the nudge. Defaults to 30."},
+                "volume": {"type": "integer", "description": "Volume to lower to, 0 to 100. Defaults to 20."},
+            },
+            "required": [],
+        },
+    },
+    "battery_check": {
+        "fn": battery_check.run,
+        "description": (
+            "Check the battery and say whether it needs attention, putting a warning "
+            "banner on screen if it is at or below the threshold, 20 percent by default, "
+            "and not charging. Use it for 'do I need to plug in' or 'will my battery be "
+            "OK'. For just the percentage, call get_battery_status instead."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "threshold": {"type": "integer", "description": "Percent at or below which to warn. Defaults to 20."}
+            },
+            "required": [],
         },
     },
 }
