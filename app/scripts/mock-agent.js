@@ -48,8 +48,15 @@
    overlay's card can be developed without Electron. The real agent fails a
    confirmation closed when no UI is connected.
 
+   Authentication: like the real agent, a handshake carrying an Origin header
+   is refused. If LEUTHERIA_TOKEN is set, clients must present it
+   (`Authorization: Bearer <token>`) -- set the same value for Electron or the
+   Qt overlay, which read it from their own environment. Unset, any local
+   non-browser client is accepted (the mock runs nothing).
+
    Never binds 8765 -- that's the real agent's port. */
 
+const crypto = require("crypto");
 const WebSocket = require("ws");
 
 const PORT = Number(process.env.MOCK_PORT || 8799);
@@ -77,8 +84,36 @@ const fixtures = require("./mock-fixtures");
 const FIXTURES = process.env.MOCK_FIXTURES !== "0";
 const proposals = new Map(); // proposal id -> the skill saving it would add
 
-const wss = new WebSocket.Server({ host: "127.0.0.1", port: PORT });
-console.log(`mock-agent listening on ws://127.0.0.1:${PORT}`);
+// The same two handshake rules as the real agent (core/ws_auth.py), so the
+// clients' authentication is exercised against the mock too: a request with
+// an Origin header is always refused, and when LEUTHERIA_TOKEN is set the
+// request must carry `Authorization: Bearer <that token>`. With no token set
+// the mock accepts any non-browser client -- it runs no tools and holds
+// nothing, so unlike the real agent it has nothing to protect.
+const TOKEN = process.env.LEUTHERIA_TOKEN || null;
+
+function tokenMatches(header) {
+  const match = /^Bearer\s+(.+)$/i.exec(String(header || "").trim());
+  if (!match) return false;
+  const presented = Buffer.from(match[1].trim());
+  const expected = Buffer.from(TOKEN);
+  return presented.length === expected.length && crypto.timingSafeEqual(presented, expected);
+}
+
+function verifyClient(info, done) {
+  if (info.req.headers.origin !== undefined) {
+    console.log("[mock] refused a handshake: Origin header present (403)");
+    return done(false, 403, "Forbidden");
+  }
+  if (TOKEN && !tokenMatches(info.req.headers.authorization)) {
+    console.log("[mock] refused a handshake: missing or wrong token (401)");
+    return done(false, 401, "Unauthorized");
+  }
+  return done(true);
+}
+
+const wss = new WebSocket.Server({ host: "127.0.0.1", port: PORT, verifyClient });
+console.log(`mock-agent listening on ws://127.0.0.1:${PORT} (${TOKEN ? "token required" : "no token set: any local non-browser client"})`);
 console.log("AGENT_READY");
 
 let nextId = 1;
