@@ -1,11 +1,12 @@
 """Hard deadlines for tool work that could otherwise hang.
 
-dispatch() calls a tool function directly on the event loop (dispatcher.
-_run_tool), so however long a tool blocks is how long the read loop -- and
-with it confirmations and management messages -- is stalled. Subprocess and
-socket timeouts bound most of that, but not all of it: a socket timeout does
-not cover DNS resolution, and a requests timeout is per read, not per request.
-These helpers put one ceiling over the whole call.
+dispatch() runs a tool function on a worker thread (dispatcher._in_worker),
+or inline on the event loop for the few flagged "thread": "main". Either way
+a tool that never returns is a request that never finishes -- and a "main"
+one stalls the read loop, confirmations and management messages for as long
+as it blocks. Subprocess and socket timeouts bound most of that, but not all
+of it: a socket timeout does not cover DNS resolution, and a requests timeout
+is per read, not per request. These helpers put one ceiling over the whole call.
 """
 
 import subprocess

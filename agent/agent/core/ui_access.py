@@ -229,7 +229,10 @@ def activate(name: str, timeout: float = 5.0) -> str:
         canonical, pid = resolve_app(name)
     except UIAccessError:
         # Not running yet -- launch it, then wait for it to register.
-        result = subprocess.run(["open", "-a", name], capture_output=True, text=True)
+        try:
+            result = subprocess.run(["open", "-a", name], capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            raise UIAccessError(f"opening {name} did not finish within {timeout}s") from None
         if result.returncode != 0:
             raise UIAccessError(result.stderr.strip() or f"could not open {name}")
         canonical, pid = None, None

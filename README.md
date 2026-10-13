@@ -165,6 +165,16 @@ agent/                Python sidecar
     skills_check_dev.py  Dev / web / clipboard tools and skills through the real
                        dispatch(): temp HOME, stubbed browser/app/clipboard, fetch_url
                        against a local http.server, git in temp repos (no API key needed)
+    skills_routing_check.py  REAL MODEL, costs money: ~140 spoken phrasings, each sent as
+                       one first turn with the real tool list; records which capability
+                       the model reaches for. Nothing is dispatched. Cached per phrase.
+    skills_routing_cache.json  That check's cached answers (committed, so --report is free)
+    skills_e2e_check.py  REAL MODEL, costs money: 18 requests (with follow-ups and
+                       refusals) through agent_loop + dispatch in a sandbox home;
+                       --scripted replays written plans with no model and no cost
+    dispatch_loop_check.py  Tools off the event loop: the loop stays responsive during a
+                       slow tool, "thread": "main" tools stay on it, run_command's timeout /
+                       kill / output cap, the confirmation timeout message (no API key needed)
   .venv/              Virtualenv (gitignored)
   agent/
     core/
@@ -760,12 +770,12 @@ asyncio.run(main())
 | `open_app` | `{"name": "Calculator"}` | safe | shells out to `open -a` |
 | `create_folder` | `{"path": "~/Desktop/test"}` | safe | `mkdir -p` equivalent |
 | `list_files` | `{"path": "~/Desktop"}` | safe | lists directory contents |
-| `run_command` | `{"cmd": "echo hi"}` | **destructive** | pauses for a live user confirmation before it runs — see "Confirmation flow" below |
+| `run_command` | `{"cmd": "echo hi"}` | **destructive** | pauses for a live user confirmation before it runs — see "Confirmation flow" below. Optional `timeout_s` (default 300, max 1800); output is capped — see "Where tools run, and `run_command`'s limits" |
 | `get_clipboard` | `{}` | safe | reads clipboard text |
 | `set_clipboard` | `{"text": "..."}` | safe | copies text to clipboard |
 | `open_url` | `{"url": "https://..."}` | safe | opens in default browser |
 | `show_notification` | `{"title": "...", "message": "..."}` | safe | macOS notification banner |
-| `take_screenshot` | `{"save_path": "..."}` (optional) | safe | defaults to a timestamped file on the Desktop |
+| `take_screenshot` | `{"save_path": "..."}` (optional) | safe | defaults to a timestamped file on the Desktop; never overwrites — an existing `save_path` is refused |
 | `read_file` | `{"path": "..."}` | safe | text content, capped at 20,000 chars |
 | `append_text` | `{"path": "...", "text": "..."}` | safe | append-only — can't overwrite, so no confirmation needed |
 | `trash_file` | `{"path": "..."}` | safe | moves to the system Trash — recoverable, unlike `rm` |
@@ -830,7 +840,9 @@ a skill isn't a way to bypass safety tiering: if it calls a destructive tool lik
 as if the LLM had called it directly. `setup_project` (the first one, in
 `agent/skills/setup_project.py`) demonstrates this: it runs `create_folder`
 (safe, no prompt) then two `run_command` calls (`git init`, then opening the folder in
-VS Code), each requiring its own approval.
+VS Code), each requiring its own approval. All three go through `dispatch()`, the project
+name must be a plain folder name (the same rule the scaffold skills use), and the path is
+`shlex`-quoted in both commands.
 
 Try it: `create a project called sample, initialize a repo and open in vs code` — watch
 the trace show a single `setup_project` tool call (not three separate ones), with two
@@ -1006,6 +1018,59 @@ against a local `http.server` (redirect chains and loops, a 5 MB body, a gzip bo
 types, a stalled and a dripping response, refused schemes and hosts), and git runs in temp
 repositories.
 
+#### Routing and end-to-end checks (these call the real model)
+
+The three domain checks above prove each capability works when called. They say nothing
+about whether a spoken request reaches the right one, which is the part a user meets. Two
+more scripts cover that. Both send the whole tool list on every request (91 capabilities,
+about 22,700 input tokens), so both cost real money; neither is part of the routine suite.
+
+```bash
+cd agent
+./.venv/bin/python scripts/skills_routing_check.py            # ask whatever isn't cached yet
+./.venv/bin/python scripts/skills_routing_check.py --report   # table from the cache, free
+./.venv/bin/python scripts/skills_routing_check.py --only pomodoro,quick_timer
+./.venv/bin/python scripts/skills_routing_check.py --payload  # size of the tool list, free
+
+./.venv/bin/python scripts/skills_e2e_check.py --scripted     # no model: sandbox + assertions
+./.venv/bin/python scripts/skills_e2e_check.py                # real model, all scenarios
+./.venv/bin/python scripts/skills_e2e_check.py timers git_commit
+```
+
+**`skills_routing_check.py`** holds two natural phrasings per skill (at least one that
+avoids the skill's name), one per directly-askable tool, and a set of negatives where a
+similar-sounding capability must not be chosen ("create a note called X" must not reach a
+file-writing skill, BUGS.md #16). Each phrase is sent twice as a single first turn, built
+exactly as `agent_loop.run()` builds it, and the tool calls are recorded and thrown away:
+no tool function runs. A first turn that only looks (`file_info`, `get_clipboard`,
+`git_status`, `repo_overview`...) is answered with a canned result and given one more turn,
+so a look-before-acting is scored on what it goes on to do. Each case names the right
+route, any alternative accepted and why, and what is forbidden; the report gives hit /
+alt / UNSTABLE / MISS per phrase and per capability, then the confusions. Answers are
+cached in `skills_routing_cache.json`, keyed by phrase, run and a hash of the whole prompt
+surface, so editing any description makes the next run ask again (`--stale-ok` scores old
+answers anyway, marked `*`). After changing a description, rerun that capability and its
+neighbours with `--only`: the point is to show the confusion went away, not moved.
+
+**`skills_e2e_check.py`** drives `agent_loop.run()` and the real `dispatch()`, so skills
+run their real steps, and asserts on the effect: files in the sandbox, what the recorders
+saw, and a reply that is non-empty, free of markdown and says what happened. Scenarios
+span the three domains and include follow-ups that only work if the conversation carries
+over ("zip that up too", "now open it in VS Code", "cancel the ten minute one") and three
+refusals (a file that already exists, a folder that doesn't, `open_file` on a script)
+where the reply must say it did not happen. Because a model chooses what gets called,
+isolation is structural rather than trusted: `HOME` is a temp dir rebuilt per scenario and
+the process chdirs into it; every tool function is wrapped so a path outside the sandbox
+is refused and fails the scenario; a tool with no entry in the script's policy table is
+refused; `run_command` never reaches a shell (only allowlisted `git` against a sandbox
+repository runs, as an argv list; everything else is declined at the confirmation); GUI
+tools are declined; launchers, banners, speech, media keys, volume, clipboard, Spotlight,
+`fetch_url`, screenshots and the Trash are recorders or stand-ins; weather uses a canned
+local server; timers are real with the clock moved forward. A sandbox self-test runs
+before any model call. `--scripted` swaps the backend for one that replays each
+scenario's written plan: it proves the sandbox and the assertions for free and is safe to
+run any time, but says nothing about what the model would choose.
+
 ### Automatic skill learning
 
 `setup_project` above is hand-written. The agent can also **propose its own skills** —
@@ -1165,6 +1230,64 @@ this whole exchange is automatic: the confirmation shows up in the transcript as
 approve / Decline (`app/renderer/js/chat.js`) — and clicking one sends the `confirm`
 message for you. Once answered the buttons are replaced by a line saying what was
 decided, including when it was answered by voice instead of clicked.
+
+A confirmation nobody answers within `CONFIRMATION_TIMEOUT` is declined, and the agent
+then sends `{"type": "confirmation_resolved", "id": "...", "approved": false, "by":
+"timeout"}` on the connection that was asked (mirrored to overlays), so every card
+settles on that one event rather than staying live until the command's reply arrives.
+It is logged as `confirmation_timed_out`.
+
+### Where tools run, and `run_command`'s limits
+
+The agent is one asyncio loop: it reads every client's messages, answers control
+messages, resolves confirmations and drives the voice session. A tool that blocked it
+blocked all of those, so `dispatcher._run_tool` does not call tool functions on it:
+
+- **By default a tool function runs on a worker thread** (one daemon thread per call —
+  nothing queues behind a slow tool, and nothing holds the agent open at exit). While
+  `fetch_url`, a 120 s `zip_folder` or a long `run_command` is working, the loop keeps
+  answering: a confirmation for a different call can be asked and answered, and the
+  Library still loads.
+- **A tool whose registry entry says `"thread": "main"` runs inline on the loop
+  thread**, because it does not work anywhere else. Each flagged entry carries the reason
+  in a comment. They are `focus_app`, `describe_ui`, `type_text`, `press_keys` (they find
+  the target app through NSWorkspace, whose state only refreshes when the *main* thread's
+  run loop is pumped — measured: an app launched after startup was never seen from a
+  worker thread, so off-thread the focus re-check that guards typing would silently
+  compare against a frozen answer), `media_control` (AppKit events; instant), and
+  `set_timer` / `list_timers` / `cancel_timer` (asyncio tasks). A `"main"` tool holds the
+  loop for as long as it runs, so the flag is for tools that are quick, not a default.
+- An `async def` tool function is awaited on the loop.
+- **Any exception a tool raises becomes `{"ok": false, "error": ...}`** and is logged as
+  `tool_error` with its traceback; it never takes the request or a skill down.
+- The file tools whose safety is "check, then write" (`move_file`, `copy_file`,
+  `write_new_file`, `append_text`, `create_folder`, `take_screenshot`, `trash_file`,
+  `zip_folder`, `extract_archive`) share one lock, so no two of them ever run at once —
+  what running inline used to guarantee for free.
+- Preferences, trust, grants, session state and timers are still only touched on the loop
+  thread (in `dispatch()` itself and the `"main"` tools). The event log is the one shared
+  thing a worker may write, and `log_event` takes a lock.
+
+`run_command` is bounded, since it is the one tool that otherwise isn't:
+
+| limit | value | why |
+|---|---|---|
+| time | 300 s by default; `timeout_s` per call, clamped to 1–1800 s | Long enough for a clone, an install or a test run. The limit is there for the command that never ends (a dev server, something waiting for input), and the requested value is in the args the user approves. |
+| on timeout | SIGTERM to the command's whole process group, SIGKILL 2 s later | The command gets its own session, so "everything it started" is one group; killing only the shell would orphan the real work. The result has `"timed_out": true` and an `error` saying so, plus whatever was printed. |
+| stdin | `/dev/null`, no terminal | A command that stops to ask a question gets end-of-file and fails at once. |
+| output | first 8,000 + last 12,000 bytes of each stream | The rest is counted and dropped (`"truncated": true`); the start says what ran, the end says how it failed. |
+| shutdown | commands in flight are killed when the agent gets SIGTERM or Ctrl-C | They no longer share the agent's process group, so nothing else would. A command the user deliberately backgrounded (`server &`) and that already returned is left alone. |
+
+```bash
+cd agent && ./.venv/bin/python scripts/dispatch_loop_check.py
+```
+
+proves all of this through the real `dispatch()`: a ticker keeps ticking and a second
+call's confirmation is answered while a slow tool runs; a `"main"` tool runs on the loop
+thread; exceptions and cancellation; the writer lock; `run_command`'s timeout, kill, cap
+and shutdown; the confirmation timeout message; and the fixed older tools
+(`take_screenshot` never overwrites, `create_folder` on a file, `setup_project`'s
+quoting). It opens no port, window or microphone and captures no screen.
 
 **Trust (`agent/core/trust.py`)**: `remember: "session"` or `"always"` tells
 `dispatcher.dispatch()` to skip the confirmation prompt entirely next time — but only for
@@ -1476,7 +1599,8 @@ One more event, on the stream side: `{"type": "confirmation_resolved", "id", "ap
 "by": "voice"}` is sent when a pending confirmation is answered out-of-band by a spoken
 yes/no, so the on-screen card settles instead of sitting there with live buttons for a
 question that's already been answered. `"by": "overlay"` means an overlay client answered
-it (below).
+it (below), and `"by": "timeout"` (always `approved: false`) that nobody answered within
+`CONFIRMATION_TIMEOUT`.
 
 ### Overlay clients (`hello` and roles)
 
@@ -1499,7 +1623,8 @@ a debugging script), or says hello with any other role, behaves exactly as befor
   of these messages when they go to the primary:
   - `confirmation_required`, for every confirmation (the overlay decides whether to
     show it; the Electron overlay only shows one while a session is live);
-  - `confirmation_resolved` (`by`: `"voice"`, or `"ui"` when the Electron app answered);
+  - `confirmation_resolved` (`by`: `"voice"`, `"ui"` when the Electron app answered, or
+    `"timeout"` when nobody did);
   - `speaking` started and ended, which carries the text of a spoken confirmation prompt;
   - `transcript` and `response` for the voice session only (`"origin": "voice_session"`).
     Typed commands, push-to-talk, tool results and skill proposals are not copied.
@@ -1537,7 +1662,9 @@ line to `agent/logs/events.jsonl` (gitignored). Event types: `message_in`, `mess
 and result), `stt_transcript` (what Whisper heard), `tts_error` (a synthesis failure --
 non-fatal; `backend` says which engine failed, and `fallback: "piper"` means the reply was
 still spoken by Piper), `confirmation_requested`/`tool_declined` (the destructive-tool
-confirmation flow), `confirmation_answered_by_voice`, `preference_changed`/
+confirmation flow), `confirmation_answered_by_voice`, `confirmation_timed_out`,
+`tool_error` (a tool function raised; the traceback is in the record),
+`shutdown_killed_commands`, `preference_changed`/
 `preference_reset`/`skill_deleted`/`trust_revoked` (management actions taken from the UI),
 the skill lifecycle (`skill_proposed`/`skill_registered`/`skill_declined`, plus
 `skill_proposal_rejected`, `skill_register_rejected`, `skill_load_rejected` and

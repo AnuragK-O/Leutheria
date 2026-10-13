@@ -15,9 +15,26 @@ own README.
 
 The Python server is a single asyncio loop. Anything blocking — LLM calls, Whisper, Piper,
 skill-learning generation — goes through `loop.run_in_executor`, or it stalls the read loop
-(including confirmations and management messages). The model is reached only through
+(including confirmations and management messages). Tool functions are covered by the
+dispatcher, not by each caller: `dispatcher._run_tool` runs every synchronous tool on a
+worker thread (a daemon thread per call) unless its registry entry says `"thread": "main"`,
+which runs it inline on the loop thread. Three things must stay on the loop thread, and
+each flagged entry says which applies: anything that reads NSWorkspace through
+`ui_access` (the GUI tools — its state only refreshes when the *main* thread's run loop is
+pumped, so off-thread the focus re-check goes stale, silently); anything that creates or
+cancels asyncio tasks (the timer tools); and anything that touches the loop-thread
+singletons (`session`, `trust`, `preferences`, `timers` — they have no locks, on purpose).
+A `"main"` tool blocks the loop while it runs, so a new tool gets the flag only for one of
+those reasons and only if it is quick. A worker-thread tool may call `log_event` (locked)
+and nothing else shared. Skills are `async` and run on the loop; they must not block.
+The model is reached only through
 `core/llm.py:LLMBackend` (`llm_anthropic.py` is the one implementation); callers depend on
 the interface, and multi-turn tool loops live in `agent_loop.py`, not the backend.
+Every call carries all ~91 tool and skill definitions (~21k tokens), so the backend puts a
+prompt-cache breakpoint on the last tool; without a cache hit a call costs about $0.11 of
+input. Keep the tool list's order deterministic, never add per-request text to a tool
+definition, and run `llm_cache_check.py` after changing how the prompt is assembled — a
+cache miss raises no error, it just costs ten times as much.
 
 `README.md` is the detailed reference (full wire protocol per message type, tool table,
 troubleshooting). Read the relevant section there before changing protocol or agent internals.
@@ -59,7 +76,15 @@ pkill -if "python -m agent"; pkill -f "Electron.app"
 ./.venv/bin/python scripts/tts_check.py                 # TTS backends + fallbacks, fake ElevenLabs server
 ./.venv/bin/python scripts/overlay_protocol_check.py    # overlay role, real server on a spare port
 ./.venv/bin/python scripts/skills_check_system.py       # system tools + skills; volume/media/banners/speech stubbed
+./.venv/bin/python scripts/dispatch_loop_check.py       # tools off the loop, run_command limits, confirmation timeout
 ./.venv/bin/python scripts/voice_server_check.py        # real server + real LLM; speaks aloud, needs API key
+./.venv/bin/python scripts/skills_e2e_check.py --scripted   # agent_loop + dispatch in a sandbox home, written plans, no model
+./.venv/bin/python scripts/llm_cache_check.py          # REAL MODEL, ~$0.15: is the tool list being read from the prompt cache?
+./.venv/bin/python scripts/skills_routing_check.py --report # routing table from the committed cache, no model
+
+# These two call the REAL MODEL and cost money: every request carries the whole tool list (~22,700 input tokens)
+./.venv/bin/python scripts/skills_routing_check.py      # phrase -> which capability; nothing dispatched; answers cached
+./.venv/bin/python scripts/skills_e2e_check.py          # 18 requests end to end in the sandbox home
 
 # Qt overlay (needs `brew install qt ninja`)
 cmake -S overlay-qt -B overlay-qt/build -G Ninja -DCMAKE_PREFIX_PATH=/opt/homebrew/opt/qt
@@ -134,7 +159,11 @@ control, above), and `destructive`. `run_command` is the only `"destructive"` to
 because it's the only unbounded one; the rest of the non-GUI tools are `"safe"` *by construction* —
 `trash_file` uses the recoverable Trash, `move_file`/`copy_file` refuse to overwrite,
 `append_text` can't truncate. A new tool that can destroy data must either be redesigned to
-be structurally safe or tagged `"destructive"`.
+be structurally safe or tagged `"destructive"`. Where that safety is "check, then write",
+the tool's name also goes in `dispatcher._FS_WRITERS`: tools run on worker threads now, and
+that set shares one lock so two of them can never interleave. `run_command` is bounded even
+so (timeout with a process-group kill, capped output — README "Where tools run"), and every
+tool's subprocess call takes a timeout.
 
 **Session state is a module-level singleton** (`core/session.py`: focus, rolling history,
 grants). Threading it through `dispatch()` would change every skill's
