@@ -1,8 +1,10 @@
-import subprocess
+from agent.core import bounded
+
+TIMEOUT = 15.0
 
 
 def open_url(url: str) -> dict:
-    result = subprocess.run(["open", url], capture_output=True, text=True)
-    if result.returncode != 0:
-        return {"ok": False, "error": result.stderr.strip()}
+    code, _, stderr = bounded.run(["open", url], timeout=TIMEOUT)
+    if code != 0:
+        return {"ok": False, "error": stderr or f"could not open {url}"}
     return {"ok": True, "message": f"opened {url}"}

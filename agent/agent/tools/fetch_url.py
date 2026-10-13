@@ -14,10 +14,10 @@ The bounds are the point, since the URL is whatever the model was asked for
              differently.
   redirects  followed by hand, MAX_REDIRECTS at most, each hop re-validated.
   time       TIMEOUT per lookup / connect / read and DEADLINE for the whole
-             call. A tool fn runs on the agent's event loop
-             (dispatcher._run_tool), so DEADLINE, plus at most one TIMEOUT of
-             slack for an operation already under way, is the longest this
-             can hold up the read loop.
+             call. DEADLINE, plus at most one TIMEOUT of slack for an
+             operation already under way, is the longest this can hold a
+             request open (it runs on a worker thread -- dispatcher._run_tool
+             -- so the read loop itself is not held up).
   size       at most MAX_BYTES read off the wire (and at most that many after
              decompression), at most MAX_CHARS of text returned.
   type       text only; anything else is refused before the body is read.

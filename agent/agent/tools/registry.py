@@ -59,6 +59,14 @@ from agent.tools.open_with import open_with
 # (recoverable, unlike rm), move_file/copy_file refuse to overwrite an
 # existing destination, append_text can only add content, never truncate or
 # overwrite. That's what lets them skip the confirmation flow.
+#
+# Where a tool runs: dispatch() calls every synchronous tool function on a
+# worker thread, so a slow one never stalls the event loop. An entry with
+# "thread": "main" is the exception -- it is called inline on the event-loop
+# thread (the process's main thread) because it does not work anywhere else.
+# Each such entry says why. Don't add the flag for convenience: a "main" tool
+# blocks confirmations, control messages and the voice session for as long as
+# it runs, so it must be quick. scripts/dispatch_loop_check.py checks the set.
 TOOLS = {
     "open_app": {
         "fn": open_app,
@@ -99,11 +107,20 @@ TOOLS = {
     "run_command": {
         "fn": run_command,
         "safety": "destructive",
-        "description": "Run an arbitrary shell command. Requires the user to explicitly approve it before it runs.",
+        "description": (
+            "Run an arbitrary shell command. Requires the user to explicitly approve it before it runs. "
+            "A command is stopped if it is still running after 5 minutes, so do not start servers or "
+            "anything that waits for input; for a slow install or build set timeout_s, up to 1800 seconds. "
+            "Very long output is shortened to its beginning and end."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "cmd": {"type": "string", "description": "The shell command to run."}
+                "cmd": {"type": "string", "description": "The shell command to run."},
+                "timeout_s": {
+                    "type": "number",
+                    "description": "Seconds to allow before the command is stopped. Defaults to 300, at most 1800.",
+                },
             },
             "required": ["cmd"],
         },
@@ -251,6 +268,12 @@ TOOLS = {
         "fn": focus_app,
         "safety": "scoped",
         "target": "name",
+        # main: resolves and waits on the app through NSWorkspace, whose state
+        # only refreshes when the *main* thread's run loop is pumped
+        # (ui_access._pump). Measured off-thread: an app launched afterwards
+        # was never seen by a pumping worker thread, and was seen at once by
+        # the main thread. Also writes session focus, a loop-thread singleton.
+        "thread": "main",
         "description": (
             "Bring an application to the front and make it the working context for "
             "what follows. Use this before typing into an app. Unlike open_app this "
@@ -268,6 +291,11 @@ TOOLS = {
     "describe_ui": {
         "fn": describe_ui,
         "safety": "safe",
+        # main: the Accessibility read itself is identical off-thread
+        # (measured), but finding the app goes through NSWorkspace
+        # (frontmost_app / resolve_app), which is stale on any other thread --
+        # see focus_app. Reads session focus. Bounded by AX_TIMEOUT per call.
+        "thread": "main",
         "description": (
             "Read the on-screen structure of an app's window: its text areas, fields "
             "and buttons, which one has keyboard focus, and what they contain. Use "
@@ -289,6 +317,11 @@ TOOLS = {
         "fn": press_keys,
         "safety": "scoped",
         "target": "frontmost",
+        # main: its safety is the focus check immediately before the key is
+        # posted, and frontmost_app() is only live on the main thread (see
+        # focus_app) -- on a worker it would compare against a frozen answer
+        # and the check would always pass. Reads grants, writes session focus.
+        "thread": "main",
         "description": (
             "Send a keyboard shortcut to the frontmost app, e.g. 'cmd+n' for a new "
             "document, 'cmd+s' to save, 'cmd+z' to undo, or 'return'/'tab'/'escape'. "
@@ -310,6 +343,11 @@ TOOLS = {
         "fn": type_text,
         "safety": "scoped",
         "target": "frontmost",
+        # main: the per-chunk focus re-check (the TOCTOU guard) reads
+        # frontmost_app(), which never changes on a worker thread (see
+        # focus_app) -- off-thread the guard would silently stop guarding.
+        # Reads grants, writes session focus.
+        "thread": "main",
         "description": (
             "Type text into whatever currently has keyboard focus, as if the user typed "
             "it. Text is inserted at the cursor, so to add to a document that already "
@@ -371,6 +409,11 @@ TOOLS = {
     "media_control": {
         "fn": media_control,
         "safety": "safe",
+        # main: builds AppKit NSEvents and posts them. Building them and the
+        # permission preflight gave identical results off-thread (measured);
+        # the post itself was not fired from a worker, since that presses a
+        # real key. It takes microseconds, so staying put costs nothing.
+        "thread": "main",
         "description": (
             "Press one of the keyboard's media keys: play_pause, next or previous. It acts "
             "on whatever macOS treats as the current player, such as Music, Spotify or a "
@@ -463,6 +506,10 @@ TOOLS = {
     "set_timer": {
         "fn": set_timer,
         "safety": "safe",
+        # main: creates an asyncio task (core/timers.py), which needs the
+        # running loop -- from a worker thread there is none and the timer is
+        # refused. The timer table is a loop-thread singleton.
+        "thread": "main",
         "description": (
             "Start a countdown timer that shows a notification and speaks a line when it "
             "ends. Give the duration in seconds, minutes or hours; they add together, so "
@@ -490,6 +537,8 @@ TOOLS = {
     "list_timers": {
         "fn": list_timers,
         "safety": "safe",
+        # main: reads the timer table, which countdown tasks mutate on the loop.
+        "thread": "main",
         "description": (
             "List the timers that are running, soonest first, with how long each has left "
             "and its id. Use this for 'how long is left' or before cancelling when more "
@@ -501,6 +550,8 @@ TOOLS = {
     "cancel_timer": {
         "fn": cancel_timer,
         "safety": "safe",
+        # main: Task.cancel() is not thread-safe, and it edits the timer table.
+        "thread": "main",
         "description": (
             "Cancel a running timer. Pass timer_id or label to pick one, all true to cancel "
             "every timer, or nothing at all when exactly one timer is running. If several "

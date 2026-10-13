@@ -1,4 +1,6 @@
-import subprocess
+from agent.core import bounded
+
+TIMEOUT = 10.0
 
 
 def _escape(text: str) -> str:
@@ -7,7 +9,7 @@ def _escape(text: str) -> str:
 
 def show_notification(title: str, message: str) -> dict:
     script = f'display notification "{_escape(message)}" with title "{_escape(title)}"'
-    result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
-    if result.returncode != 0:
-        return {"ok": False, "error": result.stderr.strip()}
+    code, _, stderr = bounded.run(["osascript", "-e", script], timeout=TIMEOUT)
+    if code != 0:
+        return {"ok": False, "error": stderr or "could not show the notification"}
     return {"ok": True, "message": "notification shown"}

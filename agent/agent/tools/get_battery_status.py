@@ -1,13 +1,14 @@
 import re
-import subprocess
+
+from agent.core import bounded
 
 
 def get_battery_status() -> dict:
-    result = subprocess.run(["pmset", "-g", "batt"], capture_output=True, text=True)
-    if result.returncode != 0:
-        return {"ok": False, "error": result.stderr.strip()}
+    code, stdout, stderr = bounded.run(["pmset", "-g", "batt"], timeout=5.0)
+    if code != 0:
+        return {"ok": False, "error": stderr or "could not read the battery status"}
 
-    match = re.search(r"(\d+)%;\s*([a-zA-Z ]+);", result.stdout)
+    match = re.search(r"(\d+)%;\s*([a-zA-Z ]+);", stdout)
     if not match:
         # Desktops with no battery report no percentage line at all.
         return {"ok": True, "has_battery": False}
