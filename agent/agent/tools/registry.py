@@ -144,11 +144,17 @@ TOOLS = {
     "open_url": {
         "fn": open_url,
         "safety": "safe",
-        "description": "Open a URL in the default web browser.",
+        "description": (
+            "Open a web page in the default web browser. Web pages only: the address must "
+            "be a full http or https URL. It refuses file paths, file: URLs and every other "
+            "kind of link (app links such as shortcuts:, ssh:, smb:, mailto:, tel:), and "
+            "addresses with a username or password in them. To open a file or folder on "
+            "this Mac use open_file; to launch an application use open_app."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "url": {"type": "string", "description": "The URL to open, e.g. 'https://u.gg'."}
+                "url": {"type": "string", "description": "The full web address, e.g. 'https://u.gg'."}
             },
             "required": ["url"],
         },
