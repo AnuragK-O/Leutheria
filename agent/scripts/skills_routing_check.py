@@ -82,7 +82,7 @@ def system_prompt():
 # Read-only calls that are a look before acting, not a routing decision.
 LOOK_FIRST = {
     "file_info", "list_files", "get_clipboard", "git_status", "get_current_datetime",
-    "list_running_apps", "list_timers", "find_files", "get_volume", "describe_ui",
+    "list_running_apps", "list_timers", "find_files", "get_volume", "describe_ui", "repo_overview",
 }
 
 # What a look is told, so the second turn has something to act on.
@@ -105,6 +105,9 @@ CANNED = {
          "modified": "2026-10-13 09:02"}]},
     "get_volume": lambda a: {"ok": True, "level": 60, "muted": False},
     "describe_ui": lambda a: {"ok": True, "app": a.get("app", "Notes"), "focused": "text area", "elements": []},
+    "repo_overview": lambda a: {"ok": True, "path": a.get("path", ""), "branch": "main", "changed_files": 2,
+                                "kind": "Python project", "message": "atlas is a Python project on main with 2 "
+                                "uncommitted changes. Latest commit: fix login. Nothing has been opened."},
 }
 
 
@@ -392,8 +395,17 @@ def save_cache(cache: dict) -> None:
     os.replace(tmp, CACHE_FILE)
 
 
-def cached(cache: dict, phrase: str, run: int, surface: str, stale_ok: bool):
-    matches = [e for e in cache["entries"] if e["phrase"] == phrase and e["run"] == run]
+def cached(cache: dict, c: dict, run: int, surface: str, stale_ok: bool):
+    """The newest usable cached answer for one run of a case. An answer that
+    stopped at a look the case does not itself accept (it predates that tool
+    being treated as a look) is not usable: it never got to the decision."""
+    accept = set(c["expect"]) | set(c["alt"])
+
+    def complete(e):
+        last = [call["name"] for call in e["turns"][-1]["calls"]]
+        return len(e["turns"]) > 1 or not last or not all(n in LOOK_FIRST and n not in accept for n in last)
+
+    matches = [e for e in cache["entries"] if e["phrase"] == c["phrase"] and e["run"] == run and complete(e)]
     exact = [e for e in matches if e["surface"] == surface]
     if exact:
         return exact[-1]
@@ -481,7 +493,7 @@ def load_key() -> None:
 def run_missing(cache, surface, only, stale_ok, limit):
     load_key()
     jobs = [(c["phrase"], run) for _, c in selected(only) for run in range(RUNS)
-            if cached(cache, c["phrase"], run, surface, stale_ok) is None]
+            if cached(cache, c, run, surface, stale_ok) is None]
     if limit is not None:
         jobs = jobs[:limit]
     if not jobs:
@@ -519,7 +531,7 @@ def report(cache, surface, only, stale_ok) -> bool:
     for group, c in selected(only):
         runs = []
         for run in range(RUNS):
-            entry = cached(cache, c["phrase"], run, surface, stale_ok)
+            entry = cached(cache, c, run, surface, stale_ok)
             if entry is None:
                 runs.append(None)
                 continue
