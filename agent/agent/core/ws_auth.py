@@ -138,6 +138,12 @@ def _remove_token_file(path: Path, token: str) -> None:
         pass
 
 
+def bearer(token: str) -> dict:
+    """The header a client presents -- for the check scripts and any Python
+    debugging client: websockets.connect(url, additional_headers=bearer(t))."""
+    return {"Authorization": f"Bearer {token}"}
+
+
 def read_token_file(port: int) -> str:
     """For same-user tools (check scripts, a debugging client)."""
     return token_file_path(port).read_text().strip()
