@@ -35,6 +35,3340 @@
      "text": ""
     }
    ]
+  },
+  {
+   "phrase": "remind me later that I need to renew my passport",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "quick_note",
+       "args": {
+        "text": "Need to renew my passport"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "I need a fresh repo for a thing called tidewater, get it set up",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "setup_project",
+       "args": {
+        "name": "tidewater"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "I need a fresh repo for a thing called tidewater, get it set up",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "setup_project",
+       "args": {
+        "name": "tidewater"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "remind me later that I need to renew my passport",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "quick_note",
+       "args": {
+        "text": "Renew passport"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "start a new project called orbit",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "setup_project",
+       "args": {
+        "name": "orbit"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "start a new project called orbit",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "setup_project",
+       "args": {
+        "name": "orbit"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "jot down somewhere that the plumber is coming thursday",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "quick_note",
+       "args": {
+        "text": "Plumber coming Thursday"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "jot down somewhere that the plumber is coming thursday",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "quick_note",
+       "args": {
+        "text": "Plumber is coming Thursday"
+       }
+      }
+     ],
+     "text": "I'll drop that in your notes file."
+    }
+   ]
+  },
+  {
+   "phrase": "give me my morning briefing",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "morning_briefing",
+       "args": {}
+      }
+     ],
+     "text": "I'll pull that up."
+    }
+   ]
+  },
+  {
+   "phrase": "give me my morning briefing",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "morning_briefing",
+       "args": {}
+      }
+     ],
+     "text": "I'll pull that up."
+    }
+   ]
+  },
+  {
+   "phrase": "make a copy of ~/Projects/atlas just in case",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "backup_folder",
+       "args": {
+        "path": "~/Projects/atlas"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "back up my Documents/taxes folder before I mess with it",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "file_info",
+       "args": {
+        "path": "~/Documents/taxes"
+       }
+      }
+     ],
+     "text": ""
+    },
+    {
+     "calls": [
+      {
+       "name": "backup_folder",
+       "args": {
+        "path": "~/Documents/taxes"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "morning, how's today looking",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "morning_briefing",
+       "args": {}
+      }
+     ],
+     "text": "I'll pull up your briefing."
+    }
+   ]
+  },
+  {
+   "phrase": "back up my Documents/taxes folder before I mess with it",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "file_info",
+       "args": {
+        "path": "~/Documents/taxes"
+       }
+      }
+     ],
+     "text": ""
+    },
+    {
+     "calls": [
+      {
+       "name": "backup_folder",
+       "args": {
+        "path": "~/Documents/taxes"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "morning, how's today looking",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "morning_briefing",
+       "args": {}
+      }
+     ],
+     "text": "I'll pull up your briefing."
+    }
+   ]
+  },
+  {
+   "phrase": "make a copy of ~/Projects/atlas just in case",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "backup_folder",
+       "args": {
+        "path": "~/Projects/atlas"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "how's my Mac doing",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "system_health_check",
+       "args": {}
+      }
+     ],
+     "text": "I'll check."
+    }
+   ]
+  },
+  {
+   "phrase": "how's my Mac doing",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "system_health_check",
+       "args": {}
+      }
+     ],
+     "text": "I'll check."
+    }
+   ]
+  },
+  {
+   "phrase": "is everything okay with this computer",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "system_health_check",
+       "args": {}
+      }
+     ],
+     "text": "I'll run a full check."
+    }
+   ]
+  },
+  {
+   "phrase": "is everything okay with this computer",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "system_health_check",
+       "args": {}
+      }
+     ],
+     "text": "I'll run a full check."
+    }
+   ]
+  },
+  {
+   "phrase": "is it gonna rain this weekend in Seattle",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "weather_report",
+       "args": {
+        "place": "Seattle",
+        "days": 7
+       }
+      }
+     ],
+     "text": "I'll check the forecast."
+    }
+   ]
+  },
+  {
+   "phrase": "is it gonna rain this weekend in Seattle",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "weather_report",
+       "args": {
+        "place": "Seattle",
+        "days": 7
+       }
+      }
+     ],
+     "text": "I'll check the forecast."
+    }
+   ]
+  },
+  {
+   "phrase": "ten minutes on the clock, go",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "quick_timer",
+       "args": {
+        "duration": "10 minutes"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "ten minutes on the clock, go",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "quick_timer",
+       "args": {
+        "duration": "10 minutes"
+       }
+      }
+     ],
+     "text": "I'll set that timer."
+    }
+   ]
+  },
+  {
+   "phrase": "start a pomodoro",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "pomodoro",
+       "args": {}
+      }
+     ],
+     "text": "I'll kick one off."
+    }
+   ]
+  },
+  {
+   "phrase": "start a pomodoro",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "pomodoro",
+       "args": {
+        "focus_minutes": 25,
+        "break_minutes": 5
+       }
+      }
+     ],
+     "text": "I'll start a standard 25-minute focus session with a 5-minute break after."
+    }
+   ]
+  },
+  {
+   "phrase": "what's the weather like this week in Austin",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "weather_report",
+       "args": {
+        "place": "Austin, Texas",
+        "days": 7
+       }
+      }
+     ],
+     "text": "I'll pull the week's outlook for Austin."
+    }
+   ]
+  },
+  {
+   "phrase": "what's the weather like this week in Austin",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "weather_report",
+       "args": {
+        "place": "Austin, Texas",
+        "days": 7
+       }
+      }
+     ],
+     "text": "I'll pull up the forecast for Austin."
+    }
+   ]
+  },
+  {
+   "phrase": "let's do twenty five minutes of work and then a five minute break",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "pomodoro",
+       "args": {
+        "focus_minutes": 25,
+        "break_minutes": 5
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "let's do twenty five minutes of work and then a five minute break",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "pomodoro",
+       "args": {
+        "focus_minutes": 25,
+        "break_minutes": 5
+       }
+      }
+     ],
+     "text": "I'll start a pomodoro for you."
+    }
+   ]
+  },
+  {
+   "phrase": "I need quiet to concentrate, shut the sound off for 45 minutes",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "focus_mode",
+       "args": {
+        "minutes": 45
+       }
+      }
+     ],
+     "text": "I'll mute the sound and set a 45-minute focus timer."
+    }
+   ]
+  },
+  {
+   "phrase": "I need quiet to concentrate, shut the sound off for 45 minutes",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "focus_mode",
+       "args": {
+        "minutes": 45
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "focus mode for half an hour",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "focus_mode",
+       "args": {
+        "minutes": 30
+       }
+      }
+     ],
+     "text": "I'll mute the sound and start a 30-minute focus timer."
+    }
+   ]
+  },
+  {
+   "phrase": "focus mode for half an hour",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "focus_mode",
+       "args": {
+        "minutes": 30
+       }
+      }
+     ],
+     "text": "I'll mute the sound and start a 30-minute focus timer."
+    }
+   ]
+  },
+  {
+   "phrase": "I'm about to hop on a Zoom call, get me ready",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "meeting_prep",
+       "args": {
+        "kind": "call",
+        "app": "zoom.us"
+       }
+      }
+     ],
+     "text": "I'll get you set up."
+    }
+   ]
+  },
+  {
+   "phrase": "heading into the conference room for an hour, the laptop's coming with me",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "meeting_prep",
+       "args": {
+        "kind": "in_person",
+        "minutes": 60
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "I'm done for the day",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "end_of_day",
+       "args": {}
+      }
+     ],
+     "text": "I'll give you the day's wrap-up."
+    }
+   ]
+  },
+  {
+   "phrase": "heading into the conference room for an hour, the laptop's coming with me",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "meeting_prep",
+       "args": {
+        "kind": "in_person",
+        "minutes": 60
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "I'm about to hop on a Zoom call, get me ready",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "meeting_prep",
+       "args": {
+        "kind": "call",
+        "app": "zoom.us"
+       }
+      }
+     ],
+     "text": "I'll get things set up."
+    }
+   ]
+  },
+  {
+   "phrase": "wrapping up, anything I should know before I close the laptop",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "end_of_day",
+       "args": {}
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "wrapping up, anything I should know before I close the laptop",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "end_of_day",
+       "args": {}
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "I'm winding down for the night",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "wind_down",
+       "args": {}
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "I'm winding down for the night",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "wind_down",
+       "args": {}
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "getting ready for bed soon, make it quieter and nudge me in twenty minutes",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "wind_down",
+       "args": {
+        "minutes": 20
+       }
+      }
+     ],
+     "text": "I'll lower the volume and set that nudge."
+    }
+   ]
+  },
+  {
+   "phrase": "I'm done for the day",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "end_of_day",
+       "args": {}
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "getting ready for bed soon, make it quieter and nudge me in twenty minutes",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "wind_down",
+       "args": {
+        "minutes": 20
+       }
+      }
+     ],
+     "text": "I'll lower the volume and set that nudge."
+    }
+   ]
+  },
+  {
+   "phrase": "do I need to plug in",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "battery_check",
+       "args": {}
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "do I need to plug in",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "battery_check",
+       "args": {}
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "will my battery be okay for a while",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "battery_check",
+       "args": {}
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "will my battery be okay for a while",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "battery_check",
+       "args": {}
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "my downloads is a mess, put everything into folders by what kind of file it is",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "organize_folder",
+       "args": {
+        "path": "~/Downloads"
+       }
+      }
+     ],
+     "text": "I'll sort the loose files in Downloads into folders by type."
+    }
+   ]
+  },
+  {
+   "phrase": "my downloads is a mess, put everything into folders by what kind of file it is",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "organize_folder",
+       "args": {
+        "path": "~/Downloads"
+       }
+      }
+     ],
+     "text": "I'll sort the loose files in Downloads into folders by type."
+    }
+   ]
+  },
+  {
+   "phrase": "sort ~/Pictures/Imports by month",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "organize_by_date",
+       "args": {
+        "path": "~/Pictures/Imports"
+       }
+      }
+     ],
+     "text": "I'll sort the loose files there into month folders."
+    }
+   ]
+  },
+  {
+   "phrase": "sort ~/Pictures/Imports by month",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "organize_by_date",
+       "args": {
+        "path": "~/Pictures/Imports"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "group the files in ~/Pictures/Imports by when they're from",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "organize_by_date",
+       "args": {
+        "path": "~/Pictures/Imports"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "organize my Downloads folder",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "organize_folder",
+       "args": {
+        "path": "~/Downloads"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "organize my Downloads folder",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "organize_folder",
+       "args": {
+        "path": "~/Downloads"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "group the files in ~/Pictures/Imports by when they're from",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "organize_by_date",
+       "args": {
+        "path": "~/Pictures/Imports"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "clean up my desktop",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "clean_desktop",
+       "args": {}
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "gather up all the screenshots on my desktop",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "collect_screenshots",
+       "args": {}
+      }
+     ],
+     "text": "I'll move the screenshots off your Desktop into your Pictures Screenshots folder."
+    }
+   ]
+  },
+  {
+   "phrase": "gather up all the screenshots on my desktop",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "collect_screenshots",
+       "args": {}
+      }
+     ],
+     "text": "I'll move the screenshots off your Desktop into your Pictures Screenshots folder."
+    }
+   ]
+  },
+  {
+   "phrase": "put away those screen grabs lying around on the desktop",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "collect_screenshots",
+       "args": {
+        "dry_run": true
+       }
+      }
+     ],
+     "text": "I'll move the screenshots off your Desktop into your Pictures Screenshots folder."
+    }
+   ]
+  },
+  {
+   "phrase": "my desktop is covered in junk, deal with it",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "clean_desktop",
+       "args": {}
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "put away those screen grabs lying around on the desktop",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "collect_screenshots",
+       "args": {}
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "clean up my desktop",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "clean_desktop",
+       "args": {}
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "my desktop is covered in junk, deal with it",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "clean_desktop",
+       "args": {}
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "clear out my old downloads",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "archive_old_downloads",
+       "args": {
+        "days": 30
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "move the stuff that's been sitting in downloads for over two months out of the way",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "archive_old_downloads",
+       "args": {
+        "days": 60
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "move the stuff that's been sitting in downloads for over two months out of the way",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "archive_old_downloads",
+       "args": {
+        "days": 60
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "clear out my old downloads",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "archive_old_downloads",
+       "args": {
+        "dry_run": true
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "zip up my Documents/taxes folder",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "file_info",
+       "args": {
+        "path": "~/Documents/taxes"
+       }
+      }
+     ],
+     "text": ""
+    },
+    {
+     "calls": [
+      {
+       "name": "archive_folder",
+       "args": {
+        "path": "~/Documents/taxes"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "zip up my Documents/taxes folder",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "file_info",
+       "args": {
+        "path": "~/Documents/taxes"
+       }
+      }
+     ],
+     "text": "I'll zip that up for you."
+    },
+    {
+     "calls": [
+      {
+       "name": "archive_folder",
+       "args": {
+        "path": "~/Documents/taxes"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "compress ~/Documents/wedding so I can email it",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "archive_folder",
+       "args": {
+        "path": "~/Documents/wedding"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "snapshot my project at ~/Projects/atlas before I refactor",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "project_snapshot",
+       "args": {
+        "path": "~/Projects/atlas",
+        "note": "before refactor"
+       }
+      }
+     ],
+     "text": "I'll take a snapshot of that project."
+    }
+   ]
+  },
+  {
+   "phrase": "snapshot my project at ~/Projects/atlas before I refactor",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "project_snapshot",
+       "args": {
+        "path": "~/Projects/atlas",
+        "note": "before refactor"
+       }
+      }
+     ],
+     "text": "I'll take a snapshot of that project now."
+    }
+   ]
+  },
+  {
+   "phrase": "checkpoint ~/Projects/atlas, I'm about to try something risky",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "project_snapshot",
+       "args": {
+        "path": "~/Projects/atlas",
+        "note": "before risky change"
+       }
+      }
+     ],
+     "text": "I'll snapshot it now."
+    }
+   ]
+  },
+  {
+   "phrase": "compress ~/Documents/wedding so I can email it",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "folder_size",
+       "args": {
+        "path": "~/Documents/wedding"
+       }
+      },
+      {
+       "name": "archive_folder",
+       "args": {
+        "path": "~/Documents/wedding"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "checkpoint ~/Projects/atlas, I'm about to try something risky",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "project_snapshot",
+       "args": {
+        "path": "~/Projects/atlas",
+        "note": "Before risky change"
+       }
+      }
+     ],
+     "text": "I'll take a snapshot of the project now."
+    }
+   ]
+  },
+  {
+   "phrase": "what's hogging space in my Movies folder",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "folder_size",
+       "args": {
+        "path": "~/Movies"
+       }
+      }
+     ],
+     "text": "I'll take a look."
+    }
+   ]
+  },
+  {
+   "phrase": "what's hogging space in my Movies folder",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "folder_size",
+       "args": {
+        "path": "~/Movies"
+       }
+      }
+     ],
+     "text": "I'll take a look."
+    }
+   ]
+  },
+  {
+   "phrase": "where did that PDF I just downloaded go",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "find_recent_files",
+       "args": {
+        "extension": "pdf",
+        "days": 3,
+        "limit": 5
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "what was I working on yesterday",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "find_recent_files",
+       "args": {
+        "days": 2,
+        "limit": 15
+       }
+      },
+      {
+       "name": "get_current_datetime",
+       "args": {}
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "where did that PDF I just downloaded go",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "find_recent_files",
+       "args": {
+        "extension": "pdf",
+        "days": 3,
+        "limit": 5
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "what are the biggest files in my Downloads",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "find_large_files",
+       "args": {
+        "path": "~/Downloads",
+        "limit": 5
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "what are the biggest files in my Downloads",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "find_large_files",
+       "args": {
+        "path": "~/Downloads",
+        "limit": 5
+       }
+      }
+     ],
+     "text": "I'll check that now."
+    }
+   ]
+  },
+  {
+   "phrase": "why is my disk so full",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "storage_report",
+       "args": {}
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "what's using up all my storage",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "storage_report",
+       "args": {}
+      }
+     ],
+     "text": "I'll check that for you."
+    }
+   ]
+  },
+  {
+   "phrase": "what's using up all my storage",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "storage_report",
+       "args": {}
+      }
+     ],
+     "text": "I'll check your disk and the main folders."
+    }
+   ]
+  },
+  {
+   "phrase": "why is my disk so full",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "storage_report",
+       "args": {}
+      }
+     ],
+     "text": "I'll take a look."
+    }
+   ]
+  },
+  {
+   "phrase": "what's in my Documents folder, roughly",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "folder_summary",
+       "args": {
+        "path": "~/Documents"
+       }
+      }
+     ],
+     "text": "I'll take a look."
+    }
+   ]
+  },
+  {
+   "phrase": "what's in my Documents folder, roughly",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "folder_summary",
+       "args": {
+        "path": "~/Documents"
+       }
+      }
+     ],
+     "text": "I'll take a look."
+    }
+   ]
+  },
+  {
+   "phrase": "add to my journal: had a good run this morning",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "daily_journal",
+       "args": {
+        "text": "Had a good run this morning."
+       }
+      }
+     ],
+     "text": "I'll add that to today's journal."
+    }
+   ]
+  },
+  {
+   "phrase": "add to my journal: had a good run this morning",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "daily_journal",
+       "args": {
+        "text": "Had a good run this morning"
+       }
+      }
+     ],
+     "text": "I'll add that to today's journal."
+    }
+   ]
+  },
+  {
+   "phrase": "start today's diary page",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "daily_journal",
+       "args": {
+        "open": true
+       }
+      }
+     ],
+     "text": "I'll create today's journal file and open it."
+    }
+   ]
+  },
+  {
+   "phrase": "what was I working on yesterday",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "find_recent_files",
+       "args": {
+        "days": 2,
+        "limit": 15
+       }
+      },
+      {
+       "name": "get_current_datetime",
+       "args": {}
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "give me the gist of what's sitting in ~/Projects",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "list_files",
+       "args": {
+        "path": "~/Projects"
+       }
+      }
+     ],
+     "text": "I'll take a look."
+    },
+    {
+     "calls": [
+      {
+       "name": "folder_summary",
+       "args": {
+        "path": "~/Projects"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "start today's diary page",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "daily_journal",
+       "args": {
+        "open": true
+       }
+      }
+     ],
+     "text": "I'll start today's journal file for you."
+    }
+   ]
+  },
+  {
+   "phrase": "give me the gist of what's sitting in ~/Projects",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "list_files",
+       "args": {
+        "path": "~/Projects"
+       }
+      }
+     ],
+     "text": "I'll take a look."
+    },
+    {
+     "calls": [
+      {
+       "name": "folder_summary",
+       "args": {
+        "path": "~/Projects"
+       }
+      },
+      {
+       "name": "folder_summary",
+       "args": {
+        "path": "~/Projects/atlas"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "take a screenshot",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "take_screenshot",
+       "args": {}
+      }
+     ],
+     "text": "I'll take a screenshot now."
+    }
+   ]
+  },
+  {
+   "phrase": "take a screenshot",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "take_screenshot",
+       "args": {}
+      }
+     ],
+     "text": "I'll take a screenshot now."
+    }
+   ]
+  },
+  {
+   "phrase": "grab a picture of my screen and file it away",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "screenshot_to_folder",
+       "args": {}
+      }
+     ],
+     "text": "I'll take a screenshot and save it to your Screenshots folder."
+    }
+   ]
+  },
+  {
+   "phrase": "grab a picture of my screen and file it away",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "screenshot_to_folder",
+       "args": {}
+      }
+     ],
+     "text": "I'll take a screenshot and save it to your Screenshots folder."
+    }
+   ]
+  },
+  {
+   "phrase": "do I have any duplicate files in Downloads",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "find_duplicates",
+       "args": {
+        "path": "~/Downloads"
+       }
+      }
+     ],
+     "text": "I'll check Downloads for duplicates."
+    }
+   ]
+  },
+  {
+   "phrase": "find the files in my Pictures folder that are the same thing twice",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "find_duplicates",
+       "args": {
+        "path": "~/Pictures"
+       }
+      }
+     ],
+     "text": "I'll scan Pictures for exact duplicates."
+    }
+   ]
+  },
+  {
+   "phrase": "do I have any duplicate files in Downloads",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "find_duplicates",
+       "args": {
+        "path": "~/Downloads"
+       }
+      }
+     ],
+     "text": "I'll check Downloads for duplicates."
+    }
+   ]
+  },
+  {
+   "phrase": "unzip the thing I just downloaded",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "extract_latest_download",
+       "args": {}
+      }
+     ],
+     "text": "I'll grab the newest archive in Downloads and unpack it."
+    }
+   ]
+  },
+  {
+   "phrase": "unzip the thing I just downloaded",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "extract_latest_download",
+       "args": {}
+      }
+     ],
+     "text": "I'll grab the newest archive in Downloads and unpack it."
+    }
+   ]
+  },
+  {
+   "phrase": "find the files in my Pictures folder that are the same thing twice",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "find_duplicates",
+       "args": {
+        "path": "~/Pictures"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "unpack that archive I just grabbed off the web",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "extract_latest_download",
+       "args": {}
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "unpack that archive I just grabbed off the web",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "extract_latest_download",
+       "args": {}
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "make me a python project called atlas",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "new_python_project",
+       "args": {
+        "name": "atlas",
+        "open_in": "Visual Studio Code"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "I want to write a little tool in python, call it scraper, set up the files",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "new_python_project",
+       "args": {
+        "name": "scraper",
+        "open_in": "Visual Studio Code"
+       }
+      }
+     ],
+     "text": "I'll scaffold it now."
+    }
+   ]
+  },
+  {
+   "phrase": "make me a python project called atlas",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "new_python_project",
+       "args": {
+        "name": "atlas",
+        "open_in": "Visual Studio Code"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "I want to write a little tool in python, call it scraper, set up the files",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "new_python_project",
+       "args": {
+        "name": "scraper",
+        "open_in": "Visual Studio Code"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "new node project called atlas-api",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "new_node_project",
+       "args": {
+        "name": "atlas-api",
+        "open_in": "Visual Studio Code"
+       }
+      }
+     ],
+     "text": "I'll set that up now."
+    }
+   ]
+  },
+  {
+   "phrase": "new node project called atlas-api",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "new_node_project",
+       "args": {
+        "name": "atlas-api",
+        "open_in": "Visual Studio Code"
+       }
+      }
+     ],
+     "text": "I'll set that up now."
+    }
+   ]
+  },
+  {
+   "phrase": "scaffold a javascript app named chatbot",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "new_node_project",
+       "args": {
+        "name": "chatbot",
+        "open_in": "Visual Studio Code"
+       }
+      }
+     ],
+     "text": "I'll set that up in ~/Projects."
+    }
+   ]
+  },
+  {
+   "phrase": "scaffold a javascript app named chatbot",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "new_node_project",
+       "args": {
+        "name": "chatbot",
+        "open_in": "Visual Studio Code"
+       }
+      }
+     ],
+     "text": "I'll set up a Node project called chatbot."
+    }
+   ]
+  },
+  {
+   "phrase": "make a landing page called portfolio",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "new_web_page",
+       "args": {
+        "name": "portfolio",
+        "title": "Portfolio",
+        "open_in_browser": true
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "I need an html and css starter named birthday-invite",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "new_web_page",
+       "args": {
+        "name": "birthday-invite",
+        "title": "Birthday Invite",
+        "open_in_browser": true
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "commit everything in ~/Projects/atlas with the message fix login",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "git_snapshot",
+       "args": {
+        "path": "~/Projects/atlas",
+        "message": "fix login"
+       }
+      }
+     ],
+     "text": "I'll stage and commit everything in that repo."
+    }
+   ]
+  },
+  {
+   "phrase": "commit everything in ~/Projects/atlas with the message fix login",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "git_snapshot",
+       "args": {
+        "path": "~/Projects/atlas",
+        "message": "fix login"
+       }
+      }
+     ],
+     "text": "I'll commit all changes in atlas with that message."
+    }
+   ]
+  },
+  {
+   "phrase": "I need an html and css starter named birthday-invite",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "new_web_page",
+       "args": {
+        "name": "birthday-invite",
+        "title": "Birthday Invite",
+        "open_in_browser": true
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "save my changes in the atlas repo at ~/Projects/atlas, message is wip",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "git_snapshot",
+       "args": {
+        "path": "~/Projects/atlas",
+        "message": "wip"
+       }
+      }
+     ],
+     "text": "I'll commit everything that's changed there with the message \"wip\"."
+    }
+   ]
+  },
+  {
+   "phrase": "pull the latest in ~/Projects/atlas",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "git_sync",
+       "args": {
+        "path": "~/Projects/atlas",
+        "action": "pull"
+       }
+      }
+     ],
+     "text": "I'll pull the latest into the atlas repo."
+    }
+   ]
+  },
+  {
+   "phrase": "save my changes in the atlas repo at ~/Projects/atlas, message is wip",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "git_snapshot",
+       "args": {
+        "path": "~/Projects/atlas",
+        "message": "wip"
+       }
+      }
+     ],
+     "text": "I'll stage and commit everything in that repo with the message \"wip\"."
+    }
+   ]
+  },
+  {
+   "phrase": "make a landing page called portfolio",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "new_web_page",
+       "args": {
+        "name": "portfolio",
+        "title": "Portfolio",
+        "open_in_browser": true
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "send my commits in ~/Projects/atlas up to the remote",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "git_sync",
+       "args": {
+        "path": "~/Projects/atlas",
+        "action": "push"
+       }
+      }
+     ],
+     "text": "I'll push the commits in atlas to its remote."
+    }
+   ]
+  },
+  {
+   "phrase": "clone anthropics/anthropic-sdk-python",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "clone_repo",
+       "args": {
+        "repo": "anthropics/anthropic-sdk-python"
+       }
+      }
+     ],
+     "text": "I'll clone that from GitHub into your Projects folder."
+    }
+   ]
+  },
+  {
+   "phrase": "clone anthropics/anthropic-sdk-python",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "clone_repo",
+       "args": {
+        "repo": "anthropics/anthropic-sdk-python"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "send my commits in ~/Projects/atlas up to the remote",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "git_sync",
+       "args": {
+        "path": "~/Projects/atlas",
+        "action": "push"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "download the pallets flask repo from github onto my machine",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "clone_repo",
+       "args": {
+        "repo": "pallets/flask"
+       }
+      }
+     ],
+     "text": "I'll clone the Flask repo for you."
+    }
+   ]
+  },
+  {
+   "phrase": "download the pallets flask repo from github onto my machine",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "clone_repo",
+       "args": {
+        "repo": "pallets/flask"
+       }
+      }
+     ],
+     "text": "I'll clone the Flask repo into your Projects folder."
+    }
+   ]
+  },
+  {
+   "phrase": "what is the repo at ~/Projects/atlas",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "repo_overview",
+       "args": {
+        "path": "~/Projects/atlas"
+       }
+      }
+     ],
+     "text": "I'll take a look."
+    }
+   ]
+  },
+  {
+   "phrase": "where do things stand with ~/Projects/atlas",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "repo_overview",
+       "args": {
+        "path": "~/Projects/atlas"
+       }
+      }
+     ],
+     "text": "I'll take a look at the repo."
+    }
+   ]
+  },
+  {
+   "phrase": "where do things stand with ~/Projects/atlas",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "repo_overview",
+       "args": {
+        "path": "~/Projects/atlas"
+       }
+      }
+     ],
+     "text": "I'll take a look at the repo."
+    }
+   ]
+  },
+  {
+   "phrase": "what is the repo at ~/Projects/atlas",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "repo_overview",
+       "args": {
+        "path": "~/Projects/atlas"
+       }
+      }
+     ],
+     "text": "I'll take a look."
+    }
+   ]
+  },
+  {
+   "phrase": "open my atlas project, it's in ~/Projects/atlas",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "open_workspace",
+       "args": {
+        "path": "~/Projects/atlas"
+       }
+      }
+     ],
+     "text": "I'll open it in VS Code and check its git state."
+    }
+   ]
+  },
+  {
+   "phrase": "let's get to work on ~/Projects/atlas",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "repo_overview",
+       "args": {
+        "path": "~/Projects/atlas"
+       }
+      }
+     ],
+     "text": "I'll take a look at the project first."
+    }
+   ]
+  },
+  {
+   "phrase": "let's get to work on ~/Projects/atlas",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "repo_overview",
+       "args": {
+        "path": "~/Projects/atlas"
+       }
+      }
+     ],
+     "text": "I'll take a look at the project first."
+    }
+   ]
+  },
+  {
+   "phrase": "open my atlas project, it's in ~/Projects/atlas",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "open_workspace",
+       "args": {
+        "path": "~/Projects/atlas"
+       }
+      }
+     ],
+     "text": "I'll open it in VS Code and check its git state."
+    }
+   ]
+  },
+  {
+   "phrase": "search for best ramen in Austin",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "web_search",
+       "args": {
+        "query": "best ramen in Austin"
+       }
+      }
+     ],
+     "text": "I'll open that search for you."
+    }
+   ]
+  },
+  {
+   "phrase": "search for best ramen in Austin",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "web_search",
+       "args": {
+        "query": "best ramen in Austin"
+       }
+      }
+     ],
+     "text": "I'll open that search for you."
+    }
+   ]
+  },
+  {
+   "phrase": "pull the latest in ~/Projects/atlas",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "git_sync",
+       "args": {
+        "path": "~/Projects/atlas",
+        "action": "pull"
+       }
+      }
+     ],
+     "text": "I'll pull the latest into atlas."
+    }
+   ]
+  },
+  {
+   "phrase": "google mechanical keyboards",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "web_search",
+       "args": {
+        "query": "mechanical keyboards",
+        "engine": "google"
+       }
+      }
+     ],
+     "text": "I'll search that for you."
+    }
+   ]
+  },
+  {
+   "phrase": "google mechanical keyboards",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "web_search",
+       "args": {
+        "query": "mechanical keyboards",
+        "engine": "google"
+       }
+      }
+     ],
+     "text": "I'll open that search for you."
+    }
+   ]
+  },
+  {
+   "phrase": "research heat pumps for me",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "research_topic",
+       "args": {
+        "topic": "heat pumps"
+       }
+      }
+     ],
+     "text": "I'll open a few starting points for you."
+    }
+   ]
+  },
+  {
+   "phrase": "research heat pumps for me",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "research_topic",
+       "args": {
+        "topic": "heat pumps"
+       }
+      }
+     ],
+     "text": "I'll open a few starting points for you."
+    }
+   ]
+  },
+  {
+   "phrase": "I want to read up on the Byzantine empire",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "research_topic",
+       "args": {
+        "topic": "Byzantine Empire"
+       }
+      }
+     ],
+     "text": "I'll open a few starting points for you."
+    }
+   ]
+  },
+  {
+   "phrase": "I want to read up on the Byzantine empire",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "research_topic",
+       "args": {
+        "topic": "Byzantine Empire"
+       }
+      }
+     ],
+     "text": "I'll open a few starting points for you."
+    }
+   ]
+  },
+  {
+   "phrase": "open the issues for facebook/react on github",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "github_open",
+       "args": {
+        "repo": "facebook/react",
+        "section": "issues"
+       }
+      }
+     ],
+     "text": "I'll open that for you."
+    }
+   ]
+  },
+  {
+   "phrase": "look up ephemeral in the dictionary",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "define_term",
+       "args": {
+        "term": "ephemeral",
+        "source": "dictionary"
+       }
+      }
+     ],
+     "text": "I'll open that for you."
+    }
+   ]
+  },
+  {
+   "phrase": "look up ephemeral in the dictionary",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "define_term",
+       "args": {
+        "term": "ephemeral",
+        "source": "dictionary"
+       }
+      }
+     ],
+     "text": "I'll open that up for you."
+    }
+   ]
+  },
+  {
+   "phrase": "open the issues for facebook/react on github",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "github_open",
+       "args": {
+        "repo": "facebook/react",
+        "section": "issues"
+       }
+      }
+     ],
+     "text": "I'll open that now."
+    }
+   ]
+  },
+  {
+   "phrase": "show me the definition of sanguine",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "define_term",
+       "args": {
+        "term": "sanguine"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "show me the definition of sanguine",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "define_term",
+       "args": {
+        "term": "sanguine"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "show me the pull requests on torvalds linux",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "github_open",
+       "args": {
+        "repo": "torvalds/linux",
+        "section": "pulls"
+       }
+      }
+     ],
+     "text": "I'll open that for you."
+    }
+   ]
+  },
+  {
+   "phrase": "show me the pull requests on torvalds linux",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "github_open",
+       "args": {
+        "repo": "torvalds/linux",
+        "section": "pulls"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "save what I copied to my notes file",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "clipboard_to_note",
+       "args": {}
+      }
+     ],
+     "text": "I'll grab the clipboard and append it."
+    }
+   ]
+  },
+  {
+   "phrase": "save what I copied to my notes file",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "clipboard_to_note",
+       "args": {}
+      }
+     ],
+     "text": "I'll grab the clipboard and append it to your notes file."
+    }
+   ]
+  },
+  {
+   "phrase": "stash what I just copied somewhere so I don't lose it",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "clipboard_to_note",
+       "args": {}
+      }
+     ],
+     "text": "I'll drop it into your clipboard notes file."
+    }
+   ]
+  },
+  {
+   "phrase": "stash what I just copied somewhere so I don't lose it",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "clipboard_to_note",
+       "args": {}
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "save my clipboard as a file called quote.txt in Documents",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "clipboard_to_file",
+       "args": {
+        "path": "~/Documents/quote.txt"
+       }
+      }
+     ],
+     "text": "I'll check what's on the clipboard and save it."
+    }
+   ]
+  },
+  {
+   "phrase": "save the content of https://example.com/article so I have it",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "save_page_notes",
+       "args": {
+        "url": "https://example.com/article"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "save the content of https://example.com/article so I have it",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "save_page_notes",
+       "args": {
+        "url": "https://example.com/article"
+       }
+      }
+     ],
+     "text": "I'll fetch that page and save its text as a Markdown file."
+    }
+   ]
+  },
+  {
+   "phrase": "put what I copied into its own file",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "clipboard_to_file",
+       "args": {}
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "keep a copy of the text of https://en.wikipedia.org/wiki/Entropy",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "save_page_notes",
+       "args": {
+        "url": "https://en.wikipedia.org/wiki/Entropy"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "keep a copy of the text of https://en.wikipedia.org/wiki/Entropy",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "save_page_notes",
+       "args": {
+        "url": "https://en.wikipedia.org/wiki/Entropy"
+       }
+      }
+     ],
+     "text": "I'll fetch that page and save its text as a Markdown file."
+    }
+   ]
+  },
+  {
+   "phrase": "save my clipboard as a file called quote.txt in Documents",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "get_clipboard",
+       "args": {}
+      }
+     ],
+     "text": "I'll check what's on the clipboard first, then save it."
+    },
+    {
+     "calls": [
+      {
+       "name": "clipboard_to_file",
+       "args": {
+        "path": "~/Documents/quote.txt"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "add https://example.com/long-read to my reading list",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "read_later",
+       "args": {
+        "url": "https://example.com/long-read"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "I copied a link, hang on to it for me to read later",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "read_later",
+       "args": {}
+      }
+     ],
+     "text": "I'll grab it off the clipboard and add it to your reading list."
+    }
+   ]
+  },
+  {
+   "phrase": "add https://example.com/long-read to my reading list",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "read_later",
+       "args": {
+        "url": "https://example.com/long-read"
+       }
+      }
+     ],
+     "text": "I'll add that to your reading list."
+    }
+   ]
+  },
+  {
+   "phrase": "put what I copied into its own file",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "clipboard_to_file",
+       "args": {}
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "I copied a link, hang on to it for me to read later",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "read_later",
+       "args": {}
+      }
+     ],
+     "text": "I'll grab it off the clipboard and add it to your reading list."
+    }
+   ]
+  },
+  {
+   "phrase": "give me a scratch python file to try something",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "code_scratchpad",
+       "args": {
+        "language": "python"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "give me a scratch python file to try something",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "code_scratchpad",
+       "args": {
+        "language": "python"
+       }
+      }
+     ],
+     "text": "I'll make you a scratch Python file and open it in VS Code."
+    }
+   ]
+  },
+  {
+   "phrase": "I want somewhere quick to mess around with some typescript",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "code_scratchpad",
+       "args": {
+        "language": "typescript"
+       }
+      }
+     ],
+     "text": "I'll make you a TypeScript scratch file and open it in VS Code."
+    }
+   ]
+  },
+  {
+   "phrase": "I want somewhere quick to mess around with some typescript",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "code_scratchpad",
+       "args": {
+        "language": "typescript"
+       }
+      }
+     ],
+     "text": "I'll make you a TypeScript scratch file and open it in VS Code."
+    }
+   ]
+  },
+  {
+   "phrase": "open Calculator",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "open_app",
+       "args": {
+        "name": "Calculator"
+       }
+      }
+     ],
+     "text": "I'll open Calculator for you."
+    }
+   ]
+  },
+  {
+   "phrase": "turn it down a bit",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "set_volume",
+       "args": {
+        "change": -15
+       }
+      }
+     ],
+     "text": "I'll turn the volume down."
+    }
+   ]
+  },
+  {
+   "phrase": "open Calculator",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "open_app",
+       "args": {
+        "name": "Calculator"
+       }
+      }
+     ],
+     "text": "I'll open Calculator for you."
+    }
+   ]
+  },
+  {
+   "phrase": "turn it down a bit",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "set_volume",
+       "args": {
+        "change": -15
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
   }
  ]
 }
