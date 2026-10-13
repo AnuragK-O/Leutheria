@@ -1,6 +1,8 @@
-import subprocess
+from agent.core import bounded
 
 
 def get_clipboard() -> dict:
-    result = subprocess.run(["pbpaste"], capture_output=True, text=True)
-    return {"ok": True, "text": result.stdout}
+    code, stdout, stderr = bounded.run(["pbpaste"], timeout=5.0)
+    if code != 0:
+        return {"ok": False, "error": stderr or "could not read the clipboard"}
+    return {"ok": True, "text": stdout}

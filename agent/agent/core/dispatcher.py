@@ -1,5 +1,8 @@
 import asyncio
+import inspect
 import json
+import threading
+import traceback
 import uuid
 
 from agent.core import preferences, session, trust, ui_access
@@ -8,7 +11,23 @@ from agent.core.tts import speak
 from agent.skills.registry import SKILLS
 from agent.tools.registry import TOOLS
 
-CONFIRMATION_TIMEOUT = 120  # seconds -- an unanswered prompt is treated as declined
+# Seconds -- an unanswered prompt is treated as declined. Read at call time,
+# so a check can shorten it (scripts/dispatch_loop_check.py).
+CONFIRMATION_TIMEOUT = 120
+
+# Tools whose "refuses to overwrite" / "can only add" guarantee is a check
+# followed by a write. When every tool ran inline on the event loop no two of
+# them could interleave; on worker threads they can (two commands in flight,
+# or a command and a timer). These take one lock for the length of the call,
+# so among themselves they are exactly as serial as they always were. Readers
+# and the network tools are not on it and run freely alongside.
+_FS_WRITERS = frozenset(
+    {
+        "append_text", "copy_file", "create_folder", "extract_archive", "move_file",
+        "take_screenshot", "trash_file", "write_new_file", "zip_folder",
+    }
+)
+_fs_write_lock = threading.Lock()
 
 
 async def dispatch(
@@ -32,7 +51,7 @@ async def dispatch(
         allowed, error = await _check_scope(tool_name, tool, args, websocket, pending, intro_text)
         if not allowed:
             return {"ok": False, "error": error}
-        return _run_tool(tool, args)
+        return await _run_tool(tool_name, tool, args)
 
     # Built-in policy: destructive tools ask, everything else doesn't. Skills
     # default to not asking because each of their *steps* dispatches back
@@ -59,14 +78,98 @@ async def dispatch(
     if skill is not None:
         return await skill["fn"](args, websocket, pending)
 
-    return _run_tool(tool, args)
+    return await _run_tool(tool_name, tool, args)
 
 
-def _run_tool(tool: dict, args: dict) -> dict:
+async def _in_worker(tool_name: str, fn, args: dict):
+    """Run a synchronous tool function on a thread of its own and wait for it
+    without blocking the event loop.
+
+    A daemon thread per call rather than a ThreadPoolExecutor, for two
+    reasons. The interpreter joins every pool worker at exit, so one tool
+    stuck in a slow call (a 120 s zip, a five minute command) would hold the
+    agent open after it was told to quit; a daemon thread is abandoned
+    instead, which is also what core/bounded.py already does. And there is
+    no queue: a slow tool never delays an unrelated one behind it.
+
+    If the awaiting task is cancelled (its connection went away, the agent is
+    shutting down) the thread is not interrupted -- Python can't -- it runs to
+    its own timeout and its result is dropped. Every tool is bounded for
+    exactly that reason, run_command included.
+    """
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+
+    def deliver(value, error) -> None:
+        if future.done():  # the waiter was cancelled; nobody wants this
+            return
+        if error is not None:
+            future.set_exception(error)
+        else:
+            future.set_result(value)
+
+    def work() -> None:
+        value, error = None, None
+        try:
+            if tool_name in _FS_WRITERS:
+                with _fs_write_lock:
+                    value = fn(**args)
+            else:
+                value = fn(**args)
+        except Exception as e:
+            error = e
+        except BaseException as e:  # SystemExit and friends must not escape as themselves
+            error = RuntimeError(f"{type(e).__name__}: {e}")
+        try:
+            loop.call_soon_threadsafe(deliver, value, error)
+        except RuntimeError:
+            pass  # the loop closed while the tool was running
+
+    threading.Thread(target=work, name=f"tool-{tool_name}", daemon=True).start()
+    return await future
+
+
+async def _run_tool(tool_name: str, tool: dict, args: dict) -> dict:
+    """Call a tool function and always come back with a result.
+
+    Where it runs is declared by the tool's registry entry:
+
+      (default)         a worker thread, so a slow tool can't stall the read
+                        loop, confirmations, control messages or the voice
+                        session;
+      "thread": "main"  inline on the event-loop thread, for the few tools
+                        that only work there (see the comments on those
+                        entries in tools/registry.py);
+      an `async def`    awaited on the loop.
+
+    Any exception becomes {"ok": False, "error": ...} and is logged as
+    tool_error with its traceback -- a tool that raises is a bug in the tool,
+    but it must not take the request (or, from a skill, the whole skill) down
+    with it. asyncio.CancelledError is not an Exception and passes through.
+    """
+    fn = tool["fn"]
     try:
-        return tool["fn"](**args)
-    except TypeError as e:
-        return {"ok": False, "error": str(e)}
+        if inspect.iscoroutinefunction(fn):
+            result = await fn(**args)
+        elif tool.get("thread") == "main":
+            result = fn(**args)
+        else:
+            result = await _in_worker(tool_name, fn, args)
+        if inspect.isawaitable(result):
+            result = await result
+    except Exception as e:
+        log_event(
+            "tool_error",
+            tool=tool_name,
+            error=f"{type(e).__name__}: {e}",
+            traceback=traceback.format_exc(limit=8),
+        )
+        # A TypeError is nearly always the model's arguments not fitting the
+        # function, and Python's own message says which one.
+        if isinstance(e, TypeError):
+            return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": f"{tool_name} failed: {type(e).__name__}: {e}"}
+    return result
 
 
 def _scope_target(tool: dict, args: dict) -> str:
@@ -169,6 +272,19 @@ async def _confirm(tool_name: str, args: dict, websocket, pending: dict, intro_t
         result = await asyncio.wait_for(future, timeout=CONFIRMATION_TIMEOUT)
         return bool(result.get("approved")), result.get("remember")
     except asyncio.TimeoutError:
+        # Tell the UIs, the same way a spoken or clicked answer does, so every
+        # card settles on one event instead of staying live until the
+        # command's reply happens to arrive (NOTES #7). Sent through the
+        # socket the card went out on, so it is mirrored to overlays as well.
+        log_event("confirmation_timed_out", id=confirmation_id, tool=tool_name)
+        try:
+            await websocket.send(
+                json.dumps(
+                    {"type": "confirmation_resolved", "id": confirmation_id, "approved": False, "by": "timeout"}
+                )
+            )
+        except Exception:
+            pass  # the window that asked is gone; the decline stands regardless
         return False, None
     finally:
         pending.pop(confirmation_id, None)

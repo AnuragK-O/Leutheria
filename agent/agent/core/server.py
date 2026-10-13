@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import signal
 import uuid
 
 import websockets
@@ -14,6 +15,7 @@ from agent.core.logging_util import log_event
 from agent.core.tts import speak
 from agent.core.voice_confirm import interpret_yes_no
 from agent.skills.registry import register_skill
+from agent.tools import run_command as run_command_tool
 
 HOST = "127.0.0.1"
 # Overridable so a test server can run beside the real app without fighting
@@ -588,7 +590,31 @@ async def _read_loop(websocket, connection: dict):
         _in_background(process_command(entry_socket, payload, pending, pending_skills))
 
 
+def _terminate() -> None:
+    """SIGTERM (Electron quitting, `pkill`): kill any shell command still in
+    flight, then die exactly as an unhandled SIGTERM would. run_command gives
+    each command its own process group so a timeout can kill all of it; the
+    other side of that is that nothing else takes it down with the agent."""
+    killed = run_command_tool.kill_running()
+    if killed:
+        log_event("shutdown_killed_commands", count=killed)
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    os.kill(os.getpid(), signal.SIGTERM)
+
+
 async def main():
+    try:
+        asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, _terminate)
+    except (NotImplementedError, RuntimeError, ValueError):
+        pass  # not the main thread, or no signal support: nothing to clean up after
+    try:
+        await _serve()
+    finally:
+        # Ctrl-C when run standalone arrives here as a cancellation.
+        run_command_tool.kill_running()
+
+
+async def _serve():
     async with websockets.serve(handler, HOST, PORT, max_size=MAX_MESSAGE_SIZE):
         # The voice session starts whether or not it's enabled -- disabled it
         # just sits in "off" until set_voice_settings or a manual start. It
