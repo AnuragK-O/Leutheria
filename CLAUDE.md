@@ -60,6 +60,12 @@ pkill -if "python -m agent"; pkill -f "Electron.app"
 ./.venv/bin/python scripts/overlay_protocol_check.py    # overlay role, real server on a spare port
 ./.venv/bin/python scripts/skills_check_system.py       # system tools + skills; volume/media/banners/speech stubbed
 ./.venv/bin/python scripts/voice_server_check.py        # real server + real LLM; speaks aloud, needs API key
+./.venv/bin/python scripts/skills_e2e_check.py --scripted   # agent_loop + dispatch in a sandbox home, written plans, no model
+./.venv/bin/python scripts/skills_routing_check.py --report # routing table from the committed cache, no model
+
+# These two call the REAL MODEL and cost money: every request carries the whole tool list (~22,700 input tokens)
+./.venv/bin/python scripts/skills_routing_check.py      # phrase -> which capability; nothing dispatched; answers cached
+./.venv/bin/python scripts/skills_e2e_check.py          # 18 requests end to end in the sandbox home
 
 # Qt overlay (needs `brew install qt ninja`)
 cmake -S overlay-qt -B overlay-qt/build -G Ninja -DCMAKE_PREFIX_PATH=/opt/homebrew/opt/qt

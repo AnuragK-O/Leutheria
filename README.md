@@ -165,6 +165,13 @@ agent/                Python sidecar
     skills_check_dev.py  Dev / web / clipboard tools and skills through the real
                        dispatch(): temp HOME, stubbed browser/app/clipboard, fetch_url
                        against a local http.server, git in temp repos (no API key needed)
+    skills_routing_check.py  REAL MODEL, costs money: ~140 spoken phrasings, each sent as
+                       one first turn with the real tool list; records which capability
+                       the model reaches for. Nothing is dispatched. Cached per phrase.
+    skills_routing_cache.json  That check's cached answers (committed, so --report is free)
+    skills_e2e_check.py  REAL MODEL, costs money: 18 requests (with follow-ups and
+                       refusals) through agent_loop + dispatch in a sandbox home;
+                       --scripted replays written plans with no model and no cost
   .venv/              Virtualenv (gitignored)
   agent/
     core/
@@ -1005,6 +1012,59 @@ is a temp dir, the browser/app launches and the clipboard are recorders, `fetch_
 against a local `http.server` (redirect chains and loops, a 5 MB body, a gzip bomb, binary
 types, a stalled and a dripping response, refused schemes and hosts), and git runs in temp
 repositories.
+
+#### Routing and end-to-end checks (these call the real model)
+
+The three domain checks above prove each capability works when called. They say nothing
+about whether a spoken request reaches the right one, which is the part a user meets. Two
+more scripts cover that. Both send the whole tool list on every request (91 capabilities,
+about 22,700 input tokens), so both cost real money; neither is part of the routine suite.
+
+```bash
+cd agent
+./.venv/bin/python scripts/skills_routing_check.py            # ask whatever isn't cached yet
+./.venv/bin/python scripts/skills_routing_check.py --report   # table from the cache, free
+./.venv/bin/python scripts/skills_routing_check.py --only pomodoro,quick_timer
+./.venv/bin/python scripts/skills_routing_check.py --payload  # size of the tool list, free
+
+./.venv/bin/python scripts/skills_e2e_check.py --scripted     # no model: sandbox + assertions
+./.venv/bin/python scripts/skills_e2e_check.py                # real model, all scenarios
+./.venv/bin/python scripts/skills_e2e_check.py timers git_commit
+```
+
+**`skills_routing_check.py`** holds two natural phrasings per skill (at least one that
+avoids the skill's name), one per directly-askable tool, and a set of negatives where a
+similar-sounding capability must not be chosen ("create a note called X" must not reach a
+file-writing skill, BUGS.md #16). Each phrase is sent twice as a single first turn, built
+exactly as `agent_loop.run()` builds it, and the tool calls are recorded and thrown away:
+no tool function runs. A first turn that only looks (`file_info`, `get_clipboard`,
+`git_status`, `repo_overview`...) is answered with a canned result and given one more turn,
+so a look-before-acting is scored on what it goes on to do. Each case names the right
+route, any alternative accepted and why, and what is forbidden; the report gives hit /
+alt / UNSTABLE / MISS per phrase and per capability, then the confusions. Answers are
+cached in `skills_routing_cache.json`, keyed by phrase, run and a hash of the whole prompt
+surface, so editing any description makes the next run ask again (`--stale-ok` scores old
+answers anyway, marked `*`). After changing a description, rerun that capability and its
+neighbours with `--only`: the point is to show the confusion went away, not moved.
+
+**`skills_e2e_check.py`** drives `agent_loop.run()` and the real `dispatch()`, so skills
+run their real steps, and asserts on the effect: files in the sandbox, what the recorders
+saw, and a reply that is non-empty, free of markdown and says what happened. Scenarios
+span the three domains and include follow-ups that only work if the conversation carries
+over ("zip that up too", "now open it in VS Code", "cancel the ten minute one") and three
+refusals (a file that already exists, a folder that doesn't, `open_file` on a script)
+where the reply must say it did not happen. Because a model chooses what gets called,
+isolation is structural rather than trusted: `HOME` is a temp dir rebuilt per scenario and
+the process chdirs into it; every tool function is wrapped so a path outside the sandbox
+is refused and fails the scenario; a tool with no entry in the script's policy table is
+refused; `run_command` never reaches a shell (only allowlisted `git` against a sandbox
+repository runs, as an argv list; everything else is declined at the confirmation); GUI
+tools are declined; launchers, banners, speech, media keys, volume, clipboard, Spotlight,
+`fetch_url`, screenshots and the Trash are recorders or stand-ins; weather uses a canned
+local server; timers are real with the clock moved forward. A sandbox self-test runs
+before any model call. `--scripted` swaps the backend for one that replays each
+scenario's written plan: it proves the sandbox and the assertions for free and is safe to
+run any time, but says nothing about what the model would choose.
 
 ### Automatic skill learning
 
