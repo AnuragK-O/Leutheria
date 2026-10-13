@@ -6,7 +6,7 @@ import uuid
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-from agent.core import agent_loop, audio_io, control, skill_learning, voice_session, voice_settings
+from agent.core import agent_loop, audio_io, control, skill_learning, voice_session, voice_settings, ws_auth
 from agent.core.audio_input import transcribe_payload
 from agent.core.dispatcher import dispatch
 from agent.core.llm_anthropic import AnthropicBackend
@@ -24,6 +24,19 @@ PORT = int(os.environ.get("LEUTHERIA_PORT", "8765"))
 # but push-to-talk still uploads whole recorded clips as base64, and a long
 # recording can approach the default too.
 MAX_MESSAGE_SIZE = 20 * 1024 * 1024  # 20 MiB
+
+# {"tool": ..., "args": ...} runs one tool directly, with no model in between.
+# No real client sends it -- the app sends text and audio -- so it is off
+# unless this is set: a debugging and check-script door, not a product one.
+# It was the shortest path in security review C1 (connect, name run_command,
+# approve your own confirmation). The socket is authenticated now, and the
+# safety tiers apply to a manual dispatch exactly as to a model's tool call,
+# but a door nobody uses is closed anyway. Read once, at startup.
+MANUAL_DISPATCH_ENV = "LEUTHERIA_MANUAL_DISPATCH"
+MANUAL_DISPATCH = os.environ.get(MANUAL_DISPATCH_ENV) == "1"
+_MANUAL_DISPATCH_DISABLED = (
+    f"manual tool dispatch is disabled (start the agent with {MANUAL_DISPATCH_ENV}=1 to enable it for debugging)"
+)
 
 _backend = None
 
@@ -210,6 +223,9 @@ async def handle_message(payload: dict, websocket, pending: dict) -> dict:
     safety tiering applies either way. A destructive tool pauses mid-flight
     for a live yes/no over the same connection (step 5) -- see dispatch()."""
     if "tool" in payload:
+        if not MANUAL_DISPATCH:
+            log_event("manual_dispatch_refused", tool=str(payload["tool"])[:80])
+            return {"type": "error", "text": _MANUAL_DISPATCH_DISABLED}
         result = await dispatch(payload["tool"], payload.get("args", {}), websocket, pending)
         log_event("tool_call", tool=payload["tool"], args=payload.get("args", {}), result=result)
         return {"type": "tool_result", "tool": payload["tool"], "result": result}
@@ -588,8 +604,39 @@ async def _read_loop(websocket, connection: dict):
         _in_background(process_command(entry_socket, payload, pending, pending_skills))
 
 
+def serve(auth: "ws_auth.Auth", port: int = None):
+    """The one way this server is put on a socket: loopback only, and never
+    without the handshake check (ws_auth). Anything that serves `handler` --
+    main() below, a check script -- goes through here, so there is no second
+    call site to forget the authentication on."""
+    return websockets.serve(
+        handler,
+        HOST,
+        PORT if port is None else port,
+        max_size=MAX_MESSAGE_SIZE,
+        process_request=ws_auth.make_process_request(auth),
+        # Not secret, but no reason to tell an unauthenticated prober what
+        # is listening here either.
+        server_header=None,
+    )
+
+
 async def main():
-    async with websockets.serve(handler, HOST, PORT, max_size=MAX_MESSAGE_SIZE):
+    # Before the socket exists. A failure here (an unusable token, nowhere
+    # private to write one) stops the agent: there is no unauthenticated mode
+    # to fall back to.
+    try:
+        auth = ws_auth.configure(PORT)
+    except ws_auth.AuthConfigError as e:
+        log_event("ws_auth_error", error=str(e))
+        raise SystemExit(f"agent: {e}")
+    log_event(
+        "ws_auth",
+        source=auth.source,
+        token_file=str(auth.token_file) if auth.token_file else None,
+        manual_dispatch=MANUAL_DISPATCH,
+    )
+    async with serve(auth):
         # The voice session starts whether or not it's enabled -- disabled it
         # just sits in "off" until set_voice_settings or a manual start. It
         # owns its own failures (no mic, model download failed): they're
@@ -598,7 +645,10 @@ async def main():
             start_voice_session()
         except Exception as e:
             log_event("voice_error", stage="startup", error=str(e))
-        print(f"AGENT_READY ws://{HOST}:{PORT}", flush=True)
+        # One line, and AGENT_READY first: main.js and the check scripts key
+        # on it. auth= names the mode (and the token file's path, which is
+        # not secret) -- never the token.
+        print(f"AGENT_READY ws://{HOST}:{PORT} auth={auth.describe()}", flush=True)
         await asyncio.Future()  # run forever
 
 
