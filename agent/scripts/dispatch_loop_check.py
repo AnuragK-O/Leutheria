@@ -385,6 +385,48 @@ check(not runner.is_alive() and holder["result"]["ok"] is False and time.monoton
       "...and kills it; the call returns as a failure")
 check(run_command_tool.kill_running() == 0 and not run_command_tool._running, "nothing is left tracked")
 
+# The same on the way out for real: a child process with the server's own
+# SIGTERM handler installed (no port, no voice session) and a command running.
+SIGTERM_PROBE = """
+import asyncio, signal, sys, threading
+sys.path.insert(0, sys.argv[1])
+from agent.core import logging_util
+from pathlib import Path
+logging_util.LOG_DIR = Path(sys.argv[2]) / "logs"
+logging_util.LOG_FILE = logging_util.LOG_DIR / "events.jsonl"
+from agent.core import server
+from agent.tools.run_command import run_command
+
+async def main():
+    asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, server._terminate)
+    threading.Thread(target=run_command, args=(sys.argv[3],), daemon=True).start()
+    print("READY", flush=True)
+    await asyncio.sleep(60)
+
+asyncio.run(main())
+"""
+pid_file = TMP / "sigterm-child.pid"
+probe = subprocess.Popen(
+    [sys.executable, "-c", SIGTERM_PROBE, str(AGENT_DIR), str(TMP), f"sleep 60 & echo $! > '{pid_file}'; wait"],
+    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+)
+try:
+    check(probe.stdout.readline().strip() == "READY", "a process with the server's SIGTERM handler is up, with a command in flight")
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and not (pid_file.exists() and pid_file.read_text().strip()):
+        time.sleep(0.05)
+    grandchild = int(pid_file.read_text())
+    check(pid_alive(grandchild), "its command's child process is running")
+    probe.send_signal(15)
+    code = probe.wait(10)
+    time.sleep(0.3)
+    check(code == -15, "on SIGTERM the agent still dies by SIGTERM, promptly (exit status unchanged for Electron)")
+    check(not pid_alive(grandchild), "...and takes the running command's processes with it")
+    check(events("shutdown_killed_commands")[-1]["count"] == 1, "logged as shutdown_killed_commands")
+finally:
+    if probe.poll() is None:
+        probe.kill()
+
 description = TOOLS["run_command"]["description"]
 check("5 minutes" in description and "1800" in description, "the description tells the model about the limit")
 check("timeout_s" in TOOLS["run_command"]["input_schema"]["properties"]
