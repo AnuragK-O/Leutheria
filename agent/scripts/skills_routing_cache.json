@@ -1,0 +1,40 @@
+{
+ "entries": [
+  {
+   "phrase": "set a timer for ten minutes",
+   "run": 0,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "quick_timer",
+       "args": {
+        "duration": "10 minutes"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  },
+  {
+   "phrase": "set a timer for ten minutes",
+   "run": 1,
+   "surface": "a47887d7cc67",
+   "turns": [
+    {
+     "calls": [
+      {
+       "name": "quick_timer",
+       "args": {
+        "duration": "10 minutes"
+       }
+      }
+     ],
+     "text": ""
+    }
+   ]
+  }
+ ]
+}
