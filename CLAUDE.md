@@ -18,6 +18,11 @@ skill-learning generation — goes through `loop.run_in_executor`, or it stalls 
 (including confirmations and management messages). The model is reached only through
 `core/llm.py:LLMBackend` (`llm_anthropic.py` is the one implementation); callers depend on
 the interface, and multi-turn tool loops live in `agent_loop.py`, not the backend.
+Every call carries all ~91 tool and skill definitions (~21k tokens), so the backend puts a
+prompt-cache breakpoint on the last tool; without a cache hit a call costs about $0.11 of
+input. Keep the tool list's order deterministic, never add per-request text to a tool
+definition, and run `llm_cache_check.py` after changing how the prompt is assembled — a
+cache miss raises no error, it just costs ten times as much.
 
 `README.md` is the detailed reference (full wire protocol per message type, tool table,
 troubleshooting). Read the relevant section there before changing protocol or agent internals.
@@ -61,6 +66,7 @@ pkill -if "python -m agent"; pkill -f "Electron.app"
 ./.venv/bin/python scripts/skills_check_system.py       # system tools + skills; volume/media/banners/speech stubbed
 ./.venv/bin/python scripts/voice_server_check.py        # real server + real LLM; speaks aloud, needs API key
 ./.venv/bin/python scripts/skills_e2e_check.py --scripted   # agent_loop + dispatch in a sandbox home, written plans, no model
+./.venv/bin/python scripts/llm_cache_check.py          # REAL MODEL, ~$0.15: is the tool list being read from the prompt cache?
 ./.venv/bin/python scripts/skills_routing_check.py --report # routing table from the committed cache, no model
 
 # These two call the REAL MODEL and cost money: every request carries the whole tool list (~22,700 input tokens)
