@@ -134,8 +134,8 @@ async def through_dispatch(name, args):
     return result, sock.asked
 
 
-def tool(name, **args):
-    return TOOLS[name]["fn"](**args)
+def tool(tool_name, **args):
+    return TOOLS[tool_name]["fn"](**args)
 
 
 # --- open_url -----------------------------------------------------------------
@@ -245,8 +245,117 @@ def check_open_url():
     check("Web pages only" in description and "open_file" in description, "the description says web pages only and names open_file")
 
 
+# --- open_app -----------------------------------------------------------------
+
+def make_bundle(path: Path, executable: bool = True, display_name: str = None) -> Path:
+    """A fake .app. Its 'program' is a text file that is never run."""
+    import plistlib
+
+    macos = path / "Contents" / "MacOS"
+    macos.mkdir(parents=True)
+    binary = macos / path.stem
+    binary.write_text("#!/bin/sh\necho this fixture is never run\n")
+    binary.chmod(0o755 if executable else 0o644)
+    info = {"CFBundleExecutable": path.stem, "CFBundleName": path.stem, "CFBundlePackageType": "APPL"}
+    if display_name:
+        info["CFBundleDisplayName"] = display_name
+    with open(path / "Contents" / "Info.plist", "wb") as f:
+        plistlib.dump(info, f)
+    return path
+
+
+def check_open_app():
+    section("open_app: a name, resolved to an installed bundle (C3)")
+    downloads = TMP / "app_case" / "Downloads"
+    evil = make_bundle(downloads / "pkg" / "Evil.app")
+    refused = [
+        (str(evil), "a bundle path in Downloads"),
+        ("/Applications/Safari.app", "a bundle path, even an installed one"),
+        ("/System/Applications/Utilities/Terminal.app", "another bundle path"),
+        ("~/Downloads/pkg/Evil.app", "a home-relative bundle path"),
+        ("../../Downloads/pkg/Evil", "a .. path"),
+        ("Utilities/../../Users/Shared/Evil", "a path through a real folder"),
+        ("..", "just .."),
+        ("Safari/../Evil", "a slash in the name"),
+        ("Macintosh HD:Applications:Safari", "an HFS-style path"),
+        ("-n", "option -n"),
+        ("-W", "option -W"),
+        ("--args", "--args"),
+        ("-a Terminal", "option with a value"),
+        ("-b com.apple.Terminal", "a bundle id option"),
+        ("Safari\x00.app", "a NUL in the name"),
+        ("Saf\nari", "a newline in the name"),
+        ("Safari\x1b", "an escape in the name"),
+        ("", "an empty name"),
+        ("   ", "only spaces"),
+        (None, "None"),
+        (["Safari"], "a list"),
+        ("A" * 300, "a very long name"),
+        ("Evil", "a name that is only in Downloads"),
+        ("No Such Application Anywhere", "a name that does not resolve"),
+        ("run.command", "a script's name"),
+    ]
+    for value, label in refused:
+        launches.clear()
+        result = tool("open_app", name=value)
+        check(result.get("ok") is False and result.get("error") and launches == [], f"refuses {label}: {result.get('error')[:60]}")
+    check("never a path" in tool("open_app", name=str(evil))["error"], "a refused path says a name is needed")
+
+    for name, expected in [
+        ("Safari", "/Applications/Safari.app"),
+        ("safari", "/Applications/Safari.app"),
+        ("Safari.app", "/Applications/Safari.app"),
+        ("TextEdit", "/System/Applications/TextEdit.app"),
+        ("textedit.APP", "/System/Applications/TextEdit.app"),
+        ("Text Edit", "/System/Applications/TextEdit.app"),
+        ("Calculator", "/System/Applications/Calculator.app"),
+        ("Terminal", "/System/Applications/Utilities/Terminal.app"),
+        ("Finder", "/System/Library/CoreServices/Finder.app"),
+    ]:
+        launches.clear()
+        result = tool("open_app", name=name)
+        check(result.get("ok") is True and launches == [["open", "-a", expected]], f"{name!r} launches exactly {launches}")
+    import inspect
+
+    check(list(inspect.signature(open_app_mod.open_app).parameters) == ["name"]
+          and list(TOOLS["open_app"]["input_schema"]["properties"]) == ["name"],
+          "open_app takes one argument, so it cannot be handed a document")
+
+    # The lookup itself, against roots this script controls.
+    system_root = TMP / "app_case" / "SystemApps"
+    user_root = TMP / "app_case" / "UserApps"
+    make_bundle(system_root / "Notes.app")
+    make_bundle(system_root / "Vendor" / "Suite Tool.app")
+    make_bundle(system_root / "VoiceMemos.app", display_name="Voice Memos")
+    make_bundle(system_root / "Host.app" / "Contents" / "Helpers" / "Hidden.app")
+    make_bundle(system_root / "Vendor" / "Deeper" / "TooDeep.app")
+    make_bundle(user_root / "Notes.app")
+    make_bundle(user_root / "Mine.app")
+    user_root.joinpath("Planted.app").symlink_to(evil)
+    user_root.joinpath("LinkedFolder").symlink_to(downloads / "pkg")
+    system_root.joinpath("Alias.app").symlink_to(system_root / "Notes.app")
+    real_roots = open_app_mod.app_roots
+    open_app_mod.app_roots = lambda: [system_root, user_root]
+    try:
+        resolve = open_app_mod.resolve_app
+        check(resolve("notes")[0] == str(system_root / "Notes.app"), "the system folder wins over ~/Applications for the same name")
+        check(resolve("Mine")[0] == str(user_root / "Mine.app"), "an app only in ~/Applications resolves there")
+        check(resolve("Suite Tool")[0] == str(system_root / "Vendor" / "Suite Tool.app"), "an app in a vendor folder resolves")
+        check(resolve("Voice Memos")[0] == str(system_root / "VoiceMemos.app"), "a spaced name matches VoiceMemos.app")
+        check(resolve("Alias")[0] == str(system_root / "Alias.app"), "a link to a bundle inside the roots is fine (Safari is one)")
+        check(resolve("Planted")[0] is None, "a link in ~/Applications to a bundle in Downloads is refused")
+        check(resolve("Evil")[0] is None, "and so is that bundle through a linked folder")
+        check(resolve("Hidden")[0] is None, "an app inside another app's bundle is not an installed application")
+        check(resolve("TooDeep")[0] is None, "nor is one two folders down")
+    finally:
+        open_app_mod.app_roots = real_roots
+    description = TOOLS["open_app"]["description"]
+    check("never a path" in description and "open_file" in description, "the description says name only")
+
+
 SECTIONS = {
     "open_url": check_open_url,
+    "open_app": check_open_app,
 }
 
 

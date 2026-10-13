@@ -71,7 +71,13 @@ TOOLS = {
     "open_app": {
         "fn": open_app,
         "safety": "safe",
-        "description": "Open a macOS application by its name.",
+        "description": (
+            "Launch an installed macOS application by its name, for example Safari or "
+            "Visual Studio Code. It takes a name only, never a path, and only launches "
+            "applications installed in the Applications folders; anything else is refused. "
+            "It cannot hand the application a file: use open_file to open a document and "
+            "open_with to open one in a particular application."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
