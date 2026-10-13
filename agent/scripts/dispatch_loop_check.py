@@ -487,5 +487,187 @@ finally:
     subprocess.run = real_run
 check(bounded.run(["true"])[0] == 0, "the real subprocess.run is back")
 
+
+# --- 6. old-tool defects (NOTES #10) ----------------------------------------------
+print("\n# take_screenshot never overwrites (the capture itself is a fake)")
+from agent.tools import take_screenshot as shot_tool  # noqa: E402
+
+captures = []
+capture_mode = {"mode": "ok"}
+
+
+def fake_capture(path):
+    captures.append(str(path))
+    if capture_mode["mode"] == "timeout":
+        raise subprocess.TimeoutExpired(["screencapture"], shot_tool.TIMEOUT)
+    if capture_mode["mode"] == "denied":
+        return subprocess.CompletedProcess([], 1, "", "could not create image from display")
+    if capture_mode["mode"] == "empty":
+        return subprocess.CompletedProcess([], 0, "", "")
+    Path(path).write_bytes(b"\x89PNG new shot")
+    return subprocess.CompletedProcess([], 0, "", "")
+
+
+REAL_CAPTURE = shot_tool._capture
+shot_tool._capture = fake_capture
+REAL_HOME = os.environ.get("HOME")
+os.environ["HOME"] = str(TMP / "home")
+(TMP / "home").mkdir()
+
+
+class PinnedClock:
+    @staticmethod
+    def now():
+        from datetime import datetime
+        return datetime(2026, 10, 13, 9, 0, 0)
+
+
+REAL_DATETIME = shot_tool.datetime
+shot_tool.datetime = PinnedClock
+try:
+    shots = TMP / "shots"
+    target = shots / "one.png"
+    first = shot_tool.take_screenshot(str(target))
+    check(first == {"ok": True, "path": str(target)} and target.read_bytes() == b"\x89PNG new shot",
+          "a new save_path is written, parent folder created, result shape unchanged")
+    target.write_bytes(b"the user's own picture")
+    count = len(captures)
+    again = shot_tool.take_screenshot(str(target))
+    check(again.get("ok") is False and "refusing to overwrite" in again["error"], f"an existing save_path is refused: {again['error']}")
+    check(target.read_bytes() == b"the user's own picture" and len(captures) == count,
+          "...the existing file is untouched and the screen was not even captured")
+    link = shots / "link.png"
+    link.symlink_to(shots / "elsewhere.png")
+    check(shot_tool.take_screenshot(str(link)).get("ok") is False and not (shots / "elsewhere.png").exists(),
+          "a dangling symlink is not followed to create a file somewhere else")
+    check(shot_tool.take_screenshot(str(shots)).get("ok") is False, "a folder at save_path is refused")
+    check(shot_tool.take_screenshot(str(target / "under-a-file.png")).get("ok") is False, "a path under a file is a clean error")
+    check(shot_tool.take_screenshot("  ").get("ok") is False and shot_tool.take_screenshot(5).get("ok") is False,
+          "a blank or non-text save_path is a clean error")
+
+    desktop = TMP / "home" / "Desktop"
+    a = shot_tool.take_screenshot()
+    b = shot_tool.take_screenshot()
+    check(a["path"] == str(desktop / "screenshot-20261013-090000.png") and b["path"] == str(desktop / "screenshot-20261013-090000 (2).png"),
+          "the default Desktop name gets a free suffix for a second shot in the same second")
+    check(Path(a["path"]).is_file() and Path(b["path"]).is_file(), "...and both files exist")
+
+    for mode_name, needle in (("denied", "could not create image"), ("timeout", "did not finish"), ("empty", "empty")):
+        capture_mode["mode"] = mode_name
+        failed_path = shots / f"{mode_name}.png"
+        result = shot_tool.take_screenshot(str(failed_path))
+        check(result.get("ok") is False and needle in result["error"] and not failed_path.exists(),
+              f"capture {mode_name}: clean error, and no empty file is left behind")
+    capture_mode["mode"] = "ok"
+
+    async def screenshot_through_dispatch():
+        from agent.skills import files_common as common
+
+        real_now = common.now
+        common.now = PinnedClock.now
+        try:
+            folder = TMP / "home" / "Pictures" / "Shots"
+            one = await dispatch("screenshot_to_folder", {"folder": str(folder)})
+            two = await dispatch("screenshot_to_folder", {"folder": str(folder)})
+        finally:
+            common.now = real_now
+        check(one.get("ok") and two.get("ok") and one["path"] != two["path"]
+              and Path(one["path"]).is_file() and Path(two["path"]).is_file(),
+              f"screenshot_to_folder still works on the real tool: {Path(one.get('path', '?')).name}, {Path(two.get('path', '?')).name}")
+        refused = await dispatch("take_screenshot", {"save_path": one["path"]})
+        check(refused.get("ok") is False and "refusing to overwrite" in refused["error"], "through dispatch: an existing file is refused")
+
+    asyncio.run(screenshot_through_dispatch())
+finally:
+    shot_tool._capture = REAL_CAPTURE
+    shot_tool.datetime = REAL_DATETIME
+
+print("\n# create_folder returns errors instead of raising")
+create_folder = TOOLS["create_folder"]["fn"]
+plain_file = TMP / "home" / "a-file"
+plain_file.write_text("x")
+result = create_folder(str(plain_file))
+check(result.get("ok") is False and "is a file" in result["error"] and plain_file.read_text() == "x",
+      f"a file at the path: {result['error'].replace(str(TMP), '')}")
+result = create_folder(str(plain_file / "inside"))
+check(result.get("ok") is False and "error" in result, "a file where a parent folder should be is a clean error too")
+check(create_folder(str(TMP / "home" / "new" / "deep")) == {"ok": True, "message": f"created {TMP / 'home' / 'new' / 'deep'}"}
+      and create_folder(str(TMP / "home" / "new" / "deep")).get("ok") is True,
+      "a new folder, and an existing one, still succeed with the same result")
+check(create_folder("").get("ok") is False and create_folder("x" * 2000).get("ok") is False, "an empty or impossible path is a clean error")
+
+
+async def setup_project_checks():
+    print("\n# setup_project: every step through dispatch, every value quoted")
+    import shlex
+
+    ran = []
+    real_run_command = TOOLS["run_command"]["fn"]
+    TOOLS["run_command"]["fn"] = lambda cmd: (ran.append(cmd), {"ok": True, "stdout": "", "stderr": ""})[1]
+    base = TMP / "home" / "Projects"
+    try:
+        pending = {}
+        socket = FakeSocket(pending, answer=True)
+        result = await dispatch("setup_project", {"name": "atlas", "base_dir": str(base)}, socket, pending)
+        root = base / "atlas"
+        check(result.get("ok") is True and root.is_dir()
+              and result["message"] == f"Project 'atlas' created at {root}, git initialized, and opened in VS Code.",
+              "a normal name works as before, same message")
+        check([s["tool"] for s in result["steps"]] == ["create_folder", "run_command", "run_command"]
+              and all(s["result"].get("ok") for s in result["steps"]), "same three steps in the same order")
+        check(ran == [f"cd {root} && git init", f'open -a "Visual Studio Code" {root}'], f"the commands: {ran}")
+        check(len(socket.of_type("confirmation_required")) == 2, "git init and opening the editor each asked for confirmation")
+
+        home_default = await dispatch("setup_project", {"name": "My App_2.0"}, FakeSocket(pending, answer=True), pending)
+        default_root = TMP / "home" / "Projects" / "My App_2.0"
+        check(home_default.get("ok") and default_root.is_dir() and shlex.split(ran[-2]) == ["cd", str(default_root), "&&", "git", "init"],
+              "the default ~/Projects is expanded, and a name with a space is one shell word")
+
+        # create_folder now goes through dispatch, so the Library's switch applies.
+        preferences.set_preference("create_folder", enabled=False)
+        ran.clear()
+        blocked = await dispatch("setup_project", {"name": "blocked", "base_dir": str(base)}, FakeSocket(pending, answer=True), pending)
+        preferences.clear("create_folder")
+        check(blocked.get("ok") is False and "disabled" in blocked["error"] and not (base / "blocked").exists() and ran == [],
+              "with create_folder switched off the skill stops there: nothing created, nothing run")
+
+        (base / "taken").write_text("a file")
+        clash = await dispatch("setup_project", {"name": "taken", "base_dir": str(base)}, FakeSocket(pending, answer=True), pending)
+        check(clash.get("ok") is False and "is a file" in clash["error"] and ran == [], "a file of that name is a clean failure of the first step")
+
+        for bad in ['a"b', "$(touch pwned)", "`id`", "a/b", "../up", ".hidden", "-rf", "", "x; rm -rf ~", "it's"]:
+            ran.clear()
+            refused = await dispatch("setup_project", {"name": bad, "base_dir": str(base)}, FakeSocket(pending, answer=True), pending)
+            if not (refused.get("ok") is False and refused["steps"] == [] and ran == [] and "plain folder name" in refused["error"]):
+                check(False, f"name {bad!r} should be refused before anything runs")
+        check(True, "ten names that are paths or shell syntax are refused before any step runs")
+        check(sorted(p.name for p in base.iterdir()) == ["My App_2.0", "atlas", "taken"], "and none of them created anything")
+
+        # base_dir is free text. Prove the quoting by letting a real shell read it.
+        TOOLS["run_command"]["fn"] = real_run_command
+        hostile = TMP / "home" / 'odd "dir" $(touch pwned) `touch pwned2` $HOME; it\'s'
+        ran_real = []
+
+        def recording(cmd):
+            ran_real.append(cmd)
+            if cmd.endswith("&& git init"):  # run the cd for real, but not git
+                return real_run_command(cmd[: -len("git init")] + "pwd")
+            return {"ok": True, "stdout": "", "stderr": ""}
+
+        TOOLS["run_command"]["fn"] = recording
+        odd = await dispatch("setup_project", {"name": "proj", "base_dir": str(hostile)}, FakeSocket(pending, answer=True), pending)
+        landed = odd["steps"][1]["result"]["stdout"]
+        check(odd.get("ok") is True and landed == str(hostile / "proj"), "a base_dir full of quotes, $() and backticks: the shell cd'd to exactly that folder")
+        check(shlex.split(ran_real[1]) == ["open", "-a", "Visual Studio Code", str(hostile / "proj")], "...and the open command names it as one word")
+        strays = [p for p in TMP.rglob("pwned*")] + [p for p in Path.cwd().glob("pwned*")]
+        check(strays == [], "nothing embedded in it was executed")
+    finally:
+        TOOLS["run_command"]["fn"] = real_run_command
+
+
+asyncio.run(setup_project_checks())
+if REAL_HOME is not None:
+    os.environ["HOME"] = REAL_HOME
+
 shutil.rmtree(TMP, ignore_errors=True)
 print(f"\nall {passed} checks passed")
