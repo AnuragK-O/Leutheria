@@ -3,6 +3,8 @@
 #include <QJsonDocument>
 #include <QJsonParseError>
 #include <QLoggingCategory>
+#include <QNetworkRequest>
+#include <QRegularExpression>
 
 #include <algorithm>
 
@@ -24,6 +26,14 @@ AgentClient::AgentClient(QUrl url, Backoff backoff, QObject *parent)
     connect(&m_socket, &QWebSocket::connected, this, &AgentClient::onConnected);
     connect(&m_socket, &QWebSocket::stateChanged, this, &AgentClient::onStateChanged);
     connect(&m_socket, &QWebSocket::textMessageReceived, this, &AgentClient::onTextMessage);
+    connect(&m_socket, &QWebSocket::errorOccurred, this, &AgentClient::onError);
+}
+
+QByteArray AgentClient::takeTokenFromEnvironment()
+{
+    const QByteArray token = qgetenv("LEUTHERIA_TOKEN").trimmed();
+    qunsetenv("LEUTHERIA_TOKEN");
+    return token;
 }
 
 AgentClient::~AgentClient()
@@ -44,18 +54,73 @@ void AgentClient::start()
 void AgentClient::open()
 {
     qCDebug(lcClient) << "connecting to" << m_url.toString();
-    m_socket.open(m_url);
+    // A QNetworkRequest rather than the bare URL, to carry the token. No
+    // Origin header is added: QWebSocket only sends one when constructed
+    // with a non-empty origin, m_socket isn't, and the agent refuses any
+    // handshake that has one (tst_agentclient asserts both).
+    QNetworkRequest request(m_url);
+    if (!m_token.isEmpty())
+        request.setRawHeader("Authorization", "Bearer " + m_token);
+    m_socket.open(request);
 }
 
 void AgentClient::onConnected()
 {
     qCInfo(lcClient) << "connected to" << m_url.toString();
     m_retryDelay = m_backoff.initial;
+    m_rejectionLogged = false;
+    m_authRejected = false;
     // Identify first, before anything else can be sent: the agent uses this to
     // keep the overlay from ever becoming the primary (reply-receiving) client.
     sendJson({{QStringLiteral("type"), QStringLiteral("hello")},
               {QStringLiteral("role"), QStringLiteral("overlay")}});
     setConnected(true);
+}
+
+// The agent answers a handshake it won't accept with a plain HTTP 401 (no or
+// wrong token) or 403 (an Origin header) instead of the upgrade. That is not
+// "the agent isn't up yet": say so, once per run of failures, and go
+// straight to the slowest retry -- the token can't become right on its own,
+// but the agent may be restarted with one that matches, so don't give up.
+//
+// QWebSocket has no status-code accessor, so this reads its error text,
+// which was measured (Qt 6.11.2), not assumed:
+//   403 -> "...processHandshake: Unhandled http status code: 403 (Forbidden)."
+//   401 -> "...processHandshake: Unsupported WWW-Authenticate challenges
+//          encountered." -- no status code at all: Qt tries to answer the
+//          challenge itself and only knows Basic/Digest-style ones.
+// Both arrive as errorOccurred *before* the UnconnectedState change, which
+// is what lets the delay set here apply to the very next retry. Any other
+// processHandshake failure (a different status, not a WebSocket server) is
+// also "something answered and said no", and gets the same slow retry.
+void AgentClient::onError(QAbstractSocket::SocketError)
+{
+    const QString text = m_socket.errorString();
+    if (!text.contains(QLatin1String("processHandshake"))) {
+        // Refused, timed out, dropped: the ordinary backoff applies.
+        m_authRejected = false;
+        return;
+    }
+    m_authRejected = true;
+    m_retryDelay = m_backoff.max;
+    if (m_rejectionLogged)
+        return;
+    m_rejectionLogged = true;
+    static const QRegularExpression forbidden(QStringLiteral("\\b403\\b"));
+    static const QRegularExpression unauthorized(QStringLiteral("\\b401\\b|WWW-Authenticate"));
+    if (unauthorized.match(text).hasMatch()) {
+        qCWarning(lcClient).noquote()
+            << "the agent refused the connection (HTTP 401):"
+            << (m_token.isEmpty() ? "no token -- LEUTHERIA_TOKEN is not set in this process's environment;"
+                                  : "LEUTHERIA_TOKEN is not the token that agent was started with;")
+            << "retrying every" << m_backoff.max.count() << "ms";
+    } else if (forbidden.match(text).hasMatch()) {
+        qCWarning(lcClient) << "the agent refused the connection (HTTP 403); retrying every"
+                            << m_backoff.max.count() << "ms";
+    } else {
+        qCWarning(lcClient).noquote() << "the agent refused the connection (" + text + "); retrying every"
+                                      << m_backoff.max.count() << "ms";
+    }
 }
 
 // Driven off stateChanged rather than disconnected()/errorOccurred(): a
