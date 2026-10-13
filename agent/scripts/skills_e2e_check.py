@@ -277,6 +277,11 @@ def _stub_gui(tool):
 
 
 GIT_ALLOWED = {"init", "add", "commit", "status", "log", "diff", "branch", "pull", "push"}
+# Options are an allowlist too: --upload-pack, --output and friends would let
+# a git command run a program or write a file of its choosing.
+GIT_FLAGS = {"-A", "-a", "-m", "-am", "-q", "--quiet", "--all", "--porcelain", "--short", "--ff-only",
+             "--oneline", "--stat", "--"}
+GIT_FLAG_PATTERN = re.compile(r"-\d+|-n|--(format|pretty)=[%\w :,.-]*")
 
 
 def plan_command(cmd: str):
@@ -311,6 +316,12 @@ def plan_command(cmd: str):
                 return None, "git outside a sandbox repository"
             if not rest or rest[0] not in GIT_ALLOWED:
                 return None, f"git {rest[0] if rest else ''} is not run in this test"
+            message_next = False
+            for token in rest[1:]:
+                if not message_next and token.startswith("-") and token not in GIT_FLAGS \
+                        and not GIT_FLAG_PATTERN.fullmatch(token):
+                    return None, f"git option {token} is not run in this test"
+                message_next = token in ("-m", "-am")
         elif seg[:2] == ["open", "-a"] and len(seg) == 4:
             if not in_sandbox(seg[3]):
                 return None, "open outside the sandbox"
@@ -332,7 +343,9 @@ def _guarded_run_command(cmd: str) -> dict:
         elif seg[0] == "open":
             Rec.launches.append(seg)
         else:
-            done = subprocess.run(seg, cwd=cwd, capture_output=True, text=True, timeout=30)
+            # No shell, so "~" is expanded here; -C is the only place a path is accepted.
+            argv = [str(Path(t).expanduser()) if i == 2 and seg[1] == "-C" else t for i, t in enumerate(seg)]
+            done = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=30)
             out.append(done.stdout.strip())
             if done.returncode != 0:
                 return {"ok": False, "stdout": "\n".join(out), "stderr": done.stderr.strip()}
@@ -983,6 +996,49 @@ async def run_scenario(name, build, backend, scripted, verbose):
     timers.reset()
 
 
+async def sandbox_holds():
+    """Before any model is asked: the walls this script relies on, tried
+    directly. Costs nothing and runs every time."""
+    build_home()
+    Rec.reset()
+    pending = {}
+    socket = FakeSocket(pending)
+    outside = REAL_HOME / "Desktop" / "leutheria-e2e-must-not-exist.txt"
+
+    async def call(tool, **args):
+        return await dispatcher.dispatch(tool, args, socket, pending)
+
+    result = await call("write_new_file", path=str(outside), content="x")
+    check(result["ok"] is False and not outside.exists(), "sandbox: a write to the real Desktop is refused")
+    result = await call("move_file", source="~/Documents/plan.md", destination=str(outside))
+    check(result["ok"] is False and (HOME / "Documents" / "plan.md").exists(), "sandbox: a move out of the sandbox is refused")
+    result = await call("list_files", path=str(REAL_HOME / "Documents"))
+    check(result["ok"] is False, "sandbox: even listing a real folder is refused")
+    result = await call("read_file", path="../../../../../../etc/hosts")
+    check(result["ok"] is False, "sandbox: a relative path that climbs out is refused")
+    check(len(Rec.violations) == 4, "sandbox: each of those was recorded as a violation")
+    Rec.violations.clear()
+    for cmd in ("echo hi > ~/Documents/plan.md", "rm -rf ~/Documents", f"git -C {shlex.quote(str(AGENT_DIR))} status",
+                "git -C ~/Projects/atlas status; rm -rf ~", "cd ~/Projects/atlas && git config --global user.name x",
+                "git -C ~/Projects/atlas commit -m \"$(whoami)\"", "open ~/Documents/run-me.command",
+                "sh ~/Documents/run-me.command", "git -C ~/Projects/atlas pull --upload-pack=/bin/sh",
+                "git -C ~/Projects/atlas log --output=/tmp/x", "git clone https://github.com/pallets/flask ~/Projects/flask"):
+        result = await call("run_command", cmd=cmd)
+        check(result["ok"] is False and "declined" in result.get("error", ""), f"sandbox: declined at the prompt: {cmd[:60]}")
+    check((HOME / "Documents" / "plan.md").read_text().startswith("ORIGINAL PLAN") and Rec.commands == [],
+          "sandbox: none of them ran")
+    result = await call("run_command", cmd="git -C ~/Projects/atlas status --porcelain")
+    check(result["ok"] and "app.py" in result["stdout"], "sandbox: git inside a sandbox repository does run")
+    for tool, args in (("focus_app", {"name": "Notes"}), ("type_text", {"text": "x"}), ("press_keys", {"keys": "cmd+n"})):
+        result = await call(tool, **args)
+        check(result["ok"] is False and Rec.gui == [], f"sandbox: {tool} is declined and never reaches the keyboard")
+    result = await call("trash_file", path="~/Desktop/todo.txt")
+    check(result["ok"] and not (REAL_HOME / ".Trash" / "todo.txt").exists() and len(list((TMP / "Trash").iterdir())) == 1,
+          "sandbox: trash_file moves into the sandbox's own Trash")
+    shutil.rmtree(TMP / "Trash")
+    check(Rec.violations == [], "sandbox: a declined command is not a violation; reaching the tool with one would be")
+
+
 def real_machine_untouched(before) -> None:
     after = {name: sorted(p.name for p in (REAL_HOME / name).iterdir()) if (REAL_HOME / name).exists() else None
              for name in ("Desktop", "Downloads", "Documents")}
@@ -1021,6 +1077,8 @@ def main():
         backend = AnthropicBackend()
 
     async def everything():
+        print("# sandbox", flush=True)
+        await sandbox_holds()
         for name, domain, build in SCENARIOS:
             if args.names and name not in args.names:
                 continue
