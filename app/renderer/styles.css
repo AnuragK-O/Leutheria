@@ -1494,6 +1494,26 @@ kbd {
   --cut-bg: color-mix(in srgb, var(--amber) 12%, var(--surface));
 }
 
+/* A settings file the agent couldn't read: a full-width notice under the
+   heading bar, on the views whose settings it affects. */
+.settings-errors {
+  flex: none;
+  border-width: 0 0 var(--hair) 0;
+  border-left: var(--rule) solid var(--tone);
+  padding-left: var(--s5);
+}
+
+.settings-errors-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.settings-errors-text strong {
+  font-weight: 600;
+  color: var(--red);
+}
+
 /* --- views ------------------------------------------------------------------------ */
 
 .view {
@@ -1839,6 +1859,58 @@ kbd {
   font-size: var(--fs-xl);
   font-weight: 500;
   overflow-wrap: anywhere;
+}
+
+/* why this confirmation asks, when the agent says */
+.prompt-reason {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: var(--fs-md);
+  color: var(--text-2);
+}
+
+.prompt-reason-key,
+.needs-click-key {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+/* A spoken yes won't approve this one. A state (it waits on a click), so
+   amber with an indicator and a rule, not a caption. */
+.needs-click {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 6px 10px;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: color-mix(in srgb, var(--amber) 8%, var(--surface));
+  border-left: var(--rule) solid var(--amber);
+}
+
+.needs-click-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--amber);
+}
+
+.needs-click-key::before {
+  content: "";
+  width: var(--led);
+  height: var(--led);
+  background: var(--amber);
+}
+
+.prompt-card.resolved .needs-click {
+  display: none;
 }
 
 .prompt-actions {

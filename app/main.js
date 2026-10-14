@@ -154,10 +154,13 @@ function invalidateInventory() {
   sendToMain("inventory-changed");
 }
 
-function confirmRequest(id, tool, args) {
+function confirmRequest(id, tool, args, reason, voiceApprovable) {
   // Both windows get it: the main window draws the full four-way card, the
   // overlay a compact Approve/Decline one (only while a session is live).
-  broadcast("confirm-request", { id, tool, args });
+  // reason: why this one asks (optional). voice_approvable: false means a
+  // spoken yes won't approve it -- it needs a click. Older agents send
+  // neither; the cards treat that as no reason and voice-approvable.
+  broadcast("confirm-request", { id, tool, args, reason: reason || null, voice_approvable: voiceApprovable !== false });
 }
 
 function skillProposed(id, name, description, steps, uncertainParams) {
@@ -645,7 +648,7 @@ function connectToAgent() {
     if (payload.type === "confirmation_required") {
       // Mid-flight pause -- don't clear pendingIsChat, the real final
       // reply is still coming once this is answered.
-      confirmRequest(payload.id, payload.tool, payload.args);
+      confirmRequest(payload.id, payload.tool, payload.args, payload.reason, payload.voice_approvable);
       captureWindows("confirm-card");
       return;
     }

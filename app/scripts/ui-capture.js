@@ -196,7 +196,15 @@ async function runTheme(theme) {
 
   if (!REAL_URL) {
     const mock = spawn(process.execPath, [path.join(__dirname, "mock-agent.js")], {
-      env: { ...process.env, MOCK_PORT: String(MOCK_PORT), MOCK_AUTOSTART: "0", MOCK_CONFIRM_TIMEOUT_MS: "15000" },
+      env: {
+        ...process.env,
+        MOCK_PORT: String(MOCK_PORT),
+        MOCK_AUTOSTART: "0",
+        MOCK_CONFIRM_TIMEOUT_MS: "15000",
+        MOCK_TIMEOUT_MS: "2500",
+        // The second theme's session asks for a click, not a spoken yes.
+        MOCK_VOICE_APPROVABLE: theme === THEMES[0] ? "1" : "0",
+      },
       stdio: "ignore",
     });
     children.push(mock);
@@ -290,6 +298,24 @@ async function runTheme(theme) {
     await main.eval(`document.getElementById("chat-scroll").scrollTop = 1e6`);
     await main.shot(file("proposal-saved"));
 
+    // A confirmation nobody answers: a 300-character command, a reason, and
+    // voice_approvable:false; the agent times it out (by:"timeout").
+    await main.eval(typeCommand("let this one timeout"));
+    check(
+      `[${theme}] a confirmation shows its reason and that it needs a click`,
+      (await main.waitFor(`[...document.querySelectorAll("#chat .prompt-card.confirm")].pop()?.querySelector(".needs-click")`)) &&
+        (await main.eval(`/outside your usual folders/.test([...document.querySelectorAll("#chat .prompt-card.confirm")].pop().querySelector(".prompt-reason")?.textContent || "")`))
+    );
+    await main.eval(`document.getElementById("chat-scroll").scrollTop = 1e6`);
+    await main.shot(file("confirm-card-long-needs-click"));
+    check(
+      `[${theme}] a timed-out confirmation says so and settles`,
+      (await main.waitFor(`/Timed out with no answer/.test([...document.querySelectorAll("#chat .prompt-card.confirm")].pop().querySelector(".prompt-resolved")?.textContent || "")`, 6000)) &&
+        (await main.waitFor(`[...document.querySelectorAll("#chat .msg-body")].some((n) => /didn't run it/.test(n.textContent))`))
+    );
+    await main.eval(`document.getElementById("chat-scroll").scrollTop = 1e6`);
+    await main.shot(file("confirm-timeout"));
+
     // --- library
     await main.eval(clickNav(NAV.library));
     check(`[${theme}] library lists the catalog`, await main.waitFor(`document.querySelectorAll("#library-list .list-row").length >= 13`));
@@ -329,6 +355,26 @@ async function runTheme(theme) {
     check(`[${theme}] search with no matches says so`, await main.eval(`/No matches/.test(document.getElementById("library-list").textContent)`));
     await main.shot(file("library-no-matches"));
     await main.eval(setInput("#view-actions .search input", ""));
+
+    // --- a settings file the agent couldn't read (inventory.settings_errors)
+    await main.eval(clickNav(NAV.assistant));
+    await main.eval(typeCommand("break settings"));
+    await main.waitFor(`[...document.querySelectorAll("#chat .msg-body")].some((n) => /unreadable/.test(n.textContent))`);
+    await main.eval(`LX.app.refresh()`);
+    await main.eval(clickNav(NAV.library));
+    check(`[${theme}] a settings error heads the Library`, await main.waitFor(`!document.getElementById("settings-errors").hidden && /preferences.json/.test(document.getElementById("settings-errors").textContent)`));
+    await main.shot(file("library-settings-error"));
+    await main.eval(clickNav(NAV.permissions));
+    check(`[${theme}] ...and Permissions`, await main.eval(`!document.getElementById("settings-errors").hidden`));
+    await main.shot(file("permissions-settings-error"));
+    await main.eval(clickNav(NAV.activity));
+    check(`[${theme}] ...and not the other views`, await main.eval(`document.getElementById("settings-errors").hidden`));
+    await main.eval(clickNav(NAV.assistant));
+    await main.eval(typeCommand("fix settings"));
+    await main.waitFor(`[...document.querySelectorAll("#chat .msg-body")].some((n) => /reads again/.test(n.textContent))`);
+    await main.eval(`LX.app.refresh()`);
+    await main.eval(clickNav(NAV.library));
+    check(`[${theme}] the notice clears when the file is fixed`, await main.waitFor(`document.getElementById("settings-errors").hidden`));
 
     // --- activity
     await main.eval(clickNav(NAV.activity));
@@ -432,8 +478,18 @@ async function runTheme(theme) {
           await overlay.shot(file(`overlay-${state}`));
         }
         const cardUp = await overlay.eval(`!document.getElementById("confirm").hidden && document.querySelectorAll("#confirm-actions button").length === 2`);
-        if (cardUp && !answered) {
+        // Answer only once the session is waiting on it, so the reticle's
+        // awaiting_confirmation state is reached and captured first.
+        if (cardUp && !answered && state === "awaiting_confirmation") {
           answered = true;
+          check(
+            `[${theme}] the overlay card's hint matches voice_approvable`,
+            await overlay.eval(
+              theme === THEMES[0]
+                ? `!document.getElementById("confirm-hint").classList.contains("click-only")`
+                : `document.getElementById("confirm-hint").classList.contains("click-only") && !document.getElementById("confirm-reason").hidden`
+            )
+          );
           await overlay.shot(file("overlay-confirm-card"));
           await main.eval(`document.getElementById("chat-scroll").scrollTop = 1e6`);
           await main.shot(file("voice-session-confirm"));
@@ -450,11 +506,12 @@ async function runTheme(theme) {
               await overlay.waitFor(`/main window/.test(document.querySelector(".ov-confirm-resolved")?.textContent || "")`)
             );
           }
+          check(`[${theme}] a settled overlay card goes neutral`, await overlay.eval(`document.getElementById("confirm").classList.contains("resolved")`));
           await overlay.shot(file("overlay-confirm-settled"));
         }
         await sleep(150);
       }
-      const expected = ["listening", "hearing", "transcribing", "thinking", "speaking"];
+      const expected = ["listening", "hearing", "transcribing", "thinking", "speaking", "awaiting_confirmation"];
       check(`[${theme}] overlay showed every state`, expected.every((state) => seen.has(state)), [...seen].join(", "));
       check(`[${theme}] the session's confirmation was answered`, answered);
       check(

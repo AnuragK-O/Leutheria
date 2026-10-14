@@ -42,6 +42,15 @@
    - MOCK_CONFIRM_TIMEOUT_MS (default 20000): how long the scripted session
      waits for a click before "answering by voice".
    - MOCK_LOOP=1: run the scripted session again after each one ends.
+   - MOCK_VOICE_APPROVABLE=0: the scripted session's confirmation carries
+     voice_approvable:false (a spoken yes won't do), so when nobody clicks it
+     times out -- confirmation_resolved {"by":"timeout"} -- instead of being
+     "answered by voice".
+   - Typed command containing "timeout": a confirmation with a long command,
+     a reason and voice_approvable:false that nobody answers; after
+     MOCK_TIMEOUT_MS (default 3000) it is resolved {"approved":false,
+     "by":"timeout"} and a reply says it wasn't run. "break settings" /
+     "fix settings": add or clear the inventory's settings_errors.
 
    More permissive than the real agent in one way: with only an overlay
    connected (no UI), the scripted confirmation is still shown to it, so the
@@ -60,6 +69,8 @@ if (PORT === 8765) {
 const AUTOSTART = process.env.MOCK_AUTOSTART !== "0";
 const LOOP = process.env.MOCK_LOOP === "1";
 const CONFIRM_TIMEOUT_MS = Number(process.env.MOCK_CONFIRM_TIMEOUT_MS || 20000);
+const TIMEOUT_MS = Number(process.env.MOCK_TIMEOUT_MS || 3000);
+const VOICE_APPROVABLE = process.env.MOCK_VOICE_APPROVABLE !== "0";
 
 let settings = {
   enabled: true,
@@ -189,7 +200,14 @@ async function runSession(trigger) {
   // click during the spoken prompt below is a real answer, not a no-op.
   let answered = null;
   waitForConfirm(id).then((value) => (answered = { value }));
-  toSession({ type: "confirmation_required", id, tool: "run_command", args });
+  toSession({
+    type: "confirmation_required",
+    id,
+    tool: "run_command",
+    args,
+    reason: "It deletes files, and run_command always asks.",
+    voice_approvable: VOICE_APPROVABLE,
+  });
   const prompt = "I want to delete the build folder in your demo project. Should I go ahead?";
   toSession({ type: "speaking", state: "started", text: prompt, duration_ms: 2600 });
   if (!(await step("speaking", 2600))) return;
@@ -201,7 +219,11 @@ async function runSession(trigger) {
   if (!alive()) return;
 
   let approved = answered.value;
-  if (approved === null) {
+  if (approved === null && !VOICE_APPROVABLE) {
+    // A spoken yes can't approve this one, and nobody clicked.
+    toSession({ type: "confirmation_resolved", id, approved: false, by: "timeout" });
+    approved = false;
+  } else if (approved === null) {
     // Nobody clicked: pretend the user said "yeah, go ahead".
     approved = true;
     toSession({ type: "confirmation_resolved", id, approved, by: "voice" });
@@ -365,6 +387,35 @@ async function handleMessage(client, message) {
       if (/error/i.test(text)) {
         await sleep(300);
         converse(client, { type: "error", text: "The model call failed: connection reset. Nothing was run." });
+        return;
+      }
+      if (/break settings/i.test(text)) {
+        fixtures.inventory.settings_errors = [fixtures.SETTINGS_ERROR];
+        converse(client, { type: "response", text: "Mock: preferences.json is now unreadable.", trace: [] });
+        return;
+      }
+      if (/fix settings/i.test(text)) {
+        delete fixtures.inventory.settings_errors;
+        converse(client, { type: "response", text: "Mock: preferences.json reads again.", trace: [] });
+        return;
+      }
+      if (/timeout/i.test(text)) {
+        const id = uid();
+        pttConfirm = { id, client };
+        converse(client, {
+          type: "confirmation_required",
+          id,
+          tool: "run_command",
+          args: { cmd: fixtures.LONG_COMMAND, cwd: "~/Projects/demo" },
+          reason: "It writes outside your usual folders.",
+          voice_approvable: false,
+        });
+        await sleep(TIMEOUT_MS);
+        if (!pttConfirm || pttConfirm.id !== id) return; // answered in time
+        pttConfirm = null;
+        converse(client, { type: "confirmation_resolved", id, approved: false, by: "timeout" });
+        for (const other of overlays()) send(other, { type: "confirmation_resolved", id, approved: false, by: "timeout" });
+        converse(client, { type: "response", text: "Nobody answered, so I didn't run it.", trace: [] });
         return;
       }
       if (/confirm/i.test(text)) {

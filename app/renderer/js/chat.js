@@ -116,7 +116,18 @@
     );
   }
 
-  function addConfirmCard({ id, tool, args }) {
+  // How a confirmation was settled from outside this card. Anything not
+  // listed still settles the card, with a neutral line.
+  function outcomeText(approved, by) {
+    if (by === "timeout") return "Timed out with no answer. It wasn't run.";
+    // "ui" here means the Electron overlay's card (main.js relays its click);
+    // "overlay" is the native Qt overlay, answered over its own connection.
+    const how =
+      by === "voice" ? " by voice" : by === "ui" || by === "overlay" ? " from the overlay" : by === "user" || !by ? " by you" : "";
+    return `${approved ? "Approved" : "Declined"}${how}.`;
+  }
+
+  function addConfirmCard({ id, tool, args, reason, voice_approvable }) {
     const card = el("div.prompt-card.confirm");
     // The tool's safety tier, when the catalog has loaded: why it's asking.
     const inventory = LX.state && LX.state.inventory;
@@ -138,6 +149,14 @@
       {},
       el("div.prompt-lead", {}, "Leutheria wants to run ", el("b", { text: tool }), ". This one always asks first."),
       el("div.code-block", { text: `${tool}(${formatArgs(args, 400) || ""})` }),
+      reason && el("div.prompt-reason", {}, el("span.prompt-reason-key", { text: "Why" }), el("span", { text: reason })),
+      voice_approvable === false &&
+        el(
+          "div.needs-click",
+          {},
+          el("span.needs-click-key", { text: "Needs a click" }),
+          el("span", { text: "A spoken yes won't approve this one." })
+        ),
       actions
     );
     card.appendChild(body);
@@ -200,10 +219,7 @@
   function resolveConfirmCard({ id, approved, by }) {
     const settle = confirmCards.get(id);
     if (!settle) return;
-    // "ui" here means the Electron overlay's card (main.js relays its click);
-    // "overlay" is the native Qt overlay, answered over its own connection.
-    const how = by === "voice" ? "by voice" : by === "ui" || by === "overlay" ? "from the overlay" : "by you";
-    settle(`${approved ? "Approved" : "Declined"} ${how}.`, approved);
+    settle(outcomeText(approved, by), approved && by !== "timeout");
   }
 
   // --- skill proposal card -----------------------------------------------

@@ -66,7 +66,30 @@
     subtitleEl.textContent = (mod && mod.subtitle ? mod.subtitle() : view.subtitle) || "";
   }
 
+  // inventory.settings_errors: the agent couldn't read a settings file (say,
+  // a corrupt preferences.json) and is running on defaults. It matters where
+  // those settings are shown and changed, so it heads those two views.
+  const settingsErrorsEl = document.getElementById("settings-errors");
+  const SETTINGS_VIEWS = ["library", "permissions"];
+
+  function renderSettingsErrors() {
+    const errors = (LX.state.inventory && LX.state.inventory.settings_errors) || [];
+    const show = errors.length > 0 && SETTINGS_VIEWS.includes(current);
+    settingsErrorsEl.hidden = !show;
+    if (!show) return;
+    settingsErrorsEl.replaceChildren(
+      icon("warning"),
+      el(
+        "div.settings-errors-text",
+        {},
+        el("strong", { text: errors.length === 1 ? "A settings file couldn't be read" : "Settings files couldn't be read" }),
+        ...errors.map((text) => el("span", { text }))
+      )
+    );
+  }
+
   function renderActions() {
+    renderSettingsErrors();
     const view = VIEWS.find((entry) => entry.id === current);
     const mod = module(current);
     titleEl.textContent = view.title;
