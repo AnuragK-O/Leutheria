@@ -80,6 +80,7 @@ pkill -if "python -m agent"; pkill -f "Electron.app"
 ./.venv/bin/python scripts/security_policy_check.py     # path zones, taint, voice approval, fail-closed, log redaction
 ./.venv/bin/python scripts/security_tools_check.py      # safe tier launches nothing: openers, archives, repos, fetch deadline
 ./.venv/bin/python scripts/dispatch_loop_check.py       # tools off the loop, run_command limits, confirmation timeout
+./.venv/bin/python scripts/panels_check.py              # show_panel/hide_panel messages, list_timers control
 ./.venv/bin/python scripts/voice_server_check.py        # real server + real LLM; speaks aloud, needs API key
 ./.venv/bin/python scripts/skills_e2e_check.py --scripted   # agent_loop + dispatch in a sandbox home, written plans, no model
 ./.venv/bin/python scripts/llm_cache_check.py          # REAL MODEL, ~$0.15: is the tool list being read from the prompt cache?

@@ -1746,7 +1746,33 @@ and interleave freely with a command that's mid-confirmation. They're handled in
 # -> ok:false with an explanation for a hand-written skill -- only generated ones delete
 
 {"type": "revoke_trust", "key": "<the `key` field from an inventory `trusted` entry>", "request_id": "6"}
+
+{"type": "list_timers", "request_id": "7"}
+# -> {"type": "control_result", "request_id": "7", "ok": true, "count": 1,
+#     "timers": [{timer_id, label, remaining, ...}, ...], "note": "...", "message": "..."}
+#    Read-only, for the timers panel: the same result as the list_timers tool, but not
+#    logged as a tool call (a panel refresh isn't usage).
 ```
+
+#### Overlay panels (`panel`)
+
+The agent opens and closes the app's on-screen panels with one stream message, sent by the
+built-in skills `show_panel(panel, query?)` and `hide_panel(panel?)`:
+
+```python
+{"type": "panel", "action": "show", "panel": "skills", "query": "git"}   # query optional
+{"type": "panel", "action": "hide", "panel": "chat"}
+{"type": "panel", "action": "hide", "panel": "all"}   # hide_panel with no panel named
+```
+
+Panel ids: `chat`, `skills`, `activity`, `permissions`, `timers`, `voice` (`action` may
+also be `toggle`, reserved for UI-side triggers; the skills send only `show`/`hide`). The
+UI ignores and logs an id it doesn't know. The skills have no tool steps and change nothing
+on the machine. They send on the request's own websocket; with no UI connected (a voice
+command with no window open) they return `ok: false` saying the app isn't open, so the
+model answers in words instead. An unknown id is refused before sending and logged as
+`panel_unknown`. `panel` is not mirrored to overlay clients — the Qt overlay draws no panels.
+`main.js` must handle `panel` explicitly (BUGS.md #17).
 
 `is_overridden` means the *effective* behaviour differs from the built-in default, not
 merely that a stored entry exists — an override that happens to restate the default isn't

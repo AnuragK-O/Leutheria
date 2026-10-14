@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 from agent.core.logging_util import log_event
-from agent.skills import backup_folder, quick_note, setup_project, validate
+from agent.skills import backup_folder, panels, quick_note, setup_project, validate
 from agent.skills.template_skill import run_template
 from agent.skills.validate import SkillValidationError, skill_path
 from agent.tools.registry import TOOLS
@@ -310,6 +310,58 @@ SKILLS = {
             "type": "object",
             "properties": {
                 "threshold": {"type": "integer", "description": "Percent at or below which to warn. Defaults to 20."}
+            },
+            "required": [],
+        },
+    },
+    # --- overlay panels (UI only: no tool steps, nothing on the machine changes) ---
+    "show_panel": {
+        "fn": panels.show,
+        "description": (
+            "Put one of Leutheria's panels on screen over whatever the user is doing. "
+            "The panels are chat for the conversation, skills for everything you can do, "
+            "activity for what you have been doing, permissions for standing approvals "
+            "and app control grants, timers for running timers, and voice for the voice "
+            "session. Use it when the user asks to see or show something, for example "
+            "show me my skills, open the chat, what timers are running on screen, show my "
+            "permissions, or what have you been doing lately. Not for answering a "
+            "question in words: how many skills do I have is answered by speaking, show "
+            "me my skills is a panel. After it works, reply in a few words, such as Here "
+            "are your skills, and don't read the panel's contents aloud. If it says the "
+            "app isn't open, answer the question in words instead."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "panel": {
+                    "type": "string",
+                    "enum": list(panels.PANELS),
+                    "description": "Which panel to show.",
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Optional filter text the panel starts with, for example git for show me my git skills.",
+                },
+            },
+            "required": ["panel"],
+        },
+    },
+    "hide_panel": {
+        "fn": panels.hide,
+        "description": (
+            "Close one of Leutheria's on screen panels, or all of them when no panel is "
+            "named. Use it for hide the chat, close that, or get the panels out of the "
+            "way. The panel ids are chat, skills, activity, permissions, timers and voice. "
+            "Reply in a few words."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "panel": {
+                    "type": "string",
+                    "enum": list(panels.PANELS),
+                    "description": "Which panel to close. Leave it out to close every open panel.",
+                },
             },
             "required": [],
         },
