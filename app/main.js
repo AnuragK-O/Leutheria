@@ -159,9 +159,22 @@ function broadcast(channel, payload) {
   }
 }
 
+// Lines logged before the main window has loaded (overlay-layout.json's
+// problems are found at startup, before the window exists) are held and
+// handed over once it has, rather than reaching only stdout.
+let earlyLog = [];
+
 function log(line) {
   console.log(line);
-  sendToMain("log", line);
+  if (earlyLog) earlyLog.push(line);
+  else sendToMain("log", line);
+}
+
+function flushEarlyLog() {
+  if (!earlyLog) return;
+  const lines = earlyLog;
+  earlyLog = null;
+  for (const line of lines) sendToMain("log", line);
 }
 
 /* The transcript's events, in order, so a chat panel opened mid-session (or
@@ -267,6 +280,7 @@ function createDevWindow() {
     },
   });
   devWindow.loadFile(path.join(__dirname, "renderer", "index.html"));
+  devWindow.webContents.once("did-finish-load", flushEarlyLog);
   // Avoid the white flash between window creation and first paint.
   devWindow.once("ready-to-show", () => devWindow.show());
   devWindow.on("closed", () => {

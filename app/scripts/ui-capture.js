@@ -9,6 +9,8 @@
      node scripts/ui-capture.js --out /tmp/ui            # dark + light, 1180 and 940 wide
      node scripts/ui-capture.js --out /tmp/ui --themes dark --widths 1180
      node scripts/ui-capture.js --out /tmp/ui --no-session   # skip the ~20 s voice session
+     node scripts/ui-capture.js --out /tmp/ui --panels-only  # only the overlay-panel pass
+     node scripts/ui-capture.js --out /tmp/ui --no-panels    # skip it
      node scripts/ui-capture.js --out /tmp/ui --real ws://127.0.0.1:8794
        # against an agent that's already running (never 8765): no mock is
        # started, and only the checks that are safe on a real agent run --
@@ -30,6 +32,14 @@
    it -- and so, with --real, send commands to that agent and answer its
    confirmations. Don't leave it running, and don't point --real at an agent
    you care about on a machine you don't trust.
+
+   The panel pass (runPanels) starts its own Electron with
+   LEUTHERIA_TEST_HOOKS=1 and --inspect on INSPECT_PORT, and drives the main
+   process through its inspector: globalThis.__leutheriaTest (main.js) stands
+   in for the cursor (the hot edge) and the mouse button, and reports which
+   window has focus. Both exist only under that variable. It also restarts
+   the app on the same userData to check the layout file persists, and
+   corrupts that file on purpose.
 
    One line per check; exits non-zero if any failed. */
 
@@ -53,6 +63,9 @@ const THEMES = arg("themes", "dark,light").split(",");
 const WIDTHS = arg("widths", "1180,940").split(",").map(Number);
 const MOCK_PORT = Number(arg("mock-port", 8797));
 const DEBUG_PORT = Number(arg("debug-port", 9347));
+const INSPECT_PORT = Number(arg("inspect-port", 9348));
+const PANELS_ONLY = flag("panels-only");
+const WITH_PANELS = !flag("no-panels") && !arg("real", null);
 const REAL_URL = arg("real", null);
 const WITH_SESSION = !flag("no-session") && !REAL_URL;
 const HEIGHT = 780;
@@ -105,12 +118,12 @@ class Page {
     });
   }
 
-  static async attach(match, timeoutMs = 20000) {
+  static async attach(match, timeoutMs = 20000, port = DEBUG_PORT) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       try {
-        const targets = await getJson(`http://127.0.0.1:${DEBUG_PORT}/json`);
-        const target = targets.find((entry) => entry.type === "page" && entry.url.includes(match));
+        const targets = await getJson(`http://127.0.0.1:${port}/json/list`);
+        const target = targets.find((entry) => (match === null ? entry.type === "node" : entry.type === "page" && entry.url.includes(match)));
         if (target) {
           const socket = new WebSocket(target.webSocketDebuggerUrl);
           await new Promise((resolve, reject) => {
@@ -132,6 +145,11 @@ class Page {
     return new Promise((resolve, reject) => {
       this.waiting.set(id, { resolve, reject });
       this.socket.send(JSON.stringify({ id, method, params }));
+      // A page that's gone (a closed window) never answers: fail the run
+      // with a reason instead of hanging it.
+      setTimeout(() => {
+        if (this.waiting.delete(id)) reject(new Error(`no answer to ${method} in 30 s`));
+      }, 30000);
     });
   }
 
@@ -171,7 +189,7 @@ class Page {
 // --- page helpers (strings evaluated in the renderer) ------------------------
 
 const clickNav = (index) => `document.querySelectorAll("#nav button")[${index}].click()`;
-const NAV = { assistant: 0, library: 1, activity: 2, permissions: 3, voice: 4, logs: 5 };
+const NAV = { assistant: 0, library: 1, activity: 2, permissions: 3, voice: 4, overlay: 5, logs: 6 };
 
 const typeCommand = (text) => `(() => {
   const input = document.getElementById("command-input");
@@ -249,11 +267,14 @@ async function runTheme(theme) {
 
     // --- theme toggle
     if (theme === "light") await main.eval(`document.getElementById("theme-toggle").click()`);
+    // The theme is an appearance setting now (overlay-layout.json), not
+    // this window's localStorage.
     check(
       `[${theme}] theme toggle sets and persists the theme`,
-      await main.eval(
-        `document.documentElement.dataset.theme === "${theme}" && (localStorage.getItem("leutheria-theme") || "dark") === "${theme}"`
-      )
+      (await sleep(300)) ||
+        (await main.eval(
+          `(async () => document.documentElement.dataset.theme === "${theme}" && (await window.leutheria.getOverlaySettings()).settings.appearance.theme === "${theme}")()`
+        ))
     );
 
     if (REAL_URL) {
@@ -628,6 +649,390 @@ async function runTheme(theme) {
   }
 }
 
+// --- overlay panels -------------------------------------------------------------
+
+const { execFileSync } = require("child_process");
+
+/** The frontmost app's name, from LaunchServices (no permissions needed). */
+function frontmostApp() {
+  try {
+    const asn = execFileSync("lsappinfo", ["front"]).toString().trim();
+    return execFileSync("lsappinfo", ["info", "-only", "name", asn]).toString().trim();
+  } catch (_err) {
+    return null;
+  }
+}
+
+async function runPanels(theme) {
+  const dir = path.join(OUT, theme, "panels");
+  fs.mkdirSync(dir, { recursive: true });
+  const file = (name) => path.join(dir, `${name}.png`);
+  const stateDir = path.join(dir, "_state");
+  const layoutFile = path.join(stateDir, "userdata", "overlay-layout.json");
+  fs.rmSync(stateDir, { recursive: true, force: true });
+  const token = generateToken();
+  const T = `[${theme}] panels:`;
+  const backdrop = theme === "dark" ? { r: 34, g: 36, b: 44, a: 1 } : { r: 214, g: 216, b: 222, a: 1 };
+
+  const mock = spawn(process.execPath, [path.join(__dirname, "mock-agent.js")], {
+    env: { ...childEnv(token), MOCK_PORT: String(MOCK_PORT), MOCK_AUTOSTART: "0", MOCK_CONFIRM_TIMEOUT_MS: "4000" },
+    stdio: "ignore",
+  });
+  let electron = null;
+  const env = {
+    ...childEnv(token),
+    LEUTHERIA_AGENT_URL: `ws://127.0.0.1:${MOCK_PORT}`,
+    LEUTHERIA_NO_SPAWN: "1",
+    LEUTHERIA_CAPTURE_DIR: stateDir,
+    LEUTHERIA_CAPTURE_THEME: theme,
+    LEUTHERIA_TEST_HOOKS: "1",
+  };
+  delete env.ELECTRON_RUN_AS_NODE;
+
+  async function launch() {
+    electron = spawn(require("electron"), [".", `--remote-debugging-port=${DEBUG_PORT}`, `--inspect=${INSPECT_PORT}`], {
+      cwd: APP_DIR,
+      env,
+      stdio: "ignore",
+    });
+    const hooks = await Page.attach(null, 20000, INSPECT_PORT);
+    await hooks.waitFor(`globalThis.__leutheriaTest`, 15000);
+    // Park the injected cursor mid-screen, so the real mouse (someone using
+    // the machine during the run) can't trip the hot edge or auto-hide.
+    await hooks.eval(`(() => { const d = __leutheriaTest.display().bounds; __leutheriaTest.setCursor({ x: d.x + Math.round(d.width / 2), y: d.y + Math.round(d.height / 2) }); })()`);
+    const main = await Page.attach("renderer/index.html");
+    await main.size(WIDTHS[0], HEIGHT);
+    await main.waitFor(`document.getElementById("status").dataset.state === "connected"`, 15000);
+    await main.waitFor(`window.LX && LX.state.inventory`, 8000);
+    return { hooks, main };
+  }
+
+  async function quit() {
+    if (!electron) return;
+    const child = electron;
+    electron = null;
+    const gone = new Promise((resolve) => child.once("exit", () => resolve(true)));
+    child.kill();
+    // The relaunch reuses the debugging ports, so the old one must really be
+    // gone; Electron sometimes takes its time over SIGTERM.
+    if (!(await Promise.race([gone, sleep(4000)]))) {
+      child.kill("SIGKILL");
+      await Promise.race([gone, sleep(3000)]);
+    }
+    await sleep(600);
+  }
+
+  const panelState = (hooks, id) => hooks.eval(`__leutheriaTest.panels().find((p) => p.id === ${JSON.stringify(id)}) || null`);
+  const visible = (hooks, id) => `(__leutheriaTest.panels().find((p) => p.id === ${JSON.stringify(id)}) || {}).visible === true`;
+  const openPage = async (id) => {
+    const page = await Page.attach(`panel.html?id=${id}`);
+    await page.send("Emulation.setDefaultBackgroundColorOverride", { color: backdrop });
+    await page.waitFor(`document.body.classList.contains("ready")`, 8000);
+    return page;
+  };
+
+  try {
+    let { hooks, main } = await launch();
+    if (theme === "light") await main.eval(`document.getElementById("theme-toggle").click()`);
+    // Auto-hide off while panels are being moved around under the parked
+    // cursor; it gets its own check with the hot edge below.
+    await main.eval(
+      `window.leutheria.setOverlaySettings({ panels: Object.fromEntries(["chat","skills","activity","permissions","timers","voice"].map((id) => [id, { autoHide: { mode: "never" } }])) })`
+    );
+    await sleep(300);
+    const front = frontmostApp();
+    // Focus is checked two ways: no panel window is ever the focused window,
+    // and the frontmost app doesn't become this one. (The owner may switch
+    // apps during a run, so "frontmost changed" alone isn't a failure; it is
+    // one only if it changed to us.)
+    const panelFocused = async () => {
+      const focused = await hooks.eval(`__leutheriaTest.focused()`);
+      return ["chat", "skills", "activity", "permissions", "timers", "voice", "other"].includes(focused) ? focused : null;
+    };
+    const stoleFront = () => {
+      const now = frontmostApp();
+      return /Electron|Leutheria/.test(now || "") && now !== front ? now : null;
+    };
+
+    // --- every panel, opened the way the agent opens them: a panel message
+    const OPEN = [
+      ["skills", "show me my skills", `document.querySelectorAll("#library-list .list-row").length >= 13`],
+      ["activity", "show me what you've been doing", `document.querySelector("#activity-body .usage-row")`],
+      ["permissions", "show my permissions", `document.querySelector("#permissions-body .trust-row")`],
+      ["timers", "show me my timers", `document.querySelectorAll("#timers-body .timer").length === 3`],
+      ["voice", "show me the voice panel", `document.querySelector(".vp-word").textContent.length > 0`],
+      ["chat", "open the chat", `document.getElementById("chat")`],
+    ];
+    const pages = {};
+    for (const [id, phrase, ready] of OPEN) {
+      const replies = await main.eval(`document.querySelectorAll("#chat .msg.assistant").length`);
+      await main.eval(typeCommand(phrase));
+      const shown = await hooks.waitFor(visible(hooks, id), 8000);
+      check(`${T} "${phrase}" opens the ${id} panel`, shown);
+      if (!shown) continue;
+      pages[id] = await openPage(id);
+      check(`${T} the ${id} panel draws its view`, await pages[id].waitFor(ready, 8000));
+      check(
+        `${T} ...and the agent's reply still reaches the transcript`,
+        await main.waitFor(`document.querySelectorAll("#chat .msg.assistant").length > ${replies}`, 6000)
+      );
+      const state = await panelState(hooks, id);
+      check(`${T} the ${id} panel opened without taking focus`, !state.focused && !(await panelFocused()));
+      await pages[id].shot(file(`${id}-${state.orientation}`));
+    }
+    check(`${T} opening panels never made this app frontmost`, !stoleFront(), `${front} -> ${frontmostApp()}`);
+    await main.eval(`document.getElementById("chat-scroll").scrollTop = 1e6`);
+    await main.shot(file("main-after-panel-commands"));
+
+    // --- query, unknown panel, hide one, hide all
+    await main.eval(typeCommand("show me my skills about file"));
+    check(
+      `${T} a query pre-fills the skills filter`,
+      await pages.skills.waitFor(`document.querySelector("#panel-tools .search input").value === "file" && document.querySelectorAll("#library-list .list-row").length < 8`)
+    );
+    await pages.skills.shot(file("skills-query"));
+    await pages.skills.eval(clickText("#library-list .list-row-name", "list_dir"));
+    await pages.skills.waitFor(`document.querySelector("#library-detail .switch")`);
+    await pages.skills.shot(file("skills-detail"));
+    check(`${T} the skills detail is the short one`, await pages.skills.eval(`!document.querySelector("#library-detail .params, #library-detail .danger-zone") && /Open in the Library/.test(document.getElementById("library-detail").textContent)`));
+    await pages.skills.eval(`document.querySelector("#library-detail .switch").click()`);
+    check(
+      `${T} a toggle in the panel round-trips and reaches the main window`,
+      (await pages.skills.waitFor(`document.querySelector("#library-detail .switch").getAttribute("aria-checked") === "false"`)) &&
+        (await main.waitFor(`LX.state.inventory.tools.find((t) => t.name === "list_dir").enabled === false`))
+    );
+    await pages.skills.eval(clickText("#library-detail .link-button", "Reset"));
+    await pages.skills.waitFor(`document.querySelector("#library-detail .switch").getAttribute("aria-checked") === "true"`);
+
+    const windowsBefore = await hooks.eval(`__leutheriaTest.panels().length`);
+    await main.eval(typeCommand("show me the bogus panel"));
+    await main.waitFor(`[...document.querySelectorAll("#chat .msg-body")].some((n) => /your bogus/.test(n.textContent))`, 6000);
+    check(`${T} an unknown panel id is ignored (no window), and logged`, (await hooks.eval(`__leutheriaTest.panels().length`)) === windowsBefore);
+    await main.eval(clickNav(NAV.logs));
+    check(`${T} ...the log says so`, await main.waitFor(`/unknown panel "bogus"/.test(document.getElementById("logs").textContent)`));
+    await main.eval(clickNav(NAV.assistant));
+
+    // --- permissions: revoke works from the panel
+    const trustRows = await pages.permissions.eval(`document.querySelectorAll("#permissions-body .trust-row").length`);
+    await pages.permissions.eval(clickText("#permissions-body .trust-row button", "Revoke"));
+    check(
+      `${T} Revoke works in the permissions panel, with a toast`,
+      (await pages.permissions.waitFor(`document.querySelectorAll("#permissions-body .trust-row").length === ${trustRows - 1}`)) &&
+        (await pages.permissions.waitFor(`document.querySelector("#toasts .toast")`))
+    );
+    await pages.permissions.shot(file("permissions-revoked"));
+
+    // --- timers: cancel goes through the agent
+    await pages.timers.eval(`document.querySelector("#timers-body .timer .btn").click()`);
+    check(`${T} cancelling a timer asks the agent and the list follows`, await pages.timers.waitFor(`document.querySelectorAll("#timers-body .timer").length === 2`, 9000));
+    await pages.timers.shot(file("timers-after-cancel"));
+
+    // --- chat: the same conversation in both windows
+    const panelChat = pages.chat;
+    check(`${T} the chat panel starts with the session so far`, await panelChat.eval(`/show me my skills/.test(document.getElementById("chat").textContent)`));
+    await panelChat.eval(typeCommand("typed in the panel"));
+    check(
+      `${T} a command typed in the panel shows in both, with the reply`,
+      (await main.waitFor(`/Mock reply to: typed in the panel/.test(document.getElementById("chat").textContent)`)) &&
+        (await panelChat.waitFor(`/Mock reply to: typed in the panel/.test(document.getElementById("chat").textContent)`))
+    );
+    await main.eval(typeCommand("typed in the main window"));
+    check(`${T} ...and one typed in the main window shows in the panel`, await panelChat.waitFor(`/Mock reply to: typed in the main window/.test(document.getElementById("chat").textContent)`));
+    await panelChat.eval(typeCommand("confirm this"));
+    check(`${T} a confirmation card appears in the panel and the main window`, (await panelChat.waitFor(`document.querySelector("#chat .prompt-card.confirm .prompt-actions")`)) && (await main.waitFor(`[...document.querySelectorAll("#chat .prompt-card.confirm")].pop().querySelector(".prompt-actions")`)));
+    await panelChat.eval(`document.getElementById("chat-scroll").scrollTop = 1e6`);
+    await panelChat.shot(file("chat-confirm"));
+    await panelChat.eval(clickText("#chat .prompt-card.confirm button", "Approve"));
+    check(`${T} approving in the panel settles the main window's card`, await main.waitFor(`/in a panel/.test([...document.querySelectorAll("#chat .prompt-resolved")].pop()?.textContent || "")`));
+    await panelChat.waitFor(`/Ran it/.test(document.getElementById("chat").textContent)`);
+    const doubled = await panelChat.eval(`[...document.querySelectorAll("#chat .msg.user")].filter((n) => /typed in the panel/.test(n.textContent)).length`);
+    check(`${T} nothing is shown twice in the panel`, doubled === 1, `${doubled} copies`);
+    await panelChat.shot(file("chat-synced"));
+    check(`${T} the chat panel never took focus on its own`, !(await panelFocused()));
+
+    // --- every panel in its other orientation (horizontal must be a real
+    // layout, not a squashed vertical one)
+    for (const [id] of OPEN) {
+      const was = await pages[id].eval(`document.body.dataset.orientation`);
+      const next = was === "vertical" ? "horizontal" : "vertical";
+      await pages[id].eval(`document.querySelector('[data-ctl="orientation"]').click()`);
+      const shaped =
+        next === "horizontal"
+          ? `document.body.dataset.orientation === "horizontal" && window.innerWidth > window.innerHeight * 2`
+          : `document.body.dataset.orientation === "vertical" && window.innerHeight > window.innerWidth`;
+      check(`${T} ${id} turns ${next}`, await pages[id].waitFor(shaped, 5000));
+      await pages[id].shot(file(`${id}-${next}`));
+    }
+    check(`${T} horizontal chat runs left to right`, await panelChat.eval(`getComputedStyle(document.getElementById("chat")).flexDirection === "row"`));
+    check(`${T} horizontal skills groups are columns`, await pages.skills.eval(`getComputedStyle(document.querySelector(".library-rows")).display === "flex"`));
+    for (const id of ["chat", "skills", "activity", "permissions"]) await pages[id].eval(`document.querySelector('[data-ctl="orientation"]').click()`);
+    await sleep(500);
+
+    // --- dock picker, move (undocks), resize, opacity, pin, on the skills panel
+    const display = await hooks.eval(`__leutheriaTest.display()`);
+    const area = display.workArea;
+    await pages.skills.eval(`document.querySelector('[data-ctl="dock"]').click()`);
+    await pages.skills.shot(file("skills-dock-menu"));
+    await pages.skills.eval(`document.querySelector('.panel-menu-item[data-dock="right"]').click()`);
+    await sleep(500);
+    let s = await panelState(hooks, "skills");
+    check(`${T} docking right puts it on the right edge, full height`, s.dock === "right" && s.bounds.x + s.bounds.width === area.x + area.width && s.bounds.height === area.height, JSON.stringify(s.bounds));
+    await pages.skills.eval(`(async () => { await window.leutheria.panelOp("move-start"); await window.leutheria.panelOp("move", { dx: -500, dy: 120 }); await window.leutheria.panelOp("move-end"); })()`);
+    await sleep(400);
+    s = await panelState(hooks, "skills");
+    check(`${T} dragging the heading undocks it where it's dropped`, s.dock === "free" && Math.abs(s.bounds.x - (area.x + area.width - 400 - 500)) <= 2, JSON.stringify(s.bounds));
+    const before = s.bounds;
+    await pages.skills.eval(`(async () => { await window.leutheria.panelOp("resize-start", { edge: "se" }); await window.leutheria.panelOp("resize", { dx: 80, dy: -200 }); await window.leutheria.panelOp("resize-end"); })()`);
+    await sleep(400);
+    s = await panelState(hooks, "skills");
+    check(`${T} resizing from a corner`, s.bounds.width === before.width + 80 && s.bounds.height === Math.max(260, before.height - 200) && s.bounds.x === before.x, JSON.stringify(s.bounds));
+    check(`${T} a free panel can be resized from every edge`, (await pages.skills.eval(`document.querySelectorAll(".panel-resizer").length`)) === 8);
+    const opacityResult = await pages.skills.eval(`window.leutheria.panelOp("opacity", 0.7).then((r) => r.ok || r.error)`);
+    if (opacityResult !== true) console.log(`     opacity op: ${opacityResult}`);
+    await sleep(300);
+    s = await panelState(hooks, "skills");
+    check(`${T} opacity applies to the window`, Math.abs(s.opacity - 0.7) < 0.01, String(s.opacity));
+    await pages.skills.eval(`document.querySelector('[data-ctl="pin"]').click()`);
+    await pages.skills.waitFor(`document.querySelector('[data-ctl="pin"]').getAttribute("aria-pressed") === "true"`);
+    await pages.skills.shot(file("skills-free-pinned"));
+    const saved = JSON.parse(fs.readFileSync(layoutFile, "utf8")).panels.skills;
+    check(`${T} the layout is written to overlay-layout.json`, saved.dock === "free" && saved.pinned === true && saved.opacity === 0.7 && saved.x === s.bounds.x, JSON.stringify(saved));
+    const timersHorizontal = JSON.parse(fs.readFileSync(layoutFile, "utf8")).panels.timers.orientation;
+
+    // --- hide one, hide all
+    await main.eval(typeCommand("hide the timers"));
+    check(`${T} "hide the timers" hides that panel`, await hooks.waitFor(`!(${visible(hooks, "timers")})`, 6000));
+    await main.eval(typeCommand("hide panels"));
+    check(`${T} hide with panel "all" hides every open panel`, await hooks.waitFor(`__leutheriaTest.panels().every((p) => !p.visible)`, 6000));
+    await main.eval(typeCommand("toggle the voice"));
+    check(`${T} toggle shows a hidden panel`, await hooks.waitFor(visible(hooks, "voice"), 6000));
+    await hooks.eval(`__leutheriaTest.hideAll()`);
+
+    // --- the hot edge (cursor injected through the test hook)
+    await main.eval(`window.leutheria.setOverlaySettings({ panels: { chat: { autoHide: { mode: "leave" } } } })`);
+    const b = display.bounds;
+    const midY = b.y + Math.round(b.height / 2);
+    await hooks.eval(`__leutheriaTest.setMouseDown(true)`);
+    await hooks.eval(`__leutheriaTest.setCursor({ x: ${b.x + b.width - 1}, y: ${midY} })`);
+    await sleep(900);
+    check(`${T} hot edge: nothing while a mouse button is held`, !(await hooks.eval(visible(hooks, "chat"))));
+    await hooks.eval(`__leutheriaTest.setCursor({ x: ${b.x + 300}, y: ${midY} })`);
+    await sleep(200);
+    await hooks.eval(`__leutheriaTest.setMouseDown(false)`);
+    await hooks.eval(`__leutheriaTest.setCursor({ x: ${b.x + b.width - 1}, y: ${midY} })`);
+    await sleep(150);
+    check(`${T} hot edge: not before the dwell`, !(await hooks.eval(visible(hooks, "chat"))));
+    check(`${T} hot edge: resting on the right edge opens the chat panel`, await hooks.waitFor(visible(hooks, "chat"), 3000));
+    s = await panelState(hooks, "chat");
+    check(`${T} ...docked on that edge, without taking focus`, s.dock === "right" && !s.focused && !(await panelFocused()));
+    check(`${T} ...and without making this app frontmost`, !stoleFront());
+    await pages.chat.shot(file("hot-edge-chat"));
+    // Auto-hide "leave": into the panel, then away.
+    await hooks.eval(`__leutheriaTest.setCursor({ x: ${s.bounds.x + 100}, y: ${s.bounds.y + 100} })`);
+    await sleep(300);
+    await hooks.eval(`__leutheriaTest.setCursor({ x: ${b.x + 200}, y: ${midY} })`);
+    await sleep(300);
+    check(`${T} auto-hide waits out a brief exit`, await hooks.eval(visible(hooks, "chat")));
+    check(`${T} auto-hide: it hides once the cursor has left`, await hooks.waitFor(`!(${visible(hooks, "chat")})`, 3000));
+    // Another edge, another panel, from the Overlay view.
+    await main.eval(clickNav(NAV.overlay));
+    await main.waitFor(`document.querySelector('[data-focus="hot-edge:left"]')`);
+    await main.eval(`document.querySelector('[data-focus="hot-edge:left"]').click()`);
+    await main.waitFor(`document.querySelector('[data-focus="hot-edge:left"]').getAttribute("aria-pressed") === "true"`);
+    await main.eval(`(() => { const s = document.querySelector('[data-key="hot-panel"] select'); s.value = "timers"; s.dispatchEvent(new Event("change")); })()`);
+    await sleep(400);
+    await hooks.eval(`__leutheriaTest.setCursor({ x: ${b.x}, y: ${midY} })`);
+    check(`${T} hot edge follows the settings (left edge, timers)`, await hooks.waitFor(visible(hooks, "timers"), 3000));
+    check(`${T} ...docked left for this showing`, (await panelState(hooks, "timers")).dock === "left");
+    await pages.timers.shot(file("hot-edge-left-timers"));
+    await hooks.eval(`__leutheriaTest.setCursor({ x: ${b.x + 600}, y: ${midY} })`);
+    await hooks.eval(`__leutheriaTest.hideAll()`);
+
+    // --- alerts anchor: the overlay window and the toasts
+    await main.eval(`window.leutheria.setOverlaySettings({ alerts: { anchor: "bottom-right", toastAnchor: "top-right" } })`);
+    await hooks.eval(`__leutheriaTest.positionOverlay()`);
+    const ov = await hooks.eval(`__leutheriaTest.overlayBounds()`);
+    check(`${T} the overlay goes to the alerts anchor (bottom right)`, ov && ov.x + ov.width === area.x + area.width - 12 && ov.y + ov.height === area.y + area.height - 12, JSON.stringify(ov));
+    const overlay = await Page.attach("overlay/overlay.html");
+    check(`${T} ...and flips its stage for a bottom anchor`, await overlay.waitFor(`document.body.dataset.anchor === "bottom-right" && getComputedStyle(document.querySelector(".stage")).flexDirection === "column-reverse"`));
+    await main.eval(`LX.toast("Toast at the top right")`);
+    check(
+      `${T} toasts follow the toast anchor`,
+      await main.waitFor(`(() => { const r = document.querySelector("#toasts .toast")?.getBoundingClientRect(); return r && r.top < 140 && r.right > window.innerWidth - 60; })()`)
+    );
+    await main.shot(file("toast-top-right"));
+    await main.eval(`window.leutheria.setOverlaySettings({ alerts: { anchor: "top-center", toastAnchor: "bottom-left" } })`);
+
+    // --- appearance: accent, refused accent, density -- in every window
+    await main.eval(clickNav(NAV.overlay));
+    await main.eval(clickText("#overlay-body .choice", "Blue"));
+    const expected = await main.eval(`window.leutheria.checkAccent("#3b82f6").then((r) => r.vars["${theme}"]["--violet-lo"])`);
+    const lo = (page) => page.eval(`getComputedStyle(document.documentElement).getPropertyValue("--violet-lo").trim()`);
+    await main.waitFor(`getComputedStyle(document.documentElement).getPropertyValue("--violet-lo").trim() === "${expected}"`);
+    await hooks.eval(`__leutheriaTest.show("voice")`);
+    const voicePage = pages.voice;
+    await voicePage.waitFor(`getComputedStyle(document.documentElement).getPropertyValue("--violet-lo").trim() === "${expected}"`);
+    const los = [await lo(main), await lo(overlay), await lo(voicePage)];
+    check(`${T} an accent applies in the main window, the overlay and the panels`, los.every((value) => value === expected), los.join(" "));
+    await main.eval(`document.querySelector('[data-key="accent"]').scrollIntoView({ block: "center" })`);
+    await main.shot(file("accent-blue-settings"));
+    await voicePage.shot(file("accent-blue-voice-panel"));
+    await main.eval(`(() => { const i = document.querySelector('[data-key="accent"] .hex'); i.value = "#ffb224"; i.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" })); })()`);
+    check(
+      `${T} an accent that reads as a state colour is refused, with the reason`,
+      (await main.waitFor(`/reads as amber/.test(document.querySelector('[data-key="accent"] .field-error')?.textContent || "")`)) &&
+        (await lo(main)) === expected
+    );
+    await main.shot(file("accent-refused"));
+    await main.eval(clickText("#overlay-body .segmented button", "Compact"));
+    check(`${T} density applies in every window`, (await main.waitFor(`document.documentElement.dataset.density === "compact"`)) && (await voicePage.waitFor(`document.documentElement.dataset.density === "compact"`)) && (await overlay.waitFor(`document.documentElement.dataset.density === "compact"`)));
+    await main.eval(clickNav(NAV.library));
+    await main.shot(file("compact-library"));
+    await main.eval(clickNav(NAV.overlay));
+    await main.eval(clickText("#overlay-body .segmented button", "Comfortable"));
+    await main.eval(clickText("#overlay-body .choice", "Violet"));
+    await main.waitFor(`!document.getElementById("appearance-overrides").textContent`);
+
+    // --- restart: the layout comes back
+    await quit();
+    ({ hooks, main } = await launch());
+    check(`${T} after a restart the pinned panel comes back`, await hooks.waitFor(visible(hooks, "skills"), 6000));
+    s = await panelState(hooks, "skills");
+    check(`${T} ...where it was, at its opacity`, s.dock === "free" && s.bounds.x === saved.x && s.bounds.y === saved.y && Math.abs(s.opacity - 0.7) < 0.01, JSON.stringify(s));
+    check(`${T} ...and other panels keep their layout`, (await hooks.eval(`__leutheriaTest.settings().panels.timers.orientation`)) === timersHorizontal);
+    const skillsAgain = await openPage("skills");
+    await skillsAgain.shot(file("after-restart-skills"));
+    await main.eval(clickNav(NAV.overlay));
+    await main.waitFor(`document.querySelector('#overlay-body .panel-row[data-panel="skills"]')`);
+    await main.eval(`document.querySelector('#overlay-body .panel-row[data-panel="skills"]').scrollIntoView({ block: "center" })`);
+    await main.shot(file("overlay-view-panels"));
+    await main.eval(clickText('#overlay-body .panel-row[data-panel="skills"] button', "Reset"));
+    check(`${T} Reset puts a panel's layout back`, await hooks.waitFor(`__leutheriaTest.settings().panels.skills.dock === "left" && !__leutheriaTest.settings().panels.skills.pinned`, 4000));
+
+    // --- a corrupt layout file: defaults, the file kept aside, no crash
+    await quit();
+    fs.writeFileSync(layoutFile, "{ this is not json");
+    ({ hooks, main } = await launch());
+    check(`${T} a corrupt layout file starts on defaults`, (await hooks.eval(`__leutheriaTest.settings().panels.skills.dock`)) === "left" && (await main.eval(`document.getElementById("status").dataset.state`)) === "connected");
+    check(`${T} ...and is moved aside, not lost`, fs.existsSync(`${layoutFile}.corrupt`));
+    await quit();
+    fs.writeFileSync(layoutFile, JSON.stringify({ panels: { chat: { dock: "sideways", opacity: 5, vertical: { w: 20, h: 900 } }, timers: { dock: "bottom" } }, hotEdge: { dwellMs: "soon" } }));
+    ({ hooks, main } = await launch());
+    const loaded = await hooks.eval(`__leutheriaTest.settings()`);
+    check(
+      `${T} bad fields fall back one by one, good ones are kept`,
+      loaded.panels.chat.dock === "right" && loaded.panels.chat.opacity === null && loaded.panels.chat.vertical.w === 400 && loaded.panels.chat.vertical.h === 900 && loaded.panels.timers.dock === "bottom" && loaded.hotEdge.dwellMs === 350,
+      JSON.stringify(loaded.panels.chat)
+    );
+    await main.eval(clickNav(NAV.logs));
+    check(`${T} ...and each one is logged`, await main.waitFor(`/panels.chat.dock: "sideways"/.test(document.getElementById("logs").textContent)`));
+  } finally {
+    await quit();
+    mock.kill();
+    await sleep(500);
+  }
+}
+
 // The reduced pass for a real agent: real catalog, real control messages,
 // nothing that runs a tool.
 async function runReal(main, theme, file) {
@@ -715,10 +1120,19 @@ async function runReal(main, theme, file) {
 (async () => {
   fs.mkdirSync(OUT, { recursive: true });
   for (const theme of THEMES) {
-    try {
-      await runTheme(theme);
-    } catch (err) {
-      check(`[${theme}] run completed`, false, err.message);
+    if (!PANELS_ONLY) {
+      try {
+        await runTheme(theme);
+      } catch (err) {
+        check(`[${theme}] run completed`, false, err.message);
+      }
+    }
+    if (WITH_PANELS) {
+      try {
+        await runPanels(theme);
+      } catch (err) {
+        check(`[${theme}] panels: run completed`, false, err.message);
+      }
     }
   }
   console.log(failures ? `${failures} check(s) failed` : `all checks passed; screenshots in ${OUT}`);
