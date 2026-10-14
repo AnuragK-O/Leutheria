@@ -1,6 +1,7 @@
 from agent.core import audio_io, inventory, preferences, session, trust, tts_backends, voice_session, voice_settings
 from agent.core.logging_util import log_event
 from agent.skills.registry import delete_skill
+from agent.tools.list_timers import list_timers
 
 # Control messages are the UI's management channel: read the capability
 # catalog, change what Leutheria is allowed to do, forget a standing approval.
@@ -18,6 +19,7 @@ CONTROL_TYPES = {
     "set_voice_settings",
     "list_input_devices",
     "list_wake_models",
+    "list_timers",
 }
 
 
@@ -118,5 +120,11 @@ def handle(payload: dict) -> dict:
             "pretrained": pretrained,
             "paths": [{"path": p, "exists": voice_session.wake_model_path_exists(p)} for p in paths],
         }
+
+    if message_type == "list_timers":
+        # Read-only, for the timers panel: the list_timers tool's own result,
+        # called directly rather than through dispatch() so a UI refresh isn't
+        # logged as a tool call (it would count as usage and feed skill learning).
+        return list_timers()
 
     return {"ok": False, "error": f"unknown control message: {message_type}"}

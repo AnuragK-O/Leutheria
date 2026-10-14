@@ -10,6 +10,9 @@
 
   const listEl = document.getElementById("library-list");
   const detailEl = document.getElementById("library-detail");
+  // In the skills panel (panels/panel.js) the detail is short: what it is,
+  // the two switches, and a way into the full Library.
+  const compact = Boolean(LX.panelMode);
 
   // The list pane is two parts: the state filters, which stay put, and the
   // rows, which scroll under sticky group headings.
@@ -600,6 +603,7 @@
     const entry = selected ? find(selected) : null;
 
     if (!entry) {
+      if (compact) return; // the panel's list is the whole view until something is picked
       if (allEntries().length) detailEl.appendChild(renderOverview());
       else detailEl.appendChild(el("div.empty", { text: "Waiting for the agent's catalog." }));
       return;
@@ -619,7 +623,7 @@
 
     // The rest of the description: what the model is told about when to use
     // it. Set as one line per sentence, in the secondary tier.
-    if (guidance.length) {
+    if (guidance.length && !compact) {
       detail.appendChild(
         el(
           "section",
@@ -678,6 +682,22 @@
     }
 
     detail.appendChild(el("section", {}, el("div.section-label", { text: "Permissions" }), controls));
+
+    if (compact) {
+      detail.appendChild(
+        el("button.link-button.detail-open", {
+          text: "Open in the Library",
+          "data-focus": "open",
+          onclick: () => window.leutheria.openMain("library", entry.name),
+        })
+      );
+      detailEl.appendChild(detail);
+      if (focusKey) {
+        const again = detailEl.querySelector(`[data-focus="${focusKey}"]`) || detailEl.querySelector(".switch");
+        if (again) again.focus();
+      }
+      return;
+    }
 
     // --- parameters ---
     const properties = (entry.input_schema && entry.input_schema.properties) || {};
@@ -867,5 +887,14 @@
     return `${entries.length} ${label}${off ? ` · ${off} disabled` : ""}`;
   }
 
-  LX.library = { render, actions, count, subtitle };
+  /** Pre-fill the filter (a panel opened with "show me my file skills"). */
+  function setQuery(text) {
+    searchInput.value = String(text || "");
+    query = searchInput.value.trim().toLowerCase();
+    stateFilter = null;
+    kind = "all";
+    render();
+  }
+
+  LX.library = { render, actions, count, subtitle, setQuery, reveal };
 })(window.LX);

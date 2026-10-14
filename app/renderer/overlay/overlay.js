@@ -51,29 +51,9 @@
   let confirmHideTimer = null;
 
   // --- theme -------------------------------------------------------------
-  // Follows the main window's choice (same file:// origin, so the same
-  // localStorage), live via the storage event; the OS appearance otherwise.
-  // ?theme= wins, for the debug capture path only.
-
-  const forcedTheme = new URLSearchParams(location.search).get("theme");
-  const systemDark = window.matchMedia("(prefers-color-scheme: dark)");
-
-  function applyTheme() {
-    let theme = forcedTheme;
-    if (!theme) {
-      try {
-        theme = localStorage.getItem("leutheria-theme");
-      } catch (_err) {
-        theme = null;
-      }
-    }
-    document.documentElement.dataset.theme = theme || (systemDark.matches ? "dark" : "light");
-  }
-
-  window.addEventListener("storage", (event) => {
-    if (event.key === "leutheria-theme") applyTheme();
-  });
-  systemDark.addEventListener("change", applyTheme);
+  // The theme, accent, density and the alerts anchor (body[data-anchor],
+  // which flips the stage for bottom anchors) are applied by
+  // ../js/appearance.js, the same as in every other window.
 
   // --- asset slot --------------------------------------------------------
 
@@ -308,13 +288,20 @@
     // An unknown `by` still settles the card, without claiming who answered.
     if (by === "timeout") return settleConfirm(false, TIMED_OUT);
     const how =
-      by === "voice" ? " by voice" : by === "overlay" ? " on the other overlay" : by === "ui" || by === "user" || !by ? " in the main window" : "";
+      by === "voice"
+        ? " by voice"
+        : by === "overlay"
+          ? " on the other overlay"
+          : by === "panel"
+            ? " in a panel"
+            : by === "ui" || by === "user" || !by
+              ? " in the main window"
+              : "";
     settleConfirm(approved, how);
   });
 
   // --- boot --------------------------------------------------------------
 
-  applyTheme();
   render();
 
   api.getOverlayManifest().then((result) => {

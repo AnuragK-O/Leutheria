@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <title>Leutheria</title>
     <link rel="stylesheet" href="styles.css" />
+    <script src="js/appearance.js"></script>
   </head>
   <body>
     <div class="app">
@@ -95,6 +96,11 @@
           <div class="stack stack-narrow" id="voice-body"></div>
         </section>
 
+        <!-- Overlay: panels, hot edge, alerts, appearance -->
+        <section class="view view-scroll" id="view-overlay" hidden>
+          <div class="stack stack-narrow" id="overlay-body"></div>
+        </section>
+
         <!-- Logs -->
         <section class="view view-logs" id="view-logs" hidden>
           <pre class="logs" id="logs" tabindex="0" aria-label="Log"></pre>
@@ -113,6 +119,7 @@
     <script src="js/logs.js"></script>
     <script src="js/voice.js"></script>
     <script src="js/voice-settings.js"></script>
+    <script src="js/overlay-settings.js"></script>
     <script src="js/app.js"></script>
   </body>
 </html>

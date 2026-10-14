@@ -61,6 +61,19 @@ window.LX = window.LX || {};
     trash: "M3 6h18|M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6|M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2",
     info: "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z|M12 16v-4|M12 8h.01",
     refresh: "M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8|M21 3v5h-5|M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16|M8 16H3v5",
+    // Panels: the nav entry, the frame's grip and control strip.
+    overlay: "M3 5h13v10H3z|M8 9h13v10H8z",
+    grip: "M9 6h.01|M15 6h.01|M9 12h.01|M15 12h.01|M9 18h.01|M15 18h.01",
+    "dock-left": "M3 4h18v16H3z|M9 4v16|M5 8v8",
+    "dock-right": "M3 4h18v16H3z|M15 4v16|M19 8v8",
+    "dock-top": "M3 4h18v16H3z|M3 10h18|M7 6h10",
+    "dock-bottom": "M3 4h18v16H3z|M3 14h18|M7 18h10",
+    "dock-free": "M3 4h18v16H3z|M8 9h8v6H8z",
+    "orient-vertical": "M8 3h8v18H8z|M8 9h8|M8 15h8",
+    "orient-horizontal": "M3 8h18v8H3z|M9 8v8|M15 8v8",
+    opacity: "M4 4h16v16H4z|M4 20 20 4|M12 20l8-8|M16 20l4-4",
+    pin: "M12 16v6|M8 3h8|M9 3v6l-3 4v3h12v-3l-3-4V3",
+    timer: "M12 4a9 9 0 1 0 0 18 9 9 0 0 0 0-18z|M12 9v4l3 2|M9 1h6",
   };
 
   function icon(name) {

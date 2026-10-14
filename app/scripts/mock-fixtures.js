@@ -281,3 +281,39 @@ module.exports.inventory.skills.push({
       : { tool: "copy_file", args: { src: `~/Reports/{quarter}/part-${String(index + 1).padStart(2, "0")}.pdf`, dest: "/Volumes/Finance/{quarter}/" } }
   ),
 });
+
+// Timers for the timers panel (list_timers control message), in the shape
+// agent/core/timers.py's _public() gives. They count down from when the mock
+// started; one runs long so a capture run never sees it end.
+const TIMER_START = Date.now();
+const timers = [
+  { timer_id: "1", label: "Tea", seconds: 7 * 60, duration: "7 minutes" },
+  { timer_id: "2", label: "", seconds: 25 * 60, duration: "25 minutes" },
+  { timer_id: "3", label: "Standup in the big room with the whole team", seconds: 3 * 3600, duration: "3 hours" },
+];
+
+function listTimers() {
+  const elapsed = (Date.now() - TIMER_START) / 1000;
+  const running = timers.map((timer) => {
+    const left = Math.max(0, timer.seconds - elapsed);
+    const ends = new Date(TIMER_START + timer.seconds * 1000);
+    return {
+      timer_id: timer.timer_id,
+      label: timer.label,
+      duration: timer.duration,
+      remaining_seconds: Math.round(left * 10) / 10,
+      remaining: `${Math.floor(left / 60)} minutes`,
+      ends_at: ends.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }),
+    };
+  });
+  return { count: running.length, timers: running, note: "Timers live in memory only.", message: `${running.length} timers running.` };
+}
+
+function cancelTimer(id) {
+  const index = timers.findIndex((timer) => timer.timer_id === String(id));
+  if (index === -1) return null;
+  return timers.splice(index, 1)[0];
+}
+
+module.exports.listTimers = listTimers;
+module.exports.cancelTimer = cancelTimer;

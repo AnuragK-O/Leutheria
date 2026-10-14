@@ -386,7 +386,7 @@ The sidebar's status dot goes green once the bridge is connected.
 
 ### The interface
 
-Six views in the left sidebar:
+Seven views in the left sidebar:
 
 | view | what it's for |
 |---|---|
@@ -395,10 +395,12 @@ Six views in the left sidebar:
 | **Activity** | How the skill set has grown: every skill proposed, saved, or turned down, plus a most-used breakdown. |
 | **Permissions** | Standing approvals (the `remember: session/always` ones) with a revoke button, and every capability whose settings differ from its default, with a reset. |
 | **Voice** | Settings for the always-listening session: wake word on/off, which wake words, sensitivity, the end-of-utterance pause, the silence timeout, dismiss phrases, and the microphone. See below. |
+| **Overlay** | Everything that floats outside this window: the hot edge, where the chat panel and alerts appear, appearance (theme, accent, opacity, density) and each panel's saved layout. See "Overlay panels" below. |
 | **Logs** | The raw bridge stream, out of the way of the conversation, one row per line with its source tag tinted and stderr (`:err`) marked red. Copy or clear it. |
 
-Dark is the default theme; a light one ("paper terminal") ships too. Toggle at the bottom
-of the sidebar (the choice sticks, and the overlay follows it).
+Dark is the default theme; a light one ("paper terminal") ships too, and "system" follows
+macOS. Toggle at the bottom of the sidebar or pick in the Overlay view; the choice is saved
+with the other appearance settings and every window (main, overlay, panels) follows it.
 
 **Design language.** The window is a control surface for a machine that acts on your
 computer, so it shows state rather than decorating: near-black ground with a violet cast,
@@ -435,11 +437,65 @@ refusal and Revert, theme toggle, the voice pill, toasts, a confirmation that ti
 (`by: "timeout"`) and one that needs a click (`voice_approvable: false`), a settings file
 the agent couldn't read, the delete flow for a learned skill, a 200-entry transcript,
 non-Latin text, reduced motion, Logs Copy and Clear, and the agent going away), and
-writes a PNG of each. One
+writes a PNG of each. A second pass per theme covers the overlay panels: each opened by a
+`panel` message (the mock sends them for "show me ..." commands), queries, an unknown id,
+hide and hide-all, the controls inside panels, both orientations, dock/move/resize/opacity/
+pin and the layout file, persistence across a restart, a corrupt and a partly bad file, the
+hot edge (the cursor and mouse button are injected through an env-gated test hook,
+`LEUTHERIA_TEST_HOOKS=1`, that exists only in that run), auto-hide, both alerts anchors,
+and accent/density in every window; and that no panel ever becomes the focused window or
+makes the app frontmost. `--panels-only` / `--no-panels` pick one pass. One
 line per check, non-zero exit on a failure. The PNGs are for looking at: a UI change isn't
 verified until someone has. `--real ws://127.0.0.1:<port>` runs a reduced pass against an
 agent that's already running, sending only management messages. The windows appear on
 screen while it runs.
+
+**Overlay panels.** Any of six panels can float over other apps: `chat` (the transcript,
+composer and confirmation cards, live-synced with the main window), `skills` (the
+Library's grouped list with its filter and a short detail with the two switches),
+`activity`, `permissions` (Revoke works), `timers` (a countdown per timer; Cancel asks
+Leutheria to cancel it, so it runs through cancel_timer like any other request) and
+`voice` (the session's state, last thing heard and said, start/stop). They open three
+ways: by asking ("show me my skills", "what timers are running" -- the agent's
+`show_panel`/`hide_panel` skills send a `panel` message), from the Overlay view, or with
+the **hot edge**: rest the cursor against a screen edge (default: right, 350 ms) and the
+configured panel (default: chat) slides in docked to that edge. A panel never takes focus
+when it appears (it's an NSPanel shown inactive); click into the chat panel to type.
+
+Each panel has a heading you drag to move it (moving undocks it: it stays where you drop
+it), resize edges (only the inner one while docked), and a control strip: dock (left,
+right, top, bottom, free), vertical/horizontal (horizontal is a real strip layout: the
+transcript as columns, timers as cards, the Library's groups side by side), opacity, pin
+(a pinned panel never hides itself and comes back when the app starts) and close.
+Unpinned panels hide themselves once the cursor has been over them and left (or after a
+delay, or never: per panel, in the Overlay view). The layout of every panel, the hot edge,
+the alerts anchors and appearance are saved in Electron's userData as
+`overlay-layout.json` (`~/Library/Application Support/app/` for a dev run), validated
+field by field on load: a bad field falls back to its default with a log line, and a file
+that isn't JSON is moved aside to `overlay-layout.json.corrupt`. Positions are clamped to
+the screen's work area; a panel left on a display that's since been unplugged reopens on
+the main one.
+
+Hot edge notes: the cursor is polled (Electron has no global mouse-move event) every 80 ms,
+only while the hot edge is on or an auto-hiding panel is up. It doesn't fire while a mouse
+button is held (dragging a window or file to that edge; asked of AppKit once per dwell), it
+re-arms only after the cursor leaves the edge, and an edge shared with another monitor
+doesn't count (the cursor passes through it). The top edge is where macOS reveals the menu
+bar in a full-screen app, and the Dock's edge (if it auto-hides) slides the Dock out too:
+the Overlay view says so when you pick one of those.
+
+**Alerts and appearance.** The activation overlay (and its approval card) can sit at any of
+seven anchors (top left/center/right, center, bottom left/center/right) on the cursor's or
+the main display; on a bottom anchor the card opens above the plate. Toasts take their own
+anchor inside the window that raised them. The native Qt overlay (`LEUTHERIA_OVERLAY=qt`)
+keeps top-center. Appearance: theme, density (comfortable/compact; overrides spacing tokens
+only), default panel opacity (60-100%), whether panels float above other windows, and an
+**accent** that replaces the brand violet (presets or any colour). The accent is checked in
+both themes against DESIGN.md's contrast bar (4.5:1 for text and for white text on the
+primary button, 3:1 for marks) and nudged lighter or darker where it falls short, with a
+note saying what changed; one that would read as a state colour (cyan, green, amber, red)
+is refused, because those colours mean live, succeeded, waiting and failed and aren't
+editable.
 
 **Confirmation cards** show the agent's `reason` (why this one asks) when it sends one,
 and when `voice_approvable` is false they carry an amber NEEDS A CLICK line in place of
@@ -1746,7 +1802,33 @@ and interleave freely with a command that's mid-confirmation. They're handled in
 # -> ok:false with an explanation for a hand-written skill -- only generated ones delete
 
 {"type": "revoke_trust", "key": "<the `key` field from an inventory `trusted` entry>", "request_id": "6"}
+
+{"type": "list_timers", "request_id": "7"}
+# -> {"type": "control_result", "request_id": "7", "ok": true, "count": 1,
+#     "timers": [{timer_id, label, remaining, ...}, ...], "note": "...", "message": "..."}
+#    Read-only, for the timers panel: the same result as the list_timers tool, but not
+#    logged as a tool call (a panel refresh isn't usage).
 ```
+
+#### Overlay panels (`panel`)
+
+The agent opens and closes the app's on-screen panels with one stream message, sent by the
+built-in skills `show_panel(panel, query?)` and `hide_panel(panel?)`:
+
+```python
+{"type": "panel", "action": "show", "panel": "skills", "query": "git"}   # query optional
+{"type": "panel", "action": "hide", "panel": "chat"}
+{"type": "panel", "action": "hide", "panel": "all"}   # hide_panel with no panel named
+```
+
+Panel ids: `chat`, `skills`, `activity`, `permissions`, `timers`, `voice` (`action` may
+also be `toggle`, reserved for UI-side triggers; the skills send only `show`/`hide`). The
+UI ignores and logs an id it doesn't know. The skills have no tool steps and change nothing
+on the machine. They send on the request's own websocket; with no UI connected (a voice
+command with no window open) they return `ok: false` saying the app isn't open, so the
+model answers in words instead. An unknown id is refused before sending and logged as
+`panel_unknown`. `panel` is not mirrored to overlay clients — the Qt overlay draws no panels.
+`main.js` must handle `panel` explicitly (BUGS.md #17).
 
 `is_overridden` means the *effective* behaviour differs from the built-in default, not
 merely that a stored entry exists — an override that happens to restate the default isn't
