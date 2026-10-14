@@ -22,31 +22,43 @@
       el(
         "div.chat-empty",
         {},
-        // The logo mark as a watermark: a CSS mask, tinted by the theme.
-        el("div.empty-mark", { "aria-hidden": "true" }),
-        el("div.empty-eyebrow", { text: "No commands this session" }),
-        el("div.empty-title", { text: "Standing by" }),
-        el("div.empty-sub", {
-          text: "Type a command, or say it. Everything Leutheria can do is listed in the Library.",
-        }),
+        // The logo mark, framed: a CSS mask, tinted by the theme.
+        el("div.empty-emblem", { "aria-hidden": "true" }, el("div.empty-mark")),
         el(
-          "div.empty-keys",
+          "div.empty-readout",
           {},
-          el("kbd", { text: "Enter" }),
-          el("span", { text: "Send what you typed" }),
-          el("kbd", { text: "Mic" }),
-          el("span", { text: "Record one command, click again to send" }),
-          el("kbd", { text: "\u2325 Space" }),
-          el("span", { text: "Start or stop a hands-free session" })
+          el("div.empty-eyebrow", { text: "No commands this session" }),
+          el("div.empty-title", { text: "Standing by" }),
+          el("div.empty-sub", {
+            text: "Type a command, or say it. Everything Leutheria can do is listed in the Library.",
+          }),
+          el(
+            "div.empty-keys",
+            {},
+            el("kbd", { text: "Enter" }),
+            el("span", { text: "Send what you typed" }),
+            el("kbd", { text: "Mic" }),
+            el("span", { text: "Record one command, click again to send" }),
+            el("kbd", { text: "\u2325 Space" }),
+            el("span", { text: "Start or stop a hands-free session" })
+          )
         )
       )
     );
   }
 
-  function append(node) {
+  // Follow new entries only when the reader is already at the end (or sent
+  // the entry themselves). Someone scrolled back to read an earlier reply
+  // isn't yanked down by every line that arrives.
+  function nearEnd() {
+    return scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 80;
+  }
+
+  function append(node, force) {
     if (chatEl.querySelector(".chat-empty")) clear(chatEl);
+    const follow = force || nearEnd();
     chatEl.appendChild(node);
-    scrollToEnd();
+    if (follow) scrollToEnd();
   }
 
   // --- messages ----------------------------------------------------------
@@ -102,7 +114,8 @@
       );
     }
 
-    append(message);
+    // Your own line, and anything waiting on you, always comes into view.
+    append(message, role === "user");
   }
 
   // --- confirmation card -------------------------------------------------
@@ -116,7 +129,18 @@
     );
   }
 
-  function addConfirmCard({ id, tool, args }) {
+  // How a confirmation was settled from outside this card. Anything not
+  // listed still settles the card, with a neutral line.
+  function outcomeText(approved, by) {
+    if (by === "timeout") return "Timed out with no answer. It wasn't run.";
+    // "ui" here means the Electron overlay's card (main.js relays its click);
+    // "overlay" is the native Qt overlay, answered over its own connection.
+    const how =
+      by === "voice" ? " by voice" : by === "ui" || by === "overlay" ? " from the overlay" : by === "user" || !by ? " by you" : "";
+    return `${approved ? "Approved" : "Declined"}${how}.`;
+  }
+
+  function addConfirmCard({ id, tool, args, reason, voice_approvable }) {
     const card = el("div.prompt-card.confirm");
     // The tool's safety tier, when the catalog has loaded: why it's asking.
     const inventory = LX.state && LX.state.inventory;
@@ -138,6 +162,14 @@
       {},
       el("div.prompt-lead", {}, "Leutheria wants to run ", el("b", { text: tool }), ". This one always asks first."),
       el("div.code-block", { text: `${tool}(${formatArgs(args, 400) || ""})` }),
+      reason && el("div.prompt-reason", {}, el("span.prompt-reason-key", { text: "Why" }), el("span", { text: reason })),
+      voice_approvable === false &&
+        el(
+          "div.needs-click",
+          {},
+          el("span.needs-click-key", { text: "Needs a click" }),
+          el("span", { text: "A spoken yes won't approve this one." })
+        ),
       actions
     );
     card.appendChild(body);
@@ -167,7 +199,7 @@
       actions.remove();
       card.classList.add("resolved");
       card.appendChild(resolvedRow(note, approved));
-      scrollToEnd();
+      if (nearEnd()) scrollToEnd();
     };
 
     for (const spec of buttons) {
@@ -194,16 +226,13 @@
     }
 
     confirmCards.set(id, settle);
-    append(card);
+    append(card, true);
   }
 
   function resolveConfirmCard({ id, approved, by }) {
     const settle = confirmCards.get(id);
     if (!settle) return;
-    // "ui" here means the Electron overlay's card (main.js relays its click);
-    // "overlay" is the native Qt overlay, answered over its own connection.
-    const how = by === "voice" ? "by voice" : by === "ui" || by === "overlay" ? "from the overlay" : "by you";
-    settle(`${approved ? "Approved" : "Declined"} ${how}.`, approved);
+    settle(outcomeText(approved, by), approved && by !== "timeout");
   }
 
   // --- skill proposal card -----------------------------------------------
@@ -274,7 +303,7 @@
       actions.remove();
       card.classList.add("resolved");
       card.appendChild(resolvedRow(note, approved));
-      scrollToEnd();
+      if (nearEnd()) scrollToEnd();
     };
 
     actions.appendChild(
@@ -298,7 +327,7 @@
 
     body.appendChild(actions);
     card.appendChild(body);
-    append(card);
+    append(card, true);
   }
 
   // --- push to talk ------------------------------------------------------
@@ -310,6 +339,8 @@
   function setMicIcon(recording) {
     clear(micButton).appendChild(icon(recording ? "stop" : "mic"));
     micButton.classList.toggle("recording", recording);
+    micButton.setAttribute("aria-label", recording ? "Stop recording and send" : "Push to talk: record one command");
+    micButton.setAttribute("aria-pressed", String(recording));
   }
 
   async function startRecording() {

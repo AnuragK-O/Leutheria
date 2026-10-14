@@ -94,12 +94,18 @@
 
   --focus: var(--cyan);
   --grid: rgba(142, 111, 212, 0.045); /* the main area's grid texture */
-  --mark-watermark: rgba(142, 111, 212, 0.11);
+  --mark-empty: rgba(142, 111, 212, 0.62); /* the mark in the empty Assistant view */
 
   /* Type. Two families: a squared technical face for everything you read,
      a monospace for everything the machine said. */
-  --font-ui: "Chakra Petch", "Avenir Next", "Helvetica Neue", system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  /* Chakra Petch is Latin only. Other scripts fall through, per glyph, to
+     named macOS faces of a similar plain, open build -- Helvetica Neue
+     (Cyrillic, Greek), PingFang and Hiragino (CJK), Apple SD Gothic Neo
+     (Hangul), Geeza Pro (Arabic) -- rather than whatever system-ui picks. */
+  --font-ui: "Chakra Petch", "Avenir Next", "Helvetica Neue", "PingFang SC", "Hiragino Sans", "Apple SD Gothic Neo",
+    "Geeza Pro", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, "PingFang SC", "Hiragino Sans", "Apple SD Gothic Neo",
+    "Geeza Pro", monospace;
 
   --fs-micro: 10px; /* uppercase labels */
   --fs-xs: 11px; /* mono meta, tags */
@@ -180,7 +186,7 @@
   --on-accent: #ffffff;
 
   --grid: rgba(90, 59, 176, 0.06);
-  --mark-watermark: rgba(115, 83, 201, 0.1);
+  --mark-empty: rgba(115, 83, 201, 0.7);
 }
 
 /* --- base ---------------------------------------------------------------- */
@@ -367,6 +373,7 @@ svg {
 
 .section-label,
 .list-group-label,
+.filter-label,
 .stat-label,
 .msg-role,
 .prompt-head,
@@ -609,6 +616,22 @@ svg {
   padding-left: 30px;
 }
 
+.search input:has(+ kbd) {
+  padding-right: 30px;
+}
+
+/* the key that jumps to this field */
+.search kbd {
+  position: absolute;
+  right: 7px;
+  pointer-events: none;
+}
+
+.search input:focus + kbd,
+.search input:not(:placeholder-shown) + kbd {
+  display: none;
+}
+
 .search input::-webkit-search-cancel-button {
   -webkit-appearance: none;
 }
@@ -675,6 +698,14 @@ input[type="checkbox"]:checked {
   border: none;
 }
 
+.range:focus-visible {
+  outline-offset: 4px;
+}
+
+.range:focus-visible::-webkit-slider-thumb {
+  background: var(--focus);
+}
+
 .range:hover::-webkit-slider-thumb {
   background: var(--text);
 }
@@ -738,6 +769,10 @@ kbd {
   height: 10px;
   background: var(--text-3);
   transition: transform var(--t-base) var(--ease), background-color var(--t-base);
+}
+
+.switch:focus-visible {
+  outline-offset: 0;
 }
 
 .switch:hover::before {
@@ -1000,6 +1035,25 @@ kbd {
   color: var(--line-strong);
 }
 
+.card > .empty {
+  padding: 10px 14px;
+}
+
+/* A null value on its own line, where a boxed row would be mostly padding. */
+.empty.empty-inline {
+  padding: 0;
+}
+
+/* Read by a screen reader, not drawn. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 .callout {
   --tone: var(--violet-hi);
   display: flex;
@@ -1055,6 +1109,11 @@ kbd {
   border: var(--hair) solid var(--line);
 }
 
+/* Six readouts as two even rows of three, so no row ends in an empty slot. */
+.stat-grid-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .stat {
   display: flex;
   flex-direction: column;
@@ -1079,16 +1138,23 @@ kbd {
 
 /* --- primitive: toasts ------------------------------------------------------------ */
 
+/* Bottom-left of the main area: row actions (Revoke, Reset, Delete) sit on
+   the right, so a toast there covered the button just pressed. Over the
+   Assistant view it rises above the composer. */
 .toasts {
   position: fixed;
-  right: var(--s5);
+  left: calc(var(--sidebar-w) + var(--s5));
   bottom: var(--s5);
   z-index: 10;
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
+  align-items: flex-start;
   gap: var(--s2);
   pointer-events: none;
+}
+
+body[data-view="assistant"] .toasts {
+  bottom: 112px;
 }
 
 .toast {
@@ -1099,12 +1165,18 @@ kbd {
   display: flex;
   align-items: center;
   gap: 10px;
-  max-width: 440px;
+  max-width: 400px;
   padding: 9px 18px 9px 12px;
   font-family: var(--font-mono);
   font-size: var(--fs-sm);
   color: var(--text);
   animation: toast-in var(--t-base) var(--ease);
+}
+
+/* a long skill name in a toast wraps inside it rather than running out */
+.toast span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .toast.error {
@@ -1125,14 +1197,14 @@ kbd {
 @keyframes toast-in {
   from {
     opacity: 0;
-    transform: translateX(12px);
+    transform: translateY(8px);
   }
 }
 
 @keyframes toast-out {
   to {
     opacity: 0;
-    transform: translateX(12px);
+    transform: translateY(8px);
   }
 }
 
@@ -1457,6 +1529,26 @@ kbd {
   --cut-bg: color-mix(in srgb, var(--amber) 12%, var(--surface));
 }
 
+/* A settings file the agent couldn't read: a full-width notice under the
+   heading bar, on the views whose settings it affects. */
+.settings-errors {
+  flex: none;
+  border-width: 0 0 var(--hair) 0;
+  border-left: var(--rule) solid var(--tone);
+  padding-left: var(--s5);
+}
+
+.settings-errors-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.settings-errors-text strong {
+  font-weight: 600;
+  color: var(--red);
+}
+
 /* --- views ------------------------------------------------------------------------ */
 
 .view {
@@ -1646,32 +1738,51 @@ kbd {
 
 /* --- empty state ------------------------------------------------------------------ */
 
+/* The mark as an instrument's emblem: framed by the same corner brackets as
+   the overlay's reticle, with the readout set beside it rather than on top. */
 .chat-empty {
-  position: relative;
   flex: 1;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: var(--s2);
-  min-height: 420px;
-  text-align: center;
+  gap: var(--s6);
+  min-height: 360px;
+  padding: var(--s5) 0;
 }
 
-/* The mark, large and nearly gone: a watermark on the grid. */
-.empty-mark {
-  position: absolute;
-  left: 50%;
-  top: 46%;
-  width: min(440px, 78%);
+.empty-emblem {
+  position: relative;
+  flex: none;
+  width: 184px;
   aspect-ratio: 1;
-  transform: translate(-50%, -50%);
-  background: var(--mark-watermark);
-  pointer-events: none;
+  padding: 20px;
+  /* four corner brackets */
+  background: linear-gradient(var(--line-strong), var(--line-strong)) left top / var(--bracket) var(--hair) no-repeat,
+    linear-gradient(var(--line-strong), var(--line-strong)) left top / var(--hair) var(--bracket) no-repeat,
+    linear-gradient(var(--line-strong), var(--line-strong)) right top / var(--bracket) var(--hair) no-repeat,
+    linear-gradient(var(--line-strong), var(--line-strong)) right top / var(--hair) var(--bracket) no-repeat,
+    linear-gradient(var(--line-strong), var(--line-strong)) left bottom / var(--bracket) var(--hair) no-repeat,
+    linear-gradient(var(--line-strong), var(--line-strong)) left bottom / var(--hair) var(--bracket) no-repeat,
+    linear-gradient(var(--line-strong), var(--line-strong)) right bottom / var(--bracket) var(--hair) no-repeat,
+    linear-gradient(var(--line-strong), var(--line-strong)) right bottom / var(--hair) var(--bracket) no-repeat;
+}
+
+.empty-mark {
+  width: 100%;
+  height: 100%;
+  background: var(--mark-empty);
+}
+
+.empty-readout {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s2);
+  min-width: 0;
+  max-width: 46ch;
 }
 
 .empty-eyebrow {
-  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -1686,7 +1797,6 @@ kbd {
 }
 
 .empty-title {
-  position: relative;
   font-size: 28px;
   font-weight: 600;
   letter-spacing: 0.14em;
@@ -1695,24 +1805,20 @@ kbd {
 }
 
 .empty-sub {
-  position: relative;
-  max-width: 44ch;
   font-size: var(--fs-md);
   color: var(--text-2);
+  text-wrap: pretty;
 }
 
 .empty-keys {
-  position: relative;
   display: grid;
   grid-template-columns: auto auto;
   gap: 6px var(--s3);
-  margin-top: var(--s4);
-  padding: var(--s3) var(--s4);
-  text-align: left;
+  margin-top: var(--s3);
+  padding: var(--s3) 0;
   font-size: var(--fs-sm);
   color: var(--text-2);
   border-top: var(--hair) solid var(--line-strong);
-  border-bottom: var(--hair) solid var(--line-strong);
 }
 
 .empty-keys kbd {
@@ -1802,6 +1908,58 @@ kbd {
   font-size: var(--fs-xl);
   font-weight: 500;
   overflow-wrap: anywhere;
+}
+
+/* why this confirmation asks, when the agent says */
+.prompt-reason {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: var(--fs-md);
+  color: var(--text-2);
+}
+
+.prompt-reason-key,
+.needs-click-key {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+/* A spoken yes won't approve this one. A state (it waits on a click), so
+   amber with an indicator and a rule, not a caption. */
+.needs-click {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 6px 10px;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: color-mix(in srgb, var(--amber) 8%, var(--surface));
+  border-left: var(--rule) solid var(--amber);
+}
+
+.needs-click-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--amber);
+}
+
+.needs-click-key::before {
+  content: "";
+  width: var(--led);
+  height: var(--led);
+  background: var(--amber);
+}
+
+.prompt-card.resolved .needs-click {
+  display: none;
 }
 
 .prompt-actions {
@@ -1902,8 +2060,17 @@ kbd {
   margin: 0 auto;
 }
 
+/* The composer is focused nearly all the time (autofocus, and every return
+   to the view), so a mouse or programmatic focus gets a quiet outline. Arriving
+   by keyboard (app.js sets data-modality) gets the full focus colour. */
 .composer-field:focus-within {
+  --cut-line: var(--text-3);
+}
+
+body[data-modality="keyboard"] .composer-field:focus-within {
   --cut-line: var(--focus);
+  outline: 1px solid var(--focus);
+  outline-offset: 1px;
 }
 
 .composer-prompt {
@@ -1986,8 +2153,9 @@ kbd {
 }
 
 .library-list {
+  display: flex;
+  flex-direction: column;
   min-height: 0;
-  overflow-y: auto;
   background: var(--base);
   border-right: var(--hair) solid var(--line);
 }
@@ -1997,22 +2165,137 @@ kbd {
   overflow-y: auto;
 }
 
+/* The state filters: a readout strip that is also the control. Each cell is
+   a count over its label; pressing one narrows the list to those entries. */
+.library-filters {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  flex: none;
+  border-bottom: var(--hair) solid var(--line);
+}
+
+.filter-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  min-width: 0;
+  padding: 7px 4px 8px 12px;
+  text-align: left;
+  color: var(--text-3);
+  transition: color var(--t-fast), background-color var(--t-fast);
+}
+
+.filter-chip:first-child {
+  padding-left: 18px;
+}
+
+.filter-chip + .filter-chip {
+  border-left: var(--hair) solid var(--line);
+}
+
+.filter-count {
+  order: -1;
+  font-family: var(--font-mono);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.filter-chip:hover {
+  color: var(--text);
+  background: var(--surface);
+}
+
+.filter-chip:focus-visible,
+.list-group-label:focus-visible {
+  outline-offset: -2px;
+}
+
+/* active: the same fill and underline as an active segment */
+.filter-chip.active {
+  color: var(--text);
+  background: var(--raised-2);
+  box-shadow: inset 0 calc(var(--rule) * -1) 0 var(--violet);
+}
+
+.filter-chip:disabled {
+  cursor: default;
+  pointer-events: none;
+}
+
+.filter-chip:disabled .filter-count {
+  color: var(--text-3);
+}
+
+.library-rows {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* A group heading: sticky, and the button that folds the group away. */
 .list-group-label {
   position: sticky;
   top: 0;
   z-index: 1;
   display: flex;
-  justify-content: space-between;
-  padding: 8px 14px 7px 18px;
-  color: var(--text-3);
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: var(--hit);
+  padding: 0 14px 0 18px;
+  text-align: left;
+  color: var(--text-2);
   background: var(--sunken);
+  border-bottom: var(--hair) solid var(--line);
+  transition: color var(--t-fast);
+}
+
+.list-group-label:hover {
+  color: var(--text);
+}
+
+/* the caret: two hairlines, pointing down when the group is open */
+.list-group-caret {
+  width: 5px;
+  height: 5px;
+  flex: none;
+  margin: 0 1px 2px 0;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform var(--t-fast);
+}
+
+.list-group-label[aria-expanded="false"] .list-group-caret {
+  margin: 0 2px 0 0;
+  transform: rotate(-45deg);
+}
+
+.list-group-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.list-group-count {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-3);
+}
+
+.list-group-body {
+  padding: 2px 0 6px;
   border-bottom: var(--hair) solid var(--line);
 }
 
-.list-group-label span {
-  font-variant-numeric: tabular-nums;
-}
-
+/* A row is one line: the name. Compact on purpose -- the catalog runs to
+   ninety-odd entries. A second line appears only when a search matched in
+   the description, to show where. */
 .list-row {
   position: relative;
   display: grid;
@@ -2020,10 +2303,9 @@ kbd {
   align-items: center;
   column-gap: 10px;
   width: 100%;
-  min-height: 48px;
-  padding: 7px 12px 7px 18px;
+  min-height: var(--hit);
+  padding: 3px 12px 3px 18px;
   text-align: left;
-  border-bottom: var(--hair) solid color-mix(in srgb, var(--line) 65%, transparent);
   transition: background-color var(--t-fast);
 }
 
@@ -2055,8 +2337,8 @@ kbd {
 }
 
 .list-row-icon svg {
-  width: 13px;
-  height: 13px;
+  width: 12px;
+  height: 12px;
 }
 
 .list-row.active .list-row-icon {
@@ -2072,15 +2354,20 @@ kbd {
 .list-row-name {
   font-family: var(--font-mono);
   font-size: var(--fs-sm);
-  font-weight: 500;
+  font-weight: 400;
   color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+.list-row.active .list-row-name {
+  font-weight: 500;
+}
+
 .list-row-desc {
-  font-size: var(--fs-sm);
+  padding-bottom: 2px;
+  font-size: var(--fs-xs);
   color: var(--text-3);
   white-space: nowrap;
   overflow: hidden;
@@ -2096,6 +2383,32 @@ kbd {
 .list-row-flags {
   display: flex;
   gap: 4px;
+}
+
+.list-row-flags .badge {
+  height: 16px;
+  padding: 0 5px;
+}
+
+.list-none {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: var(--s2) 0;
+}
+
+.list-none .empty {
+  padding: var(--s2) 18px;
+}
+
+.list-none .link-button {
+  margin-left: 14px;
+}
+
+/* a search hit, in a name or a description */
+mark {
+  color: var(--text);
+  background: color-mix(in srgb, var(--violet) 38%, transparent);
 }
 
 .detail {
@@ -2129,10 +2442,60 @@ kbd {
   user-select: text;
 }
 
-.detail-desc {
-  max-width: 68ch;
+/* The first sentence of the description: what it does. */
+.detail-summary {
+  max-width: 60ch;
   font-size: var(--fs-lg);
+  line-height: 1.5;
+  color: var(--text);
+  text-wrap: pretty;
+  user-select: text;
+}
+
+/* The rest of it -- when the model is told to use the thing and when not --
+   one sentence per line, threaded on a hairline like a tool trace. */
+.guidance {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 66ch;
+  padding-left: var(--s3);
+  border-left: var(--hair) solid var(--line-strong);
+}
+
+.guidance p {
+  font-size: var(--fs-md);
+  line-height: 1.5;
   color: var(--text-2);
+  text-wrap: pretty;
+  user-select: text;
+}
+
+/* another capability named in a description: a link to it */
+.ref-link {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  color: var(--violet-hi);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--violet) 55%, transparent);
+  text-underline-offset: 3px;
+}
+
+.ref-link:hover {
+  color: var(--text);
+}
+
+.key-list {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px var(--s3);
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+
+.key-list kbd {
+  justify-self: start;
 }
 
 /* settings rows (Library permissions, Voice) */
@@ -2157,6 +2520,7 @@ kbd {
 }
 
 .setting-text strong {
+  overflow-wrap: anywhere;
   font-size: var(--fs-md);
   font-weight: 600;
   letter-spacing: 0.02em;
@@ -2522,6 +2886,48 @@ kbd {
   user-select: text;
 }
 
+/* One row per line. The tag says who wrote it: the app's bridge in violet
+   (the app itself), the agent in full text, an overlay dimmer. Only an error
+   stream (":err") takes a state colour. A wrapped line hangs under its tag. */
+.log-line {
+  /* a hanging indent: continuation lines sit 2ch in from the tag */
+  padding: 0 0 0 calc(var(--s3) + 2ch);
+  margin-left: calc(var(--s3) * -1);
+  text-indent: -2ch;
+  border-left: var(--rule) solid transparent;
+}
+
+.log-line:hover {
+  background: color-mix(in srgb, var(--raised) 60%, transparent);
+}
+
+.log-tag {
+  font-weight: 500;
+  color: var(--text-3);
+}
+
+.log-bridge .log-tag {
+  color: var(--violet-hi);
+}
+
+.log-agent .log-tag {
+  color: var(--text);
+}
+
+.log-overlay .log-tag {
+  color: var(--text-2);
+}
+
+.log-err {
+  color: var(--text);
+  border-left-color: var(--red);
+  background: color-mix(in srgb, var(--red) 6%, transparent);
+}
+
+.log-err .log-tag {
+  color: var(--red);
+}
+
 /* ==========================================================================
    Narrow windows (the minimum is 940 px)
    ========================================================================== */
@@ -2537,7 +2943,7 @@ kbd {
   }
 
   .search input {
-    width: 150px;
+    width: 168px;
   }
 
   .stack,

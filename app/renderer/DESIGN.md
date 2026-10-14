@@ -60,7 +60,7 @@ what the machine did, what it is doing, and what it is waiting for you to allow.
 | `--on-accent` | `#0A0810` | `#FFFFFF` | text on a cyan, amber, red or green fill |
 | `--focus` | `--cyan` | `--cyan` | the focus ring |
 | `--grid` | `rgba(142,111,212,.045)` | `rgba(90,59,176,.06)` | the main area's 24 px grid |
-| `--mark-watermark` | `rgba(142,111,212,.11)` | `rgba(115,83,201,.10)` | the logo behind the empty Assistant view |
+| `--mark-empty` | `rgba(142,111,212,.62)` | `rgba(115,83,201,.70)` | the logo in the empty Assistant view's emblem |
 
 `--violet` `#8E6FD4` is sampled from the logo (`assets/1.png`).
 
@@ -87,6 +87,11 @@ var(--surface))`), never written as new literals, so they follow the theme.
 |---|---|---|---|
 | Chakra Petch 400/500/600/700 | `--font-ui` | Avenir Next, Helvetica Neue, system-ui | SIL OFL 1.1 (`fonts/ChakraPetch-OFL.txt`) |
 | JetBrains Mono 400/500/700 | `--font-mono` | ui-monospace, SF Mono, Menlo | SIL OFL 1.1 (`fonts/JetBrainsMono-OFL.txt`) |
+
+Chakra Petch is Latin only. Both stacks then name macOS faces per script (PingFang SC
+and Hiragino Sans for CJK, Apple SD Gothic Neo for Hangul, Geeza Pro for Arabic;
+Helvetica Neue covers Cyrillic and Greek) so a non-Latin command falls back to a
+chosen face, glyph by glyph, rather than to whatever `system-ui` resolves to.
 
 Both are bundled as woff2 and loaded with `@font-face` from `fonts/`; nothing is fetched.
 Chakra Petch is the Latin subset (from Fontsource's build of the Google Fonts release);
@@ -181,7 +186,7 @@ including the ones `main.js` sends to the transcript; a notice there carries
   with the shape in the alpha channel. Regenerate with
   `cd app && env -u ELECTRON_RUN_AS_NODE npx electron scripts/make-mark.js`.
 - In the UI the mark is always a CSS mask (`.brand-mark`, `.empty-mark`), so its colour
-  is a token: `--violet` in the rail, `--mark-watermark` behind the empty Assistant view.
+  is a token: `--violet` in the rail, `--mark-empty` in the empty Assistant view.
 - The wordmark in the rail is set in type (Chakra Petch 700, tracked), not the script
   lettering from `assets/2.png` and `3.png`.
 - `assets/` originals are not used by the renderer. The dock and tray icons are unchanged
@@ -242,3 +247,67 @@ reverse on leaving. The card drops in 6 px over 160 ms.
 
 The state rules themselves (which state shows when, the text of each line, how a
 confirmation settles) are in `overlay/overlay.js` and did not change with the redesign.
+
+## Patterns
+
+**Grouped list (the Library).** A list pane of three parts: a state-filter strip that is
+also a readout (count over a micro-label; pressed = `--raised-2` fill and the violet
+underline of an active segment; a filter with nothing to show is dimmed and inert), then
+groups. A group heading is a sticky `--sunken` strip (caret, micro-label name, count) and
+a button that folds the group; folded groups are remembered per viewer. Rows are one line,
+`--hit` tall: kind icon, mono name, tags only for what's out of the ordinary (`learned`
+violet, `ask` amber, `off` dashed). A search that matches inside the description adds a
+second line with the excerpt; hits are `<mark>` (violet 38% behind `--text`). While a
+search or state filter is on, every group with results is held open. Group membership is
+display-only and lives in `js/library-groups.js`, with Other as the fallback.
+
+**Model-facing prose for a human.** Tool and skill descriptions are written for the model
+and are not ours to rewrite. The detail pane splits one on sentence ends: the first
+sentence is the summary (`--fs-lg`, `--text`, 60ch); the rest goes under "When Leutheria
+uses it", one sentence per line in `--text-2`, threaded on a hairline (66ch). Another
+capability's name in the text becomes a mono violet link that selects it.
+
+**Empty state.** The mark is an emblem, not a watermark: 184 px, framed by four corner
+brackets in `--line-strong` (the reticle's frame), with the readout (eyebrow, title,
+sentence, key list) set beside it, left-aligned. Nothing sits behind text.
+
+**Log readout.** One `div` per line inside the `pre`, so it stays one selectable block.
+The source tag is tinted by who wrote it (`[bridge]` `--violet-hi`, `[agent]` `--text`,
+`[overlay…]` `--text-2`); only an error stream (`:err`) takes a state colour: red tag, a
+2 px red rule, a 6% red wash. Continuation lines hang 2ch in. New lines are appended,
+never a full rebuild.
+
+**Toasts** sit bottom-left of the main column (raised above the composer on the
+Assistant view), because row actions (Revoke, Reset, Delete) are on the right. A long
+name wraps inside the toast.
+
+**Confirmation extras.** An agent `reason` is a line under the command, keyed WHY in a
+micro-label. `voice_approvable: false` is a state, so it is amber: NEEDS A CLICK as a
+micro-label with an amber indicator (on the main card, a 2 px amber rule and 8% wash; on
+the overlay, in place of the spoken-answer hint). A timed-out confirmation settles with a
+cross and "Timed out with no answer. It wasn't run." Once answered, both cards go
+neutral (`.resolved`: `--tone: --text-3`).
+
+**Settings error notice.** `inventory.settings_errors` renders a full-width danger callout
+under the heading bar on Library and Permissions only, since those are the settings it
+affects.
+
+## Focus and accessibility
+
+- Every interactive element shows `:focus-visible` as a 2 px `--focus` outline. Inside a
+  list or the rail it is inset (`outline-offset: -2px`) so neighbours don't clip it; on a
+  cut-corner control the ring sits on the unclipped element, outside the cut.
+- The composer is focused almost always, so it rests with a `--text-3` outline; the full
+  `--focus` ring appears when focus arrives by keyboard (`body[data-modality="keyboard"]`,
+  set by app.js on Tab/arrow/slash, cleared on pointer down). Fields match
+  `:focus-visible` however they were focused, which is why this is tracked by hand.
+- Custom controls carry their roles: `.switch` is `role="switch"` with `aria-checked`,
+  labelled and described by its setting text; segmented and state filters are
+  `aria-pressed` buttons in a labelled group; group headings carry `aria-expanded` and
+  `aria-controls`; the selected row is `aria-current`; the list is one tab stop with a
+  roving tabindex. The transcript is `role="log"` (polite), toasts a `status` region.
+- Contrast: the colours added in this pass are mixes of existing tokens over existing
+  grounds (`<mark>`, the needs-click wash, the log error wash) and keep text at
+  `--text`/`--text-2`, which clear 4.5:1 on every ground; the state colours used as text
+  are the existing ones.
+
