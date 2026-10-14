@@ -1,0 +1,755 @@
+/* ==========================================================================
+   Panels: the floating windows (panels/panel.js)
+   A panel is the overlay's kind of object -- it floats over other apps -- so
+   it gets the overlay plate's treatment: a --surface frame with the top-right
+   corner cut (--cut-lg) and the product's one drop shadow. Inside, the main
+   window's own components, laid out narrower. No tokens are defined here;
+   everything comes from ../styles.css.
+
+   body[data-orientation] is the panel's layout (vertical: a column;
+   horizontal: a strip of columns/cards) and body[data-dock] where it sits.
+   Both are set from main.js's panel-config.
+   ========================================================================== */
+
+/* The window is transparent; the frame sits 12 px in, which is room for
+   the shadow and for the resize edges outside it. */
+html,
+body.panel-page {
+  background: transparent;
+}
+
+body.panel-page {
+  padding: 12px;
+  /* The rail and the heading bar aren't here; toasts measure from these. */
+  --sidebar-w: 0px;
+  --topbar-h: 48px;
+}
+
+.panel-frame {
+  --cut: var(--cut-lg);
+  --cut-bg: var(--surface);
+  --cut-line: var(--line-strong);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  filter: drop-shadow(0 8px 18px rgba(0, 0, 0, 0.4));
+  opacity: 0;
+  transition: opacity var(--t-base) var(--ease);
+}
+
+body.ready .panel-frame {
+  opacity: 1;
+}
+
+/* --- the heading strip: drag handle, title, control strip ------------------ */
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex: none;
+  height: 44px;
+  /* Room on the right for the cut corner. */
+  padding: 0 calc(var(--cut-lg) + var(--s1)) 0 var(--s2);
+  border-bottom: var(--hair) solid var(--line);
+  cursor: grab;
+  user-select: none;
+}
+
+body.moving .panel-head {
+  cursor: grabbing;
+}
+
+.panel-grip {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  color: var(--text-3);
+}
+
+.panel-grip svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2.4;
+}
+
+.panel-heading {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  flex: 1;
+  min-width: 0;
+}
+
+.panel-title {
+  flex: none;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  letter-spacing: var(--track-title);
+  text-transform: uppercase;
+}
+
+.panel-subtitle {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+
+.panel-strip {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  cursor: default;
+}
+
+.panel-ctl svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Pinned: a state, so not colour alone -- the pressed fill and the active
+   segment's underline. */
+.panel-ctl.on {
+  color: var(--violet-hi);
+  background: var(--raised-2);
+  box-shadow: inset 0 calc(-1 * var(--rule)) 0 var(--violet);
+}
+
+.panel-ctl[aria-expanded="true"] {
+  color: var(--text);
+  background: var(--raised);
+  border-color: var(--line-strong);
+}
+
+.panel-ctl:focus-visible {
+  outline-offset: -2px;
+}
+
+/* --- popovers: the dock menu, the opacity slider ----------------------------- */
+
+.panel-pop {
+  position: absolute;
+  top: calc(44px + 12px + var(--s1));
+  right: calc(12px + var(--s2));
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 232px;
+  padding: var(--s2);
+  background: var(--raised);
+  border: var(--hair) solid var(--line-strong);
+}
+
+.panel-pop .micro-label {
+  color: var(--text-3);
+  padding: 0 var(--s1) var(--s1);
+}
+
+.panel-pop .range {
+  width: 150px;
+}
+
+.panel-menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-height: var(--hit);
+  padding: 0 var(--s2);
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  text-align: left;
+}
+
+.panel-menu-item svg {
+  width: 14px;
+  height: 14px;
+  color: var(--text-3);
+}
+
+.panel-menu-item:hover {
+  color: var(--text);
+  background: var(--raised-2);
+}
+
+.panel-menu-item.selected {
+  color: var(--text);
+}
+
+.panel-menu-item.selected .pip {
+  background: var(--violet-hi);
+  box-shadow: none;
+}
+
+.panel-menu-item:focus-visible {
+  outline-offset: -2px;
+}
+
+/* --- a view's own controls (the Library's kind filter and search) ------------ */
+
+.panel-tools {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex: none;
+  padding: var(--s2) var(--s3);
+  border-bottom: var(--hair) solid var(--line);
+}
+
+.panel-tools .search {
+  flex: 1;
+  min-width: 0;
+}
+
+.panel-tools .search input {
+  width: 100%;
+}
+
+/* --- the body ------------------------------------------------------------------ */
+
+.panel-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  /* inside the frame's 1 px outline */
+  margin: 0 var(--hair) var(--hair);
+  overflow: hidden;
+}
+
+/* --- resize edges ---------------------------------------------------------------
+   Invisible strips along the frame's edges; which ones exist depends on the
+   dock (main.js: only the edge facing into the screen when docked). */
+
+.panel-resizer {
+  position: fixed;
+  z-index: 20;
+}
+.panel-resizer[data-edge="n"],
+.panel-resizer[data-edge="s"] {
+  left: 24px;
+  right: 24px;
+  height: 10px;
+  cursor: ns-resize;
+}
+.panel-resizer[data-edge="e"],
+.panel-resizer[data-edge="w"] {
+  top: 24px;
+  bottom: 24px;
+  width: 10px;
+  cursor: ew-resize;
+}
+.panel-resizer[data-edge="n"] {
+  top: 7px;
+}
+.panel-resizer[data-edge="s"] {
+  bottom: 7px;
+}
+.panel-resizer[data-edge="e"] {
+  right: 7px;
+}
+.panel-resizer[data-edge="w"] {
+  left: 7px;
+}
+.panel-resizer[data-edge="ne"],
+.panel-resizer[data-edge="nw"],
+.panel-resizer[data-edge="se"],
+.panel-resizer[data-edge="sw"] {
+  width: 18px;
+  height: 18px;
+}
+.panel-resizer[data-edge="ne"] {
+  top: 5px;
+  right: 5px;
+  cursor: nesw-resize;
+}
+.panel-resizer[data-edge="sw"] {
+  bottom: 5px;
+  left: 5px;
+  cursor: nesw-resize;
+}
+.panel-resizer[data-edge="nw"] {
+  top: 5px;
+  left: 5px;
+  cursor: nwse-resize;
+}
+.panel-resizer[data-edge="se"] {
+  bottom: 5px;
+  right: 5px;
+  cursor: nwse-resize;
+}
+
+/* --- toasts inside a panel ----------------------------------------------------- */
+
+.panel-page .toasts {
+  left: calc(12px + var(--s3));
+  bottom: calc(12px + var(--s3));
+}
+
+.panel-page .toast {
+  max-width: calc(100vw - 72px);
+}
+
+/* ==========================================================================
+   chat
+   ========================================================================== */
+
+body[data-panel="chat"] {
+  --gutter: 68px;
+}
+
+body[data-panel="chat"] .chat {
+  padding: var(--s2) var(--s3) var(--s3);
+}
+
+body[data-panel="chat"] .msg {
+  column-gap: var(--s3);
+}
+
+body[data-panel="chat"] .composer {
+  padding: var(--s2) var(--s3) var(--s3);
+  background: transparent;
+}
+
+/* The empty state, cut down: no room for the emblem's 184 px. */
+body[data-panel="chat"] .chat-empty {
+  gap: var(--s3);
+}
+body[data-panel="chat"] .empty-emblem {
+  display: none;
+}
+body[data-panel="chat"] .empty-title {
+  font-size: var(--fs-2xl);
+}
+
+/* Prompt cards: the four approval buttons wrap rather than overflow. */
+body[data-panel="chat"] .prompt-actions {
+  flex-wrap: wrap;
+}
+
+/* Horizontal: the transcript is a row of columns, newest on the right, and
+   the composer a column of its own at the end. */
+body[data-panel="chat"][data-orientation="horizontal"] .panel-body {
+  flex-direction: row;
+}
+
+body[data-panel="chat"][data-orientation="horizontal"] .chat-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-gutter: auto;
+}
+
+body[data-panel="chat"][data-orientation="horizontal"] .chat {
+  flex-direction: row;
+  align-items: stretch;
+  gap: var(--s3);
+  max-width: none;
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+}
+
+body[data-panel="chat"][data-orientation="horizontal"] .msg {
+  flex: 0 0 300px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  overflow-y: auto;
+  padding: var(--s2) var(--s3) var(--s2) 0;
+}
+
+body[data-panel="chat"][data-orientation="horizontal"] .msg-gutter {
+  flex-direction: row;
+  gap: var(--s2);
+}
+
+/* A turn opens with a vertical rule instead of the horizontal one. */
+body[data-panel="chat"][data-orientation="horizontal"] .msg.user {
+  margin-top: 0;
+  padding-top: var(--s2);
+  padding-left: var(--s3);
+  border-top: none;
+  border-left: var(--hair) solid var(--line);
+}
+
+body[data-panel="chat"][data-orientation="horizontal"] .msg.user:first-child {
+  border-left: none;
+  padding-left: 0;
+}
+
+body[data-panel="chat"][data-orientation="horizontal"] .prompt-card {
+  flex: 0 0 380px;
+  overflow-y: auto;
+}
+
+body[data-panel="chat"][data-orientation="horizontal"] .chat-empty {
+  flex: 1;
+  flex-direction: row;
+  align-items: center;
+}
+
+body[data-panel="chat"][data-orientation="horizontal"] .composer {
+  flex: 0 0 300px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  border-top: none;
+  border-left: var(--hair) solid var(--line);
+}
+
+/* ==========================================================================
+   skills (the Library, compact)
+   ========================================================================== */
+
+body[data-panel="skills"] .library {
+  display: grid;
+  grid-template-columns: none;
+  grid-template-rows: minmax(0, 1fr) auto;
+  height: 100%;
+}
+
+body[data-panel="skills"] .library-list {
+  border-right: none;
+  background: transparent;
+}
+
+body[data-panel="skills"] .library-detail {
+  max-height: 55vh;
+  border-top: var(--hair) solid var(--line);
+}
+
+body[data-panel="skills"] .library-detail:empty {
+  display: none;
+}
+
+body[data-panel="skills"] .detail {
+  padding: var(--s3) var(--s3) var(--s4);
+  gap: var(--s3);
+}
+
+body[data-panel="skills"] .detail-title h2 {
+  font-size: var(--fs-xl);
+}
+
+body[data-panel="skills"] .detail-summary {
+  font-size: var(--fs-md);
+}
+
+.detail-open {
+  align-self: flex-start;
+}
+
+/* Horizontal: the groups become columns side by side, the detail a column
+   at the end. */
+body[data-panel="skills"][data-orientation="horizontal"] .library {
+  grid-template-rows: none;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+body[data-panel="skills"][data-orientation="horizontal"] .library-rows {
+  display: flex;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+body[data-panel="skills"][data-orientation="horizontal"] .list-group {
+  flex: 0 0 240px;
+  overflow-y: auto;
+  border-right: var(--hair) solid var(--line);
+}
+
+body[data-panel="skills"][data-orientation="horizontal"] .library-detail {
+  width: 340px;
+  max-height: none;
+  border-top: none;
+  border-left: var(--hair) solid var(--line);
+}
+
+/* ==========================================================================
+   activity, permissions: the main window's cards, narrower
+   ========================================================================== */
+
+body[data-panel="activity"] .stack,
+body[data-panel="permissions"] .stack {
+  gap: var(--s3);
+  max-width: none;
+  padding: var(--s3);
+  overflow-y: auto;
+  height: 100%;
+}
+
+body[data-panel="activity"] .stat-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+/* Five readouts in rows of three: the last one takes the empty slot rather
+   than leaving a hole (DESIGN.md: no row ends in an empty slot). */
+body[data-panel="activity"] .stat:last-child:nth-child(3n + 2) {
+  grid-column: span 2;
+}
+
+body[data-panel="activity"] .usage-row {
+  grid-template-columns: minmax(0, 120px) minmax(0, 1fr) 40px;
+}
+
+/* Horizontal: one column per card, each scrolling on its own. */
+body[data-panel="activity"][data-orientation="horizontal"] .stack,
+body[data-panel="permissions"][data-orientation="horizontal"] .stack {
+  flex-direction: row;
+  align-items: stretch;
+  overflow-y: hidden;
+  overflow-x: auto;
+}
+
+body[data-panel="activity"][data-orientation="horizontal"] .stack > *,
+body[data-panel="permissions"][data-orientation="horizontal"] .stack > * {
+  flex: 1 0 300px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+body[data-panel="activity"][data-orientation="horizontal"] .stat-grid {
+  flex: 0 0 260px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+}
+
+body[data-panel="permissions"][data-orientation="horizontal"] .callout {
+  flex: 0 0 220px;
+  align-items: flex-start;
+}
+
+/* ==========================================================================
+   timers
+   ========================================================================== */
+
+.timers {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s3);
+  overflow: auto;
+  height: 100%;
+}
+
+.timer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "head head"
+    "left action"
+    "meta meta";
+  gap: var(--s1) var(--s3);
+  padding: var(--s3);
+  background: var(--raised);
+  border: var(--hair) solid var(--line);
+  border-left: var(--rule) solid var(--violet);
+}
+
+.timer.done {
+  border-left-color: var(--text-3);
+}
+
+.timer-head {
+  grid-area: head;
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  min-width: 0;
+}
+
+.timer-label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-weight: 600;
+}
+
+.timer-id {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+
+.timer-left {
+  grid-area: left;
+  font-family: var(--font-mono);
+  font-size: var(--fs-3xl);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+
+.timer .btn {
+  grid-area: action;
+  align-self: center;
+}
+
+.timer-meta {
+  grid-area: meta;
+  display: flex;
+  gap: var(--s4);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+}
+
+.timer-meta > span {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s1);
+}
+
+.timer-meta .micro-label {
+  color: var(--text-3);
+}
+
+.timers-none {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+}
+
+/* Horizontal: a strip of timer cards. */
+body[data-orientation="horizontal"] .timers {
+  flex-direction: row;
+  align-items: flex-start;
+}
+
+body[data-orientation="horizontal"] .timer {
+  flex: 0 0 260px;
+}
+
+/* ==========================================================================
+   voice
+   ========================================================================== */
+
+.voice-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  padding: var(--s3);
+  overflow: auto;
+  height: 100%;
+}
+
+.vp-readout {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s1);
+}
+
+.vp-readout .micro-label,
+.vp-io .micro-label {
+  color: var(--text-3);
+}
+
+.vp-state {
+  --tone: var(--text-3);
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xl);
+  font-weight: 500;
+  color: var(--tone);
+}
+
+.vp-state[data-tone="live"] {
+  --tone: var(--cyan);
+}
+.vp-state[data-tone="work"] {
+  --tone: var(--violet-hi);
+}
+.vp-state[data-tone="wait"] {
+  --tone: var(--amber);
+}
+.vp-state[data-tone="idle"] {
+  --tone: var(--text);
+}
+
+.vp-led {
+  width: 10px;
+  height: 10px;
+  background: var(--tone);
+}
+
+.vp-state[data-tone="off"] .vp-led {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--text-3);
+}
+
+.vp-state[data-tone="live"] .vp-led,
+.vp-state[data-tone="wait"] .vp-led {
+  animation: blink 1s steps(2, jump-none) infinite;
+}
+
+.vp-line {
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  margin-bottom: var(--s2);
+}
+
+.vp-readout .voice-indicator {
+  margin-left: 0;
+}
+
+.vp-io {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: var(--s2);
+  border-top: var(--hair) solid var(--line);
+}
+
+.vp-text {
+  font-size: var(--fs-md);
+}
+
+.vp-text.none {
+  font-family: var(--font-mono);
+  color: var(--text-3);
+}
+
+.vp-hint {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin-top: auto;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+
+/* Horizontal: readout, last heard, last reply side by side. */
+body[data-panel="voice"][data-orientation="horizontal"] .voice-panel {
+  flex-direction: row;
+  align-items: stretch;
+}
+
+body[data-panel="voice"][data-orientation="horizontal"] .vp-readout {
+  flex: 0 0 220px;
+}
+
+body[data-panel="voice"][data-orientation="horizontal"] .vp-io {
+  flex: 1 1 0;
+  min-width: 0;
+  padding-top: 0;
+  padding-left: var(--s3);
+  border-top: none;
+  border-left: var(--hair) solid var(--line);
+}
+
+body[data-panel="voice"][data-orientation="horizontal"] .vp-hint {
+  flex: 0 0 160px;
+  flex-direction: column;
+  align-items: flex-start;
+  margin-top: 0;
+}

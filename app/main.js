@@ -13,6 +13,8 @@ const fs = require("fs");
 const path = require("path");
 const WebSocket = require("ws");
 const { TOKEN_ENV, createAuth, childEnv, connectOptions, explainRejection } = require("./agent-auth");
+const overlaySettings = require("./overlay-settings");
+const { createPanelManager } = require("./panels");
 
 const AGENT_DIR = path.join(__dirname, "..", "agent");
 const AGENT_PYTHON = path.join(AGENT_DIR, ".venv", "bin", "python");
@@ -72,6 +74,13 @@ if (CAPTURE_DIR) {
   app.setPath("userData", path.join(CAPTURE_DIR, "userdata"));
 }
 
+// Test only: LEUTHERIA_TEST_HOOKS=1 (set by scripts/ui-capture.js, never in
+// normal use) defines globalThis.__leutheriaTest, which the capture script
+// reaches through the main process's inspector port. It can stand in for the
+// cursor position and the mouse-button state (the hot edge reads both) and
+// report window focus. Without the variable none of it exists.
+const TEST_HOOKS = process.env.LEUTHERIA_TEST_HOOKS === "1" ? { cursor: null, mouseDown: null } : null;
+
 let devWindow;
 let overlayWindow;
 let overlayHideTimer = null;
@@ -130,10 +139,22 @@ function sendToMain(channel, payload) {
   if (alive(devWindow)) devWindow.webContents.send(channel, payload);
 }
 
-// Voice-session events go to both windows: the overlay draws them, the main
-// window's header indicator mirrors them.
+// The panel windows (panels.js). Created once the app is ready.
+let panels = null;
+const panelWindows = () => (panels ? panels.windows() : []);
+
+// What the main window shows that a panel shows too (the chat panel's
+// transcript, the info panels' catalog and connection state).
+function sendToUi(channel, payload) {
+  for (const win of [devWindow, ...panelWindows()]) {
+    if (alive(win)) win.webContents.send(channel, payload);
+  }
+}
+
+// Voice-session events go to every window: the overlay draws them, the main
+// window's header indicator and the voice panel mirror them.
 function broadcast(channel, payload) {
-  for (const win of [devWindow, overlayWindow]) {
+  for (const win of [devWindow, overlayWindow, ...panelWindows()]) {
     if (alive(win)) win.webContents.send(channel, payload);
   }
 }
@@ -143,8 +164,28 @@ function log(line) {
   sendToMain("log", line);
 }
 
+/* The transcript's events, in order, so a chat panel opened mid-session (or
+   reloaded) starts with the conversation instead of an empty log. Replayed
+   through the same handlers the live events use. Capped: it's a view of the
+   recent session, not a history store. */
+const TRANSCRIPT_EVENTS = ["chat", "confirm-request", "confirm-resolved", "skill-proposed", "skill-resolved"];
+const TRANSCRIPT_CAP = 400;
+const transcript = [];
+let transcriptSeq = 0;
+
+// Stamps the payload with _seq (chat.js uses it to skip an event it has
+// already shown) and keeps it.
+function record(channel, payload) {
+  if (!TRANSCRIPT_EVENTS.includes(channel)) return;
+  payload._seq = ++transcriptSeq;
+  transcript.push({ channel, payload });
+  if (transcript.length > TRANSCRIPT_CAP) transcript.splice(0, transcript.length - TRANSCRIPT_CAP);
+}
+
 function chat(role, text, extra) {
-  sendToMain("chat", { role, text, ...extra });
+  const payload = { role, text, ...extra };
+  record("chat", payload);
+  sendToUi("chat", payload);
 }
 
 // Remembered so a window that loads after the event (or is reopened) can ask
@@ -153,32 +194,37 @@ let bridgeStatus = "connecting";
 
 function setStatus(status) {
   bridgeStatus = status;
-  sendToMain("status", status);
+  sendToUi("status", status);
 }
 
 // Tells the renderer its cached catalog is stale (a skill was saved, a
 // preference changed) so the Library view refetches instead of drifting.
 function invalidateInventory() {
-  sendToMain("inventory-changed");
+  sendToUi("inventory-changed");
 }
 
 function confirmRequest(id, tool, args, reason, voiceApprovable) {
-  // Both windows get it: the main window draws the full four-way card, the
-  // overlay a compact Approve/Decline one (only while a session is live).
-  // reason: why this one asks (optional). voice_approvable: false means a
-  // spoken yes won't approve it -- it needs a click. Older agents send
-  // neither; the cards treat that as no reason and voice-approvable.
-  broadcast("confirm-request", { id, tool, args, reason: reason || null, voice_approvable: voiceApprovable !== false });
+  // Every window gets it: the main window and the chat panel draw the full
+  // four-way card, the overlay a compact Approve/Decline one (only while a
+  // session is live). reason: why this one asks (optional).
+  // voice_approvable: false means a spoken yes won't approve it -- it needs
+  // a click. Older agents send neither; the cards treat that as no reason
+  // and voice-approvable.
+  const payload = { id, tool, args, reason: reason || null, voice_approvable: voiceApprovable !== false };
+  record("confirm-request", payload);
+  broadcast("confirm-request", payload);
+}
+
+// Settled out-of-band (voice, the Qt overlay, a timeout).
+function confirmResolved(payload) {
+  record("confirm-resolved", payload);
+  broadcast("confirm-resolved", payload);
 }
 
 function skillProposed(id, name, description, steps, uncertainParams) {
-  sendToMain("skill-proposed", {
-    id,
-    name,
-    description,
-    steps,
-    uncertain_params: uncertainParams,
-  });
+  const payload = { id, name, description, steps, uncertain_params: uncertainParams };
+  record("skill-proposed", payload);
+  sendToUi("skill-proposed", payload);
 }
 
 function isEmptyResponse(payload) {
@@ -348,14 +394,30 @@ function stopQtOverlay() {
   if (qtOverlayProcess) qtOverlayProcess.kill();
 }
 
+/* Where the overlay sits: alerts.anchor (top-center by default) on
+   alerts.display (the cursor's display by default), read from the settings
+   each time a session starts. overlay.css flips the stage for bottom
+   anchors (body[data-anchor], set by appearance.js) so the plate stays on
+   the screen edge and the card opens toward the middle. */
 function positionOverlay() {
-  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  const { anchor, display: which } = settings.alerts;
+  const display = which === "primary" ? screen.getPrimaryDisplay() : screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
   const area = display.workArea;
-  overlayWindow.setBounds({
-    x: Math.round(area.x + (area.width - OVERLAY_SIZE.width) / 2),
-    y: area.y + OVERLAY_TOP_MARGIN,
-    ...OVERLAY_SIZE,
-  });
+  const { width, height } = OVERLAY_SIZE;
+  const [row, column] = anchor === "center" ? ["center", "center"] : anchor.split("-");
+  const x =
+    column === "left"
+      ? area.x + OVERLAY_TOP_MARGIN
+      : column === "right"
+        ? area.x + area.width - width - OVERLAY_TOP_MARGIN
+        : area.x + (area.width - width) / 2;
+  const y =
+    row === "top"
+      ? area.y + OVERLAY_TOP_MARGIN
+      : row === "bottom"
+        ? area.y + area.height - height - OVERLAY_TOP_MARGIN
+        : area.y + (area.height - height) / 2;
+  overlayWindow.setBounds({ x: Math.round(x), y: Math.round(y), width, height });
 }
 
 function showOverlay() {
@@ -434,6 +496,89 @@ function loadOverlayManifest() {
     states[state] = entry;
   }
   return { states, size: raw.size || null };
+}
+
+// --- overlay settings: panels, hot edge, alerts, appearance -----------------
+// One file, userData/overlay-layout.json, validated on load
+// (overlay-settings.js). Every window is told when it changes.
+
+let settingsFile = null;
+let settings = overlaySettings.defaults();
+
+function loadSettings() {
+  settingsFile = path.join(app.getPath("userData"), "overlay-layout.json");
+  const result = overlaySettings.load(settingsFile);
+  settings = result.settings;
+  if (result.corrupt) {
+    // Kept beside it rather than overwritten, in case it was hand-edited.
+    const aside = `${settingsFile}.corrupt`;
+    try {
+      fs.renameSync(settingsFile, aside);
+      log(`[panels] overlay-layout.json ${result.problems[0]} -- moved it to ${path.basename(aside)}`);
+    } catch (err) {
+      log(`[panels] overlay-layout.json ${result.problems[0]} (couldn't move it aside: ${err.message})`);
+    }
+    return;
+  }
+  for (const problem of result.problems) log(`[panels] overlay-layout.json: ${problem} -- using the default`);
+}
+
+/** The colours, theme and density every window applies (appearance.js). */
+function appearancePayload() {
+  const look = settings.appearance;
+  const derived = look.accent ? overlaySettings.deriveAccent(look.accent) : null;
+  return {
+    theme: look.theme,
+    themeChosen: look.themeChosen,
+    density: look.density,
+    accent: look.accent,
+    vars: derived && derived.ok ? derived.vars : null,
+    toastAnchor: settings.alerts.toastAnchor,
+    alertsAnchor: settings.alerts.anchor,
+  };
+}
+
+function updateSettings(patch) {
+  const result = overlaySettings.applyPatch(settings, patch || {});
+  if (!result.ok) return { ok: false, error: result.error, settings };
+  const previous = settings;
+  settings = result.settings;
+  try {
+    overlaySettings.save(settingsFile, settings);
+  } catch (err) {
+    log(`[panels] couldn't save overlay-layout.json: ${err.message}`);
+  }
+  if (panels) panels.applySettings(previous, settings);
+  const appearance = appearancePayload();
+  for (const win of [devWindow, overlayWindow, ...panelWindows()]) {
+    if (!alive(win)) continue;
+    win.webContents.send("appearance", appearance);
+    win.webContents.send("overlay-settings", settings);
+  }
+  const notes = settings.appearance.accent ? overlaySettings.deriveAccent(settings.appearance.accent).notes : [];
+  return { ok: true, settings, notes };
+}
+
+/* A `panel` message from the agent (show_panel / hide_panel skills):
+   {"type":"panel","action":"show"|"hide"|"toggle","panel":"<id>"|"all","query"?}.
+   "all" only makes sense with hide. Unknown ids and actions are logged and
+   dropped -- the agent's reply still arrives as the normal response. */
+function handlePanelMessage(payload) {
+  if (!panels) return;
+  const id = payload.panel;
+  const action = payload.action;
+  if (action === "hide" && (id === "all" || id === undefined || id === null)) {
+    panels.hideAll("agent");
+    return;
+  }
+  if (!overlaySettings.PANEL_IDS.includes(id)) {
+    log(`[panels] agent asked to ${action} unknown panel ${JSON.stringify(id)} -- ignored`);
+    return;
+  }
+  if (action === "show") panels.show(id, { query: payload.query, source: "agent" });
+  else if (action === "hide") panels.hide(id, "agent");
+  else if (action === "toggle") panels.toggle(id, { query: payload.query, source: "agent" });
+  else log(`[panels] unknown panel action ${JSON.stringify(action)} -- ignored`);
 }
 
 // --- debug capture (LEUTHERIA_CAPTURE_DIR only) ---------------------------
@@ -674,7 +819,14 @@ function connectToAgent() {
       // empty-response ack; an overlay click is a bare confirm, like a click
       // here.
       if (payload.by === "voice") expectVoiceConfirmAck = true;
-      broadcast("confirm-resolved", payload);
+      confirmResolved(payload);
+      return;
+    }
+
+    if (payload.type === "panel") {
+      // show_panel / hide_panel. Arrives before the skill's own response,
+      // so it must never touch pendingIsChat (BUGS.md #17's lesson).
+      handlePanelMessage(payload);
       return;
     }
 
@@ -806,21 +958,66 @@ ipcMain.on("overlay-interactive", (_event, interactive) => {
   if (Boolean(interactive) !== overlayInteractive) setOverlayInteractive(Boolean(interactive));
 });
 
-// Either window can answer a confirmation. The other one's card is settled
-// here rather than waiting on the agent, which only reports voice answers.
-ipcMain.on("confirm-response", (_event, { id, approved, remember }) => {
+// Any window can answer a confirmation. The others' cards are settled here
+// rather than waiting on the agent, which only reports voice answers. `by`
+// says where it was answered, from each receiver's point of view: "ui" is
+// the other of the main window and the overlay (what both have always
+// understood it as), "main" and "panel" name the window for a chat panel.
+ipcMain.on("confirm-response", (event, { id, approved, remember }) => {
   if (!isConnected()) return;
   const message = { type: "confirm", id, approved, remember };
   log(`[bridge] sending: ${JSON.stringify(message)}`);
   ws.send(JSON.stringify(message));
-  broadcast("confirm-resolved", { id, approved, by: "ui" });
+  const from = panels && panels.isPanel(event.sender) ? "panel" : alive(overlayWindow) && event.sender === overlayWindow.webContents ? "overlay" : "main";
+  record("confirm-resolved", { id, approved, by: from });
+  for (const win of [devWindow, overlayWindow, ...panelWindows()]) {
+    if (!alive(win) || win.webContents === event.sender) continue;
+    const by = from === "panel" ? "panel" : from === "main" && win !== overlayWindow ? "main" : "ui";
+    win.webContents.send("confirm-resolved", { id, approved, by });
+  }
 });
 
-ipcMain.on("skill-response", (_event, { id, approved, resolutions }) => {
+ipcMain.on("skill-response", (event, { id, approved, resolutions }) => {
   if (!isConnected()) return;
   const message = { type: "skill_response", id, approved, resolutions };
   log(`[bridge] sending: ${JSON.stringify(message)}`);
   ws.send(JSON.stringify(message));
+  // The same proposal is on the main window and any chat panel: settle the
+  // copies that weren't clicked.
+  const payload = { id, approved };
+  record("skill-resolved", payload);
+  for (const win of [devWindow, ...panelWindows()]) {
+    if (alive(win) && win.webContents !== event.sender) win.webContents.send("skill-resolved", payload);
+  }
+});
+
+// --- panels and overlay settings ----------------------------------------------
+
+ipcMain.handle("get-overlay-settings", () => ({ settings, presets: overlaySettings.PRESETS }));
+ipcMain.handle("set-overlay-settings", (_event, patch) => updateSettings(patch));
+ipcMain.handle("check-accent", (_event, hex) => overlaySettings.deriveAccent(hex));
+ipcMain.handle("reset-panel-layout", (_event, id) => {
+  const ids = id === "all" ? overlaySettings.PANEL_IDS : [id];
+  if (!ids.every((each) => overlaySettings.PANEL_IDS.includes(each))) return { ok: false, error: "unknown panel" };
+  return updateSettings({ panels: Object.fromEntries(ids.map((each) => [each, overlaySettings.defaultPanel(each)])) });
+});
+// Read synchronously by preload.js, so a window paints in the right theme
+// and accent from its first frame instead of flashing the defaults.
+ipcMain.on("get-appearance-sync", (event) => {
+  event.returnValue = appearancePayload();
+});
+ipcMain.handle("show-panel", (_event, id, query) => Boolean(panels && panels.show(id, { query, source: "ui" })));
+ipcMain.handle("hide-panel", (_event, id) => Boolean(panels && (id === "all" ? panels.hideAll("ui") : panels.hide(id, "ui"))));
+ipcMain.handle("panel-op", (event, op, data) => (panels ? panels.command(event.sender, op, data) : { ok: false }));
+ipcMain.handle("chat-history", () => transcript);
+ipcMain.handle("list-timers", () => sendControlRequest({ type: "list_timers" }));
+// "Open in Library" from a panel: an explicit click, so bringing the main
+// window forward is what was asked for.
+ipcMain.on("open-main", (_event, { view, name }) => {
+  showMainWindow();
+  const send = () => sendToMain("navigate", { view, name });
+  if (alive(devWindow) && devWindow.webContents.isLoading()) devWindow.webContents.once("did-finish-load", send);
+  else send();
 });
 
 ipcMain.on("user-audio", (_event, { data, format }) => {
@@ -849,12 +1046,53 @@ ipcMain.on("user-command", (_event, text) => {
 // --- lifecycle ---------------------------------------------------------------
 
 app.whenReady().then(() => {
+  loadSettings();
+  panels = createPanelManager({
+    rendererDir: path.join(__dirname, "renderer"),
+    preload: path.join(__dirname, "preload.js"),
+    log,
+    getSettings: () => settings,
+    updateSettings,
+    captureTheme: CAPTURE_THEME,
+    testHooks: TEST_HOOKS,
+  });
   createTray();
   createDevWindow();
   startOverlay();
   registerShortcut();
   startAgent();
+  panels.restorePinned();
+  if (TEST_HOOKS) installTestHooks();
 });
+
+function installTestHooks() {
+  globalThis.__leutheriaTest = {
+    setCursor: (point) => {
+      TEST_HOOKS.cursor = point;
+    },
+    setMouseDown: (down) => {
+      TEST_HOOKS.mouseDown = down;
+    },
+    panels: () => panels.debugState(),
+    focused: () => {
+      const win = BrowserWindow.getFocusedWindow();
+      if (!win) return null;
+      if (win === devWindow) return "main";
+      if (win === overlayWindow) return "overlay";
+      return panels.debugState().find((entry) => entry.focused)?.id || "other";
+    },
+    show: (id, query) => panels.show(id, { query, source: "test" }),
+    hideAll: () => panels.hideAll("test"),
+    display: () => {
+      const display = screen.getPrimaryDisplay();
+      return { bounds: display.bounds, workArea: display.workArea, count: screen.getAllDisplays().length };
+    },
+    overlayBounds: () => (alive(overlayWindow) ? overlayWindow.getBounds() : null),
+    positionOverlay: () => alive(overlayWindow) && positionOverlay(),
+    settings: () => settings,
+    settingsFile: () => settingsFile,
+  };
+}
 
 // Dock icon click with the main window closed.
 app.on("activate", showMainWindow);

@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Leutheria panel</title>
+    <!-- The main window's stylesheet (every token and primitive), then the
+         panel frame and the per-panel layouts. -->
+    <link rel="stylesheet" href="../styles.css" />
+    <link rel="stylesheet" href="panels.css" />
+    <script src="../js/appearance.js"></script>
+  </head>
+  <body class="panel-page">
+    <div class="panel-frame" id="panel-frame">
+      <header class="panel-head" id="panel-head">
+        <span class="panel-grip" aria-hidden="true"></span>
+        <div class="panel-heading">
+          <h1 class="panel-title" id="panel-title"></h1>
+          <p class="panel-subtitle" id="panel-subtitle"></p>
+        </div>
+        <div class="panel-strip" id="panel-strip" role="toolbar" aria-label="Panel layout"></div>
+      </header>
+      <div class="panel-pop" id="panel-pop" hidden></div>
+      <div class="panel-tools" id="panel-tools" hidden></div>
+      <div class="panel-body" id="panel-body"></div>
+    </div>
+    <div class="panel-resizers" id="panel-resizers"></div>
+    <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+
+    <script src="../js/util.js"></script>
+    <script src="panel.js"></script>
+  </body>
+</html>

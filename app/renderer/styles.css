@@ -189,6 +189,23 @@
   --mark-empty: rgba(115, 83, 201, 0.7);
 }
 
+/* --- tokens: compact density ----------------------------------------------
+   The appearance setting (Overlay view). Like the light theme it overrides
+   tokens and nothing else: the larger steps of the space scale, control
+   height and the hit target (still 24 px, WCAG 2.2's minimum). */
+
+[data-density="compact"] {
+  --s3: 10px;
+  --s4: 12px;
+  --s5: 18px;
+  --s6: 24px;
+  --s7: 36px;
+  --control-h: 26px;
+  --hit: 24px;
+  --topbar-h: 56px;
+  --fs-lg: 13.5px;
+}
+
 /* --- base ---------------------------------------------------------------- */
 
 * {
@@ -289,7 +306,8 @@ svg {
 .prompt-card,
 .toast,
 .island,
-.ov-confirm {
+.ov-confirm,
+.panel-frame {
   --cut: var(--cut-sm);
   --cut-line: var(--line-strong);
   --cut-bg: var(--raised);
@@ -306,6 +324,7 @@ svg {
 .toast::before,
 .island::before,
 .ov-confirm::before,
+.panel-frame::before,
 .btn::after,
 .choice::after,
 .chip::after,
@@ -314,7 +333,8 @@ svg {
 .prompt-card::after,
 .toast::after,
 .island::after,
-.ov-confirm::after {
+.ov-confirm::after,
+.panel-frame::after {
   content: "";
   position: absolute;
   z-index: -1;
@@ -335,7 +355,8 @@ svg {
 .prompt-card::before,
 .toast::before,
 .island::before,
-.ov-confirm::before {
+.ov-confirm::before,
+.panel-frame::before {
   inset: 0;
   background: var(--cut-line);
   clip-path: polygon(0 0, calc(100% - var(--cut)) 0, 100% var(--cut), 100% 100%, 0 100%);
@@ -361,7 +382,8 @@ svg {
 .prompt-card::after,
 .toast::after,
 .island::after,
-.ov-confirm::after {
+.ov-confirm::after,
+.panel-frame::after {
   inset: var(--hair);
   background: var(--cut-bg);
   clip-path: polygon(0 0, calc(100% - var(--cut) + 0.59px) 0, 100% calc(var(--cut) - 0.59px), 100% 100%, 0 100%);
@@ -380,7 +402,8 @@ svg {
 .status-label,
 .voice-key,
 .empty-eyebrow,
-.island-label {
+.island-label,
+.micro-label {
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
   font-weight: 500;
@@ -1155,6 +1178,32 @@ kbd {
 
 body[data-view="assistant"] .toasts {
   bottom: 112px;
+}
+
+/* The toast anchor is a setting (alerts.toastAnchor; appearance.js sets
+   body[data-toast-anchor]). Bottom-left is the default, for the reason
+   above. Top anchors sit under the heading bar. */
+body[data-toast-anchor$="right"] .toasts {
+  left: auto;
+  right: var(--s5);
+  align-items: flex-end;
+}
+
+body[data-toast-anchor$="center"] .toasts {
+  left: calc(var(--sidebar-w) + (100vw - var(--sidebar-w)) / 2);
+  transform: translateX(-50%);
+  align-items: center;
+}
+
+body[data-toast-anchor^="top"] .toasts {
+  top: calc(var(--topbar-h) + var(--s4));
+  bottom: auto;
+}
+
+body[data-toast-anchor="center"] .toasts {
+  top: 50%;
+  bottom: auto;
+  transform: translate(-50%, -50%);
 }
 
 .toast {
