@@ -6,9 +6,9 @@ import QtMultimedia
 import Leutheria.Core
 
 // The square slot on the left of the island. Shows whatever the manifest maps
-// the current state to: the built-in orb, an image, or a video. A file that
+// the current state to: the built-in reticle, an image, or a video. A file that
 // fails at runtime is reported to the manifest, which swaps that state to
-// the orb for the rest of the run (overlay.js's error handler does the same).
+// the reticle for the rest of the run (overlay.js's error handler does the same).
 Item {
     id: slot
 
@@ -21,13 +21,13 @@ Item {
 
     // CSS `transition: transform 0.09s linear` between the ~15 Hz level ticks.
     property real smoothLevel: level
-    Behavior on smoothLevel { NumberAnimation { duration: 90 } }
+    Behavior on smoothLevel { NumberAnimation { duration: slot.theme.tFast } }
 
     Loader {
         id: loader
         anchors.fill: parent
         sourceComponent: slot.entry.type === "video" ? videoAsset
-                       : slot.entry.type !== "image" ? orbAsset
+                       : slot.entry.type !== "image" ? reticleAsset
                        : /\.(gif|webp)$/i.test(slot.entry.source.toString()) ? animatedImage
                        : stillImage
 
@@ -36,7 +36,7 @@ Item {
         layer.enabled: slot.entry.react === "glow"
         layer.effect: MultiEffect {
             shadowEnabled: true
-            shadowColor: slot.theme.violet
+            shadowColor: slot.theme.tone(slot.visualState) // --ring
             shadowHorizontalOffset: 0
             shadowVerticalOffset: 0
             blurMax: 14
@@ -45,8 +45,8 @@ Item {
     }
 
     Component {
-        id: orbAsset
-        Orb {
+        id: reticleAsset
+        Reticle {
             visualState: slot.visualState
             level: slot.smoothLevel
             theme: slot.theme

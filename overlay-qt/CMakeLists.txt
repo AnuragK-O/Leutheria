@@ -92,7 +92,7 @@ qt_add_qml_module(LeutheriaOverlay
         qml/Main.qml
         qml/Island.qml
         qml/AssetSlot.qml
-        qml/Orb.qml
+        qml/Reticle.qml
         qml/ConfirmCard.qml
         qml/OverlayButton.qml
         qml/Icon.qml

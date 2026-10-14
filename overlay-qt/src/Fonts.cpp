@@ -6,7 +6,7 @@
 
 #include <algorithm>
 
-Q_LOGGING_CATEGORY(lcFonts, "leutheria.fonts")
+Q_LOGGING_CATEGORY(lcFonts, "leutheria.fonts", QtInfoMsg)
 
 using namespace Qt::StringLiterals;
 

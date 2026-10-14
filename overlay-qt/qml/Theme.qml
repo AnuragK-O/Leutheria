@@ -31,12 +31,12 @@ QtObject {
     readonly property color violet: dark ? "#8e6fd4" : "#7353c9"      // --violet
     readonly property color violetHi: dark ? "#b29af7" : "#5a3bb0"    // --violet-hi: working, talking
     readonly property color violetLo: dark ? "#6c4dc2" : "#6444bd"    // --violet-lo
-    readonly property color onViolet: "#ffffff"                       // --on-violet
+    readonly property color textOnViolet: "#ffffff"                   // --on-violet
     readonly property color cyan: dark ? "#38e1ee" : "#006f7c"        // --cyan: live (the mic is open)
     readonly property color amber: dark ? "#ffb224" : "#8a5000"       // --amber: waiting on you
     readonly property color red: dark ? "#ff5c7a" : "#b81d43"         // --red: declined, destructive
     readonly property color green: dark ? "#5be49b" : "#156c3c"       // --green: succeeded
-    readonly property color onAccent: dark ? "#0a0810" : "#ffffff"    // --on-accent: text on an amber fill
+    readonly property color textOnAccent: dark ? "#0a0810" : "#ffffff" // --on-accent (QML reserves on*): text on an amber fill
 
     // --- type sizes (CSS px) and tracking (em) -----------------------------
     readonly property int fsMicro: 10       // --fs-micro: uppercase labels
@@ -101,6 +101,4 @@ QtObject {
                        (a.b * wa + b.b * wb) / alpha, alpha)
     }
 
-    // The system fixed-pitch family, from main.cpp.
-    property string monoFamily: "Menlo"
 }

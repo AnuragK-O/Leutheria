@@ -16,7 +16,7 @@
 // pixel ratio, so the hairlines and the diagonal are crisp at 1x and 2x. It
 // repaints only when a property or the size changes.
 //
-//   CutBox { cut: theme.cutLg; fillColor: theme.surface; lineColor: tone
+//   CutBox { cut: theme.cutLg; color: theme.surface; lineColor: tone
 //            brackets: CutBox.BottomBrackets; bracketColor: tone }
 class CutBox : public QQuickPaintedItem
 {
@@ -25,7 +25,7 @@ class CutBox : public QQuickPaintedItem
 
     Q_PROPERTY(qreal cut READ cut WRITE setCut NOTIFY shapeChanged)
     Q_PROPERTY(Corner corner READ corner WRITE setCorner NOTIFY shapeChanged)
-    Q_PROPERTY(QColor fillColor READ fillColor WRITE setFillColor NOTIFY shapeChanged)
+    Q_PROPERTY(QColor color READ color WRITE setColor NOTIFY shapeChanged)
     Q_PROPERTY(QColor lineColor READ lineColor WRITE setLineColor NOTIFY shapeChanged)
     Q_PROPERTY(qreal lineWidth READ lineWidth WRITE setLineWidth NOTIFY shapeChanged)
     // Brackets sit on the fill's corners (inside the outline), as in CSS
@@ -49,7 +49,7 @@ public:
 
     qreal cut() const { return m_cut; }
     Corner corner() const { return m_corner; }
-    QColor fillColor() const { return m_fill; }
+    QColor color() const { return m_fill; }
     QColor lineColor() const { return m_line; }
     qreal lineWidth() const { return m_lineWidth; }
     Brackets brackets() const { return m_brackets; }
@@ -59,7 +59,7 @@ public:
 
     void setCut(qreal cut);
     void setCorner(Corner corner);
-    void setFillColor(const QColor &color);
+    void setColor(const QColor &color);
     void setLineColor(const QColor &color);
     void setLineWidth(qreal width);
     void setBrackets(Brackets brackets);

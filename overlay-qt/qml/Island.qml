@@ -1,10 +1,10 @@
 import QtQuick
-import QtQuick.Effects
 import QtQuick.Layouts
 import Leutheria.Core
 
-// The pill: asset slot, state label, one (at most two) lines of text.
-// overlay.css .island / .island-label / .island-line.
+// The plate: asset slot, a hairline divider, the state label over one (at
+// most two) lines of text. overlay.css .island / .island-text /
+// .island-label / .island-line; DESIGN.md "Plate".
 Item {
     id: island
 
@@ -12,45 +12,28 @@ Item {
     required property AssetManifest manifest
     required property Theme theme
 
-    readonly property bool confirming: overlay.state === "awaiting_confirmation"
     readonly property int slotSize: manifest.slotSize
+    // --tone: cyan while the mic is live, violet while working or talking,
+    // amber when it needs an answer.
+    readonly property color tone: theme.tone(overlay.state)
 
-    // content + 10px padding top and bottom + the 1px border (CSS content-box)
-    implicitHeight: Math.max(slotSize, textColumn.implicitHeight) + 22
+    // padding: 10px (cut + 6px) 10px 10px; min-height: slot + 20px
+    readonly property int padding: 10
+    implicitHeight: Math.max(slotSize, textColumn.implicitHeight) + 2 * padding
 
-    // box-shadow: two layers in light mode, one in dark.
-    RectangularShadow {
-        anchors.fill: pill
-        radius: pill.radius
-        offset.y: 10
-        blur: island.theme.shadowBlur
-        color: island.theme.shadow
-    }
-    RectangularShadow {
-        anchors.fill: pill
-        visible: !island.theme.dark
-        radius: pill.radius
-        offset.y: 1
-        blur: 3
-        color: Qt.rgba(25 / 255, 19 / 255, 35 / 255, 0.08)
-    }
-
-    Rectangle {
-        id: pill
+    CutBox {
         anchors.fill: parent
-        radius: (island.slotSize + 20) / 2
+        cut: island.theme.cutLg
         color: island.theme.surface
-        border.width: 1
-        border.color: island.confirming ? island.theme.mix(island.theme.amber, "transparent", 0.5)
-                                        : island.theme.lineStrong
-        Behavior on border.color { ColorAnimation { duration: 300 } }
+        lineColor: island.theme.mix(island.tone, island.theme.lineStrong, 0.55)
+        Behavior on lineColor { ColorAnimation { duration: island.theme.tFast } }
     }
 
     RowLayout {
         anchors.fill: parent
-        anchors.leftMargin: 12
-        anchors.rightMargin: 18
-        spacing: 14
+        anchors.margins: island.padding
+        anchors.rightMargin: island.theme.cutLg + 6
+        spacing: island.theme.s3
 
         AssetSlot {
             Layout.preferredWidth: island.slotSize
@@ -61,30 +44,38 @@ Item {
             theme: island.theme
         }
 
+        // .island-text: padding-left 12px behind a 1px --line-strong rule,
+        // stretched to the row's height.
+        Rectangle {
+            Layout.fillHeight: true
+            implicitWidth: island.theme.hair
+            color: island.theme.lineStrong
+        }
+
         ColumnLayout {
             id: textColumn
             Layout.fillWidth: true
-            spacing: 1
+            spacing: 2
 
             Text {
                 Layout.fillWidth: true
                 text: island.overlay.label.toUpperCase()
-                color: island.confirming ? island.theme.amber : island.theme.violetHi
-                font.pointSize: 10.5
-                font.weight: Font.DemiBold
-                font.letterSpacing: 10.5 * 0.08
+                color: island.tone
+                font: Typeface.mono(500, island.theme.fsMicro, island.theme.trackLabel)
                 lineHeightMode: Text.FixedHeight
-                lineHeight: 10.5 * 1.5 // the app's body line-height
+                lineHeight: island.theme.fsMicro * 1.4
                 elide: Text.ElideRight
+                Behavior on color { ColorAnimation { duration: island.theme.tBase } }
             }
 
             Text {
                 Layout.fillWidth: true
                 text: island.overlay.line
                 color: island.overlay.lineMuted ? island.theme.text2 : island.theme.text
-                font.pointSize: 13.5
+                font: Typeface.ui(400, island.theme.fsMd)
+                // CSS line-height is px; Qt's default mode is proportional.
                 lineHeightMode: Text.FixedHeight
-                lineHeight: 13.5 * 1.4 // CSS line-height is px, not Qt's "proportional"
+                lineHeight: island.theme.fsMd * 1.4
                 wrapMode: Text.Wrap
                 maximumLineCount: 2
                 elide: Text.ElideRight

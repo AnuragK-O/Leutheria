@@ -102,7 +102,7 @@ Item {
                         width: parent.width - 22
                         text: card.overlay.confirmationCommand
                         color: card.theme.text
-                        font.family: card.theme.monoFamily
+                        font.family: "JetBrains Mono"
                         font.pointSize: 11.5
                         lineHeightMode: Text.FixedHeight
                         lineHeight: 11.5 * 1.5

@@ -49,7 +49,7 @@ void CutBox::assign(T &member, const T &value)
 
 void CutBox::setCut(qreal cut) { assign(m_cut, cut); }
 void CutBox::setCorner(Corner corner) { assign(m_corner, corner); }
-void CutBox::setFillColor(const QColor &color) { assign(m_fill, color); }
+void CutBox::setColor(const QColor &color) { assign(m_fill, color); }
 void CutBox::setLineColor(const QColor &color) { assign(m_line, color); }
 void CutBox::setLineWidth(qreal width) { assign(m_lineWidth, width); }
 void CutBox::setBrackets(Brackets brackets) { assign(m_brackets, brackets); }
