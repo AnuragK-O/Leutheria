@@ -4,6 +4,7 @@ import json
 import os
 import threading
 import traceback
+import urllib.parse
 import uuid
 
 from agent.core import path_policy, preferences, session, trust, ui_access
@@ -66,7 +67,18 @@ async def dispatch(
             arg, path, why = verdict.denied
             log_event("path_denied", tool=tool_name, arg=arg, path=path, why=why)
             return {"ok": False, "error": verdict.error, "denied": True}
-        reasons += [f"{path}: {why}" for _, path, why in verdict.asks]
+        reasons += [(f"{path}: {why}", _spoken_path_reason(path, why)) for _, path, why in verdict.asks]
+
+        # Taint (core/session.py): after this request has read untrusted
+        # text, a call that sends data out or opens a URL needs a yes unless
+        # the user named the address. The card shows the full URL.
+        outbound = tool.get("outbound")
+        if outbound:
+            url = args.get(outbound)
+            why = session.outbound_reason(url)
+            if why:
+                host = urllib.parse.urlsplit(str(url)).hostname if "://" in str(url) else str(url)[:60]
+                reasons.append((why, f"this request already read text that could be steering me, and you didn't name {host or 'that address'}"))
 
     # Built-in policy: destructive tools ask, everything else doesn't. Skills
     # default to not asking because each of their *steps* dispatches back
@@ -94,7 +106,12 @@ async def dispatch(
     if skill is not None:
         return await skill["fn"](args, websocket, pending)
 
-    return await _run_tool(tool_name, tool, args)
+    result = await _run_tool(tool_name, tool, args)
+    if tool.get("untrusted_output"):
+        # Marked whether or not it succeeded: an error message can quote
+        # what was read just as well as a result can.
+        session.mark_untrusted(tool_name)
+    return result
 
 
 async def _in_worker(tool_name: str, fn, args: dict):
@@ -255,10 +272,9 @@ def _fallback_prompt(tool_name: str, args: dict) -> str:
     return f"I want to use {tool_name.replace('_', ' ')}. Should I go ahead?"
 
 
-def _spoken_reason(reason: str) -> str:
-    """'/Users/me/Other/x.txt: it is outside your usual folders' read aloud
-    as 'x.txt in Other is outside your usual folders'."""
-    path, _, why = reason.partition(": ")
+def _spoken_path_reason(path: str, why: str) -> str:
+    """('/Users/me/Other/x.txt', 'it is outside your usual folders') read
+    aloud as 'x.txt in Other is outside your usual folders'."""
     where = f"{os.path.basename(path)} in {os.path.basename(os.path.dirname(path)) or 'the top folder'}"
     return f"{where} {why[3:] if why.startswith('it ') else why}"
 
@@ -284,11 +300,14 @@ async def _confirm(
                 "args": args,
                 # Why a normally silent tool is asking, written by the agent,
                 # never the model. Absent when the tool always asks.
-                **({"reason": "; ".join(reasons)} if reasons else {}),
+                **({"reason": "; ".join(card for card, _ in reasons)} if reasons else {}),
             }
         )
     )
-    log_event("confirmation_requested", id=confirmation_id, tool=tool_name, args=args, reasons=reasons or None)
+    log_event(
+        "confirmation_requested", id=confirmation_id, tool=tool_name, args=args,
+        reasons=[card for card, _ in reasons] if reasons else None,
+    )
 
     # Speak the prompt so this can be answered by voice alone. Prefer the
     # model's own accompanying explanation for this turn (SYSTEM_PROMPT.md
@@ -296,7 +315,7 @@ async def _confirm(
     # it) over a generic fallback -- it's more natural and specific.
     spoken = intro_text.strip() or _fallback_prompt(tool_name, args)
     if reasons:
-        spoken += " I'm asking because " + "; and ".join(_spoken_reason(r) for r in reasons) + "."
+        spoken += " I'm asking because " + "; and ".join(said for _, said in reasons) + "."
     await speak(websocket, spoken)
 
     try:

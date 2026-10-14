@@ -28,6 +28,17 @@ def _system_prompt() -> str:
 
 
 async def run(backend, user_text: str, websocket=None, pending: dict = None) -> dict:
+    """One request: see _run. Opens the per-request context that records
+    whether untrusted text has been read (session.begin_request; taint),
+    and closes it however the request ends."""
+    token = session.begin_request(user_text)
+    try:
+        return await _run(backend, user_text, websocket, pending)
+    finally:
+        session.end_request(token)
+
+
+async def _run(backend, user_text: str, websocket=None, pending: dict = None) -> dict:
     """Drive the Claude <-> tool-dispatch loop for one user message.
 
     Keeps calling the model and feeding tool results back as long as it

@@ -116,6 +116,7 @@ TOOLS = {
     "run_command": {
         "fn": run_command,
         "safety": "destructive",
+        "untrusted_output": True,
         "description": (
             "Run an arbitrary shell command. Requires the user to explicitly approve it before it runs. "
             "A command is stopped if it is still running after 5 minutes, so do not start servers or "
@@ -137,6 +138,7 @@ TOOLS = {
     "get_clipboard": {
         "fn": get_clipboard,
         "safety": "safe",
+        "untrusted_output": True,
         "description": "Read the current contents of the system clipboard.",
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
@@ -153,6 +155,7 @@ TOOLS = {
     "open_url": {
         "fn": open_url,
         "safety": "safe",
+        "outbound": "url",
         "description": "Open a URL in the default web browser.",
         "input_schema": {
             "type": "object",
@@ -194,6 +197,7 @@ TOOLS = {
     "read_file": {
         "fn": read_file,
         "safety": "safe",
+        "untrusted_output": True,
         "paths": {"path": "read"},
         "description": "Read the text contents of a file (capped at 20,000 characters).",
         "input_schema": {
@@ -306,6 +310,7 @@ TOOLS = {
     "describe_ui": {
         "fn": describe_ui,
         "safety": "safe",
+        "untrusted_output": True,
         # main: the Accessibility read itself is identical off-thread
         # (measured), but finding the app goes through NSWorkspace
         # (frontmost_app / resolve_app), which is stale on any other thread --
@@ -751,6 +756,7 @@ TOOLS = {
     "extract_archive": {
         "fn": extract_archive,
         "safety": "safe",
+        "untrusted_output": True,
         "paths": {"archive": "archive", "destination": {"mode": "write", "default_beside": "archive"}},
         "description": (
             "Unpack a zip or tar archive, including tar.gz, into a brand new folder. The "
@@ -825,6 +831,7 @@ TOOLS = {
     "search_file_contents": {
         "fn": search_file_contents,
         "safety": "safe",
+        "untrusted_output": True,
         "paths": {"path": "read"},
         "description": (
             "Find which text files in a folder contain a word or phrase, and show the matching "
@@ -879,6 +886,8 @@ TOOLS = {
     "fetch_url": {
         "fn": fetch_url,
         "safety": "safe",
+        "untrusted_output": True,
+        "outbound": "url",
         "description": (
             "Fetch a public web page and return its readable text, so you can read, "
             "summarize or quote it yourself. Nothing appears on screen. This is not for "
@@ -904,6 +913,7 @@ TOOLS = {
     "git_status": {
         "fn": git_status,
         "safety": "safe",
+        "untrusted_output": True,
         "paths": {"path": "read"},
         "description": (
             "Read the state of a git repository without changing it: current branch, "
