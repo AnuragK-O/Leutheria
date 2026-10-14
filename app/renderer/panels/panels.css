@@ -485,6 +485,17 @@ body[data-panel="permissions"] .stack {
   height: 100%;
 }
 
+/* A narrow card: its description goes under the heading, not beside it. */
+.panel-page .card-header {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.panel-page .card-header h2 {
+  white-space: nowrap;
+}
+
 body[data-panel="activity"] .stat-grid {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }

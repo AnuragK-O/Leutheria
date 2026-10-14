@@ -980,7 +980,7 @@ async function runPanels(theme) {
     await main.eval(`(() => { const i = document.querySelector('[data-key="accent"] .hex'); i.value = "#ffb224"; i.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" })); })()`);
     check(
       `${T} an accent that reads as a state colour is refused, with the reason`,
-      (await main.waitFor(`/reads as amber/.test(document.querySelector('[data-key="accent"] .field-error')?.textContent || "")`)) &&
+      (await main.waitFor(`/^That colour reads as amber/.test(document.querySelector('[data-key="accent"] .field-error')?.textContent || "")`)) &&
         (await lo(main)) === expected
     );
     await main.shot(file("accent-refused"));

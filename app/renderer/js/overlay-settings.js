@@ -59,7 +59,9 @@
   async function save(patch, onError) {
     const result = await window.leutheria.setOverlaySettings(patch);
     if (!result || !result.ok) {
-      const message = (result && result.error) || "Couldn't save that";
+      // main.js names the field ("appearance.accent: ..."); the control the
+      // message sits under already does.
+      const message = ((result && result.error) || "Couldn't save that").replace(/^[\w.]+: /, "");
       if (onError) onError(message);
       else toast(message, "error");
       render();
@@ -383,7 +385,7 @@
         el("div.add-row", {}, picker, hex, el("button.btn.btn-sm", { text: "Use colour", onclick: () => apply(hex.value.trim()) })),
         accentError ? el("div.field-error", {}, icon("warning"), el("span", { text: accentError })) : null,
         !accentError && accentNotes.length
-          ? el("div.setting-hint", {}, el("strong", { text: "Adjusted for contrast. " }), el("span", { text: accentNotes.join("; ") + "." }))
+          ? el("div.setting-hint", {}, el("strong", { text: "Adjusted for contrast: " }), el("span", { text: accentNotes.join("; ") + "." }))
           : null
       )
     );

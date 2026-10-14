@@ -388,8 +388,8 @@ function deriveAccent(hex) {
     // The primary button's fill, under white text: 4.5:1 against white.
     const fill = adjust(hex, "#000000", (c) => contrast(c, "#ffffff") >= 4.5);
     if (!hi || !mark || !fill) return { ok: false, error: "That colour can't be made readable in both themes. Try a mid-tone." };
-    if (fill.moved) notes.push(`${theme}: buttons use ${fill.hex} so white text on them reads at 4.5:1`);
-    if (hi.moved) notes.push(`${theme}: text in the accent uses ${hi.hex} to stay readable on the background`);
+    if (fill.moved) notes.push(`buttons in the ${theme} theme use ${fill.hex}, so white text on them reads at 4.5:1`);
+    if (hi.moved) notes.push(`accent text in the ${theme} theme uses ${hi.hex}`);
     const [r, g, b] = parseHex(mark.hex);
     vars[theme] = {
       "--violet": mark.hex,
