@@ -231,6 +231,9 @@ check(skill_learning.finalize_definition(d, {"base": False})["steps"][0]["args"]
       "non-string guessed value baked without crashing")
 
 work = TMP / "work"
+from agent.core import path_policy  # noqa: E402
+
+path_policy.EXTRA_FREE_ROOTS.append(str(work))  # a temp folder asks, for everyone but this check
 result = asyncio.run(registry.SKILLS["make_and_list"]["fn"]({"folder": "made"}, None, None))
 check(result["ok"] and (work / "made").is_dir(), "learned skill runs end to end through dispatch()")
 result = asyncio.run(registry.SKILLS["make_and_list"]["fn"]({}, None, None))

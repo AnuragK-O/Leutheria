@@ -148,4 +148,9 @@ def snapshot() -> dict:
         "history": history,
         "trusted": trust.list_trusted(),
         "grants": session.active_grants(),
+        # Set when preferences.json / trusted_commands.json could not be used
+        # and the agent has fallen back to "ask about everything" / "trust
+        # nothing". Not rendered by the Library yet (NOTES).
+        "settings_errors": [e for e in (preferences.load_error, trust.load_error) if e]
+        + [f"the saved setting for {name} was unreadable, so it asks first" for name in sorted(preferences._bad_entries)],
     }
