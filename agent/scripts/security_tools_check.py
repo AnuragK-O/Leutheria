@@ -770,6 +770,22 @@ def check_openers():
     check(tool("open_file", path=str(script))["ok"] is False, "open_file still refuses a .py (its default app could be a runner)")
 
 
+# --- a missing folder, said plainly (QA) ----------------------------------------
+
+async def check_missing_folder():
+    section("bulk skills on a folder that doesn't exist (QA)")
+    missing = TMP / "no such folder"
+    for skill in ("organize_folder", "organize_by_date", "find_large_files", "folder_summary"):
+        result, asked = await through_dispatch(skill, {"path": str(missing)})
+        error = result.get("error", "")
+        check(result["ok"] is False and "doesn't exist" in error and "find_files" not in error and "failed while" not in error,
+              f"{skill}: {error[:90]}")
+    there = TMP / "a file"
+    there.write_text("x")
+    result, _ = await through_dispatch("organize_folder", {"path": str(there)})
+    check(result["ok"] is False and "doesn't exist" not in result["error"], f"a file that exists is not called missing: {result['error'][:80]}")
+
+
 SECTIONS = {
     "open_url": check_open_url,
     "open_app": check_open_app,
@@ -777,6 +793,7 @@ SECTIONS = {
     "git_status": check_git_status,
     "fetch_url": check_fetch_url,
     "openers": check_openers,
+    "missing_folder": check_missing_folder,
 }
 
 

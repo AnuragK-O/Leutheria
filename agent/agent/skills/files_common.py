@@ -256,9 +256,17 @@ class StepLog:
         return exported
 
     def fail(self, tool: str, result: dict, doing: str = None, **extra) -> dict:
-        """The skill's result when a step failed: says which step and why."""
+        """The skill's result when a step failed: what it was doing and why,
+        in words for the user. The tool's name is internal, so it goes in
+        failed_step, not in the sentence that is spoken."""
         reason = (result or {}).get("error") or "no reason given"
-        what = f"{tool} failed while {doing}" if doing else f"the {tool} step failed"
+        # find_files and friends say "<path> is not a folder" for a path
+        # that isn't there at all; say what actually happened.
+        suffix = " is not a folder"
+        named = reason.strip()[: -len(suffix)] if reason.strip().endswith(suffix) else None
+        if named and not os.path.lexists(named):
+            reason = f"the folder {named} doesn't exist"
+        what = f"Couldn't finish {doing}" if doing else "A step failed"
         return {"ok": False, "error": f"{what}: {reason}", "failed_step": tool, **extra, **self.export()}
 
     def refuse(self, error: str) -> dict:
