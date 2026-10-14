@@ -417,7 +417,9 @@ async def check_extract_archive():
     out = work / "pack"
     check(tarred.get("ok") and (out / "pack" / "run.sh").is_file() and tarred["skipped"] == 2, "extract_archive: tar.gz; links never created")
     mode = (out / "pack" / "run.sh").stat().st_mode & 0o7777
-    check(mode == 0o755 and not os.path.lexists(out / "pack" / "escape"), f"extract_archive: executable bit kept, setuid dropped ({oct(mode)})")
+    # Review C3: an archive does not get to decide that a file is runnable.
+    check(mode & 0o7111 == 0 and tarred["executable_bits_dropped"] == 1 and not os.path.lexists(out / "pack" / "escape"),
+          f"extract_archive: executable and setuid bits dropped ({oct(mode)})")
 
     hostile = {
         "dotdot": {"ok.txt": "fine", "../../evil.txt": "pwned"},

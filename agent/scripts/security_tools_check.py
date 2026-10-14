@@ -353,9 +353,116 @@ def check_open_app():
     check("never a path" in description and "open_file" in description, "the description says name only")
 
 
+# --- extract_archive + chain D ---------------------------------------------------
+
+QUARANTINE_VALUE = b"0083;6700f000;Safari;00000000-0000-0000-0000-000000000000"
+
+
+def check_extract_archive():
+    from agent.tools import extract_archive as ex
+
+    section("extract_archive: no execute bits, quarantine carried over (C3, L3)")
+    work = TMP / "chain_d" / "Downloads"
+    work.mkdir(parents=True)
+    archive = work / "pkg.zip"
+    with zipfile.ZipFile(archive, "w") as z:
+        for name, mode, data in [
+            ("pkg/run.command", 0o100755, b"#!/bin/sh\necho never run\n"),
+            ("pkg/Evil.app/Contents/MacOS/Evil", 0o100755, b"#!/bin/sh\necho never run\n"),
+            ("pkg/Evil.app/Contents/Info.plist", 0o100644, b"<plist/>"),
+            ("pkg/setuid", 0o104755, b"x"),
+            ("pkg/readme.txt", 0o100644, b"hello"),
+        ]:
+            info = zipfile.ZipInfo(name)
+            info.external_attr = mode << 16
+            z.writestr(info, data)
+    ex.write_quarantine(archive, QUARANTINE_VALUE)
+    check(ex.read_quarantine(archive) == QUARANTINE_VALUE, "the fixture archive carries a quarantine attribute")
+
+    result = tool("extract_archive", archive=str(archive))
+    out = Path(result.get("path", work / "pkg"))
+    check(result.get("ok") and result["file_count"] == 5 and result["quarantined"] is True
+          and result["executable_bits_dropped"] == 3, f"extracted: {result.get('message')}")
+    every = [out, *sorted(out.rglob("*"))]
+    files = [p for p in every if p.is_file()]
+    check(all(p.stat().st_mode & 0o7111 == 0 for p in files), "no extracted file has an execute, setuid or setgid bit")
+    check(all(p.stat().st_mode & 0o100 for p in every if p.is_dir()), "folders keep search permission")
+    check(all(ex.read_quarantine(p) == QUARANTINE_VALUE for p in every),
+          f"every extracted file and folder carries the archive's quarantine value ({len(every)} items)")
+    xattr = subprocess.run(["/usr/bin/xattr", "-p", "com.apple.quarantine", str(out / "pkg" / "run.command")],
+                           capture_output=True, text=True, timeout=10)
+    check(xattr.stdout.strip().encode() == QUARANTINE_VALUE, "and /usr/bin/xattr reads the same value back")
+
+    plain = work / "plain.tar.gz"
+    with tarfile.open(plain, "w:gz") as t:
+        data = b"#!/bin/sh\n"
+        info = tarfile.TarInfo("tool.sh")
+        info.size, info.mode = len(data), 0o755
+        t.addfile(info, __import__("io").BytesIO(data))
+    result = tool("extract_archive", archive=str(plain))
+    extracted = Path(result["path"]) / "tool.sh"
+    check(result["ok"] and result["quarantined"] is False and ex.read_quarantine(extracted) is None
+          and extracted.stat().st_mode & 0o111 == 0, "an archive with no quarantine: nothing marked, exec bit still dropped")
+
+    # Failure to mark is a failure, and nothing unmarked is left behind.
+    real_write = ex.write_quarantine
+    calls = {"n": 0}
+
+    def flaky(path, value):
+        calls["n"] += 1
+        if calls["n"] == 3:
+            raise OSError(1, "simulated")
+        real_write(path, value)
+
+    ex.write_quarantine = flaky
+    try:
+        result = tool("extract_archive", archive=str(archive), destination=str(work / "flaky"))
+    finally:
+        ex.write_quarantine = real_write
+    check(result["ok"] is False and not (work / "flaky").exists(), "if the mark cannot be applied, the extraction is removed")
+
+    # L3: the deadline holds inside one long tar member, not just between members.
+    big = work / "big.tar.gz"
+    with tarfile.open(big, "w:gz") as t:
+        info = tarfile.TarInfo("zeros.bin")
+        info.size = 300 * 1024 * 1024
+        t.addfile(info, open("/dev/zero", "rb"))
+    real_seconds = ex.MAX_SECONDS
+    real_bytes = ex.MAX_BYTES
+    ex.MAX_SECONDS = 0.05
+    ex.MAX_BYTES = 10 ** 12
+    try:
+        started = time.monotonic()
+        result = tool("extract_archive", archive=str(big), destination=str(work / "big"))
+        took = time.monotonic() - started
+    finally:
+        ex.MAX_SECONDS, ex.MAX_BYTES = real_seconds, real_bytes
+    check(result["ok"] is False and "longer than" in result["error"] and took < 1.0 and not (work / "big").exists(),
+          f"a single 300 MB tar member stops at the deadline ({took:.2f}s): {result['error'][:60]}")
+
+    section("chain D end to end: unzip a download, then try to launch what came out")
+    command = out / "pkg" / "run.command"
+    bundle = out / "pkg" / "Evil.app"
+    launches.clear()
+    for label, result in [
+        ("open_url(path)", tool("open_url", url=str(command))),
+        ("open_url(file URL)", tool("open_url", url=command.as_uri())),
+        ("open_url(bundle path)", tool("open_url", url=str(bundle))),
+        ("open_app(bundle path)", tool("open_app", name=str(bundle))),
+        ("open_app(bundle name)", tool("open_app", name="Evil")),
+        ("open_file(run.command)", tool("open_file", path=str(command))),
+        ("open_file(Evil.app)", tool("open_file", path=str(bundle))),
+        ("open_with(run.command, TextEdit)", tool("open_with", path=str(command), app="TextEdit")),
+        ("open_with(Evil.app, Finder)", tool("open_with", path=str(bundle), app="Finder")),
+    ]:
+        check(result.get("ok") is False, f"{label} refused: {result.get('error', '')[:70]}")
+    check(launches == [], "nothing was handed to open")
+
+
 SECTIONS = {
     "open_url": check_open_url,
     "open_app": check_open_app,
+    "extract_archive": check_extract_archive,
 }
 
 
