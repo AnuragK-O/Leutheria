@@ -51,6 +51,17 @@
      MOCK_TIMEOUT_MS (default 3000) it is resolved {"approved":false,
      "by":"timeout"} and a reply says it wasn't run. "break settings" /
      "fix settings": add or clear the inventory's settings_errors.
+   - Panels (the show_panel / hide_panel skills): a typed command starting
+     "show me" / "show my" / "open the" names a panel by a word in it --
+     chat, skills (or capabilities, tools), activity (or history, doing),
+     permissions (or approvals), timers, voice -- and gets
+     {"type":"panel","action":"show","panel":<id>} first, then a short reply
+     with a show_panel trace; "... about <words>" adds "query":<words>.
+     "hide the <panel>" hides that one, "hide panels" / "hide everything"
+     sends "panel":"all", "toggle the <panel>" toggles, and "show me the
+     bogus panel" sends an unknown id (the UI must ignore it).
+   - list_timers (control): the fixture timers, counting down in real time.
+     "Cancel timer <id>" removes one, as the real cancel_timer would.
 
    More permissive than the real agent in one way: with only an overlay
    connected (no UI), the scripted confirmation is still shown to it, so the
@@ -320,6 +331,57 @@ function answerConfirm(client, message) {
   return true;
 }
 
+// --- panels (show_panel / hide_panel) ------------------------------------------
+
+const PANEL_WORDS = [
+  ["chat", /\bchat\b|conversation/],
+  ["skills", /skills?\b|capabilit|tools\b|library/],
+  ["activity", /activity|history|doing/],
+  ["permissions", /permission|approval/],
+  ["timers", /timers?\b/],
+  ["voice", /voice|listening/],
+  ["bogus", /bogus/],
+];
+
+const panelNamed = (text) => (PANEL_WORDS.find(([, pattern]) => pattern.test(text)) || [null])[0];
+
+// The real skills send the panel message on the request's socket, then the
+// model's short reply arrives as the response. Same order here.
+async function panelCommand(client, text) {
+  const lower = text.toLowerCase();
+  const cancel = /^cancel timer (\w+)/i.exec(text);
+  if (cancel) {
+    const gone = fixtures.cancelTimer(cancel[1]);
+    await sleep(300);
+    converse(client, {
+      type: "response",
+      text: gone ? `Cancelled ${gone.label || `timer ${gone.timer_id}`}.` : "There's no timer with that id.",
+      trace: [{ tool: "cancel_timer", args: { timer_id: cancel[1] }, result: { ok: Boolean(gone) } }],
+    });
+    return true;
+  }
+  let action = null;
+  if (/^(show me|show my|open the|show the)\b/.test(lower)) action = "show";
+  else if (/^hide\b/.test(lower)) action = "hide";
+  else if (/^toggle\b/.test(lower)) action = "toggle";
+  if (!action) return false;
+  let panel = panelNamed(lower);
+  if (action === "hide" && (!panel || /panels\b|everything|all\b/.test(lower))) panel = "all";
+  if (!panel) return false;
+  const about = /\babout (.+)$/.exec(text);
+  const payload = { type: "panel", action, panel };
+  if (about) payload.query = about[1].trim();
+  await sleep(250);
+  send(client, payload);
+  await sleep(250);
+  converse(client, {
+    type: "response",
+    text: action === "hide" ? "Done." : `Here ${panel === "timers" || panel === "skills" || panel === "permissions" ? "are" : "is"} your ${panel}.`,
+    trace: [{ tool: action === "hide" ? "hide_panel" : "show_panel", args: { panel, ...(about ? { query: payload.query } : {}) }, result: { ok: true } }],
+  });
+  return true;
+}
+
 async function handleMessage(client, message) {
   switch (message.type) {
     case "hello":
@@ -352,6 +414,8 @@ async function handleMessage(client, message) {
     }
     case "list_input_devices":
       return controlResult(client, message, { devices: fixtures.INPUT_DEVICES });
+    case "list_timers":
+      return controlResult(client, message, fixtures.listTimers());
     case "list_wake_models":
       return controlResult(client, message, {
         pretrained: fixtures.WAKE_MODELS,
@@ -401,6 +465,7 @@ async function handleMessage(client, message) {
     }
     case "command": {
       const text = message.text || "";
+      if (await panelCommand(client, text)) return;
       if (/propose/i.test(text)) {
         const demo = fixtures.proposalFor(uid());
         await sleep(400);

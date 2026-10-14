@@ -48,6 +48,37 @@ body.leaving .stage {
   transform: translateY(-8px);
 }
 
+/* The alerts anchor (Overlay view; appearance.js sets body[data-anchor]).
+   main.js puts the window in that corner of the screen; here the stage
+   hugs the same side of the window, and on a bottom anchor the order flips
+   -- the plate stays on the screen edge and the card opens above it, toward
+   the middle -- and it arrives from below. */
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+body[data-anchor$="left"] .stage {
+  margin-left: 10px;
+}
+
+body[data-anchor$="right"] .stage {
+  margin-right: 10px;
+}
+
+body[data-anchor^="bottom"] .stage {
+  flex-direction: column-reverse;
+  margin-top: auto;
+  margin-bottom: 10px;
+}
+
+body[data-anchor^="bottom"].leaving .stage {
+  transform: translateY(8px);
+}
+
+/* "center" keeps the top-aligned stage: the window itself is centred on the
+   screen, and the plate doesn't jump when the card opens under it. */
+
 /* --- the plate --------------------------------------------------------- */
 
 .island {
@@ -400,5 +431,17 @@ body.leaving .stage {
   from {
     opacity: 0;
     transform: translateY(-6px);
+  }
+}
+
+/* On a bottom anchor the card opens above the plate, so it rises instead. */
+body[data-anchor^="bottom"] .ov-confirm {
+  animation-name: rise;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
   }
 }

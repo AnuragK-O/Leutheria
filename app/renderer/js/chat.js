@@ -12,9 +12,15 @@
   // Confirmation cards keyed by id, so one answered by voice can be settled
   // from the outside rather than being left with live buttons.
   const confirmCards = new Map();
+  const proposalCards = new Map();
+
+  // A horizontal chat panel lays the transcript out as a row of columns
+  // (panels.css), so "the end" is the right-hand side, not the bottom.
+  const horizontal = () => document.body.dataset.panel === "chat" && document.body.dataset.orientation === "horizontal";
 
   function scrollToEnd() {
-    scrollEl.scrollTop = scrollEl.scrollHeight;
+    if (horizontal()) scrollEl.scrollLeft = scrollEl.scrollWidth;
+    else scrollEl.scrollTop = scrollEl.scrollHeight;
   }
 
   function showEmptyState() {
@@ -51,6 +57,7 @@
   // the entry themselves). Someone scrolled back to read an earlier reply
   // isn't yanked down by every line that arrives.
   function nearEnd() {
+    if (horizontal()) return scrollEl.scrollWidth - scrollEl.scrollLeft - scrollEl.clientWidth < 80;
     return scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 80;
   }
 
@@ -135,8 +142,19 @@
     if (by === "timeout") return "Timed out with no answer. It wasn't run.";
     // "ui" here means the Electron overlay's card (main.js relays its click);
     // "overlay" is the native Qt overlay, answered over its own connection.
+    // "main" and "panel" are where a chat panel's copy hears it was answered.
     const how =
-      by === "voice" ? " by voice" : by === "ui" || by === "overlay" ? " from the overlay" : by === "user" || !by ? " by you" : "";
+      by === "voice"
+        ? " by voice"
+        : by === "ui" || by === "overlay"
+          ? " from the overlay"
+          : by === "main"
+            ? " in the main window"
+            : by === "panel"
+              ? " in a panel"
+              : by === "user" || !by
+                ? " by you"
+                : "";
     return `${approved ? "Approved" : "Declined"}${how}.`;
   }
 
@@ -300,6 +318,7 @@
 
     const actions = el("div.prompt-actions");
     const settle = (note, approved) => {
+      proposalCards.delete(id);
       actions.remove();
       card.classList.add("resolved");
       card.appendChild(resolvedRow(note, approved));
@@ -327,7 +346,15 @@
 
     body.appendChild(actions);
     card.appendChild(body);
+    proposalCards.set(id, settle);
     append(card, true);
+  }
+
+  // Saved or declined in another window (the main window and a chat panel
+  // both carry the same card).
+  function resolveProposalCard({ id, approved }) {
+    const settle = proposalCards.get(id);
+    if (settle) settle(approved ? "Saved from another window." : "Declined from another window.", approved);
   }
 
   // --- push to talk ------------------------------------------------------
@@ -378,13 +405,46 @@
 
   // --- wiring ------------------------------------------------------------
 
-  window.leutheria.onChat(addMessage);
-  window.leutheria.onConfirmRequest(addConfirmCard);
-  window.leutheria.onConfirmResolved(resolveConfirmCard);
-  window.leutheria.onSkillProposed(addProposalCard);
+  /* main.js numbers the transcript events it keeps (_seq) so a chat panel
+     can be handed the session so far (replay) without showing anything
+     twice. Until that replay has run, a panel holds live events back. */
+  const HANDLERS = {
+    chat: addMessage,
+    "confirm-request": addConfirmCard,
+    "confirm-resolved": resolveConfirmCard,
+    "skill-proposed": addProposalCard,
+    "skill-resolved": resolveProposalCard,
+  };
+  let lastSeq = 0;
+  let held = LX.panelMode === "chat" ? [] : null;
+
+  function deliver(channel, payload) {
+    if (payload && payload._seq) {
+      if (payload._seq <= lastSeq) return;
+      lastSeq = payload._seq;
+    }
+    HANDLERS[channel](payload);
+  }
+
+  const live = (channel) => (payload) => (held ? held.push([channel, payload]) : deliver(channel, payload));
+
+  function replay(events) {
+    for (const { channel, payload } of events || []) if (HANDLERS[channel]) deliver(channel, payload);
+    const waiting = held || [];
+    held = null;
+    for (const [channel, payload] of waiting) deliver(channel, payload);
+    scrollToEnd();
+  }
+
+  window.leutheria.onChat(live("chat"));
+  window.leutheria.onConfirmRequest(live("confirm-request"));
+  window.leutheria.onConfirmResolved(live("confirm-resolved"));
+  window.leutheria.onSkillProposed(live("skill-proposed"));
+  window.leutheria.onSkillResolved(live("skill-resolved"));
 
   setMicIcon(false);
   showEmptyState();
 
-  LX.chat = { focus: () => inputEl.focus() };
+  LX.chat = { focus: () => inputEl.focus(), replay };
+  LX.onOrientation = () => scrollToEnd();
 })(window.LX);

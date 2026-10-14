@@ -316,6 +316,21 @@ creates an executable file and copies the archive's quarantine mark onto everyth
 writes. `git_status` neutralises every program a repository's config can name. Widen any of
 them by type, with a check in `scripts/security_tools_check.py`.
 
+**Panels never take focus, and only the accent is user-coloured.** The floating panels
+(`app/panels.js`, pages in `app/renderer/panels/`) are one NSPanel `BrowserWindow` each,
+shown with `showInactive()` whether a `panel` message, the hot edge or a button opened
+them; nothing calls `focus()` on one, and the chat panel's composer has no autofocus.
+Keyboard focus arrives only when the user clicks in. A panel loads the main window's own
+view module (`chat.js`, `library.js`, ...) inside a shell that stands in for `app.js`,
+so fix a view once, not per window. Layout, hot edge, alerts anchors and appearance are
+one file, Electron `userData/overlay-layout.json`, owned by `main.js` and validated by
+`app/overlay-settings.js` on load and on every patch (bad field: default plus a log line;
+unparseable: moved aside), never trusted raw. Appearance reaches every window through
+`renderer/js/appearance.js`. The user can replace the brand violet (the accent, adjusted
+for contrast) but not the state colours: cyan/amber/red/green mean live/waiting/failed/
+succeeded, and an accent that reads as one of them is refused. The hot-edge test hook
+(`LEUTHERIA_TEST_HOOKS=1`) exists only under that variable; keep it out of the normal path.
+
 TTS, skill learning and the voice session are additive: a failure in any of them is logged
 and skipped (voice goes to `off`), never blocking or delaying the text reply.
 
@@ -366,6 +381,9 @@ and skipped (voice goes to `off`), never blocking or delaying the text reply.
   send a literal backslash-n and it dutifully typed one.
 - Replies are spoken aloud, so agent-facing prose (SYSTEM_PROMPT.md, tool descriptions the
   model echoes) should avoid markdown — TTS reads the punctuation literally.
+- `main.js` forwards transcript events to the main window *and* chat panels (`sendToUi`),
+  numbered (`_seq`) so a panel opened mid-session replays the session without duplicates.
+  A new transcript event goes through `record()` there, or a chat panel never sees it.
 - Local state stays out of git: `preferences.json`, `trusted_commands.json`, `voice_settings.json`,
   `home_location.json`, `logs/`,
   `skills/generated/`, `assets/voices/`, `.env`, `plans/`.

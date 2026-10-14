@@ -10,6 +10,7 @@
     { id: "activity", label: "Activity", title: "Activity" },
     { id: "permissions", label: "Permissions", title: "Permissions" },
     { id: "voice", label: "Voice", title: "Voice" },
+    { id: "overlay", label: "Overlay", title: "Overlay" },
     { id: "logs", label: "Logs", title: "Logs" },
   ];
 
@@ -170,21 +171,51 @@
 
   // --- theme -------------------------------------------------------------
 
-  function setTheme(theme) {
+  // The theme is an appearance setting (main.js, overlay-layout.json) that
+  // every window follows; js/appearance.js applies it. The rail's button
+  // flips between dark and light, whatever "system" currently resolves to.
+  function renderThemeButton() {
+    clear(themeButton).appendChild(icon(document.documentElement.dataset.theme === "dark" ? "sun" : "moon"));
+  }
+
+  async function setTheme(theme) {
     document.documentElement.dataset.theme = theme;
-    localStorage.setItem("leutheria-theme", theme);
-    clear(themeButton).appendChild(icon(theme === "dark" ? "sun" : "moon"));
+    renderThemeButton();
+    await window.leutheria.setOverlaySettings({ appearance: { theme } });
   }
 
   themeButton.addEventListener("click", () =>
     setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark")
   );
+  window.leutheria.onAppearance(() => renderThemeButton());
+
+  // Before the setting existed the theme lived in this window's
+  // localStorage. Carry it over once, the first time.
+  function migrateTheme() {
+    let old = null;
+    try {
+      old = localStorage.getItem("leutheria-theme");
+      localStorage.removeItem("leutheria-theme");
+    } catch (_err) {
+      // nothing to carry over
+    }
+    const appearance = window.leutheria.initialAppearance || {};
+    if (old && !appearance.themeChosen && (old === "dark" || old === "light")) setTheme(old);
+  }
+
+  // From a panel's "Open in Library".
+  window.leutheria.onNavigate(({ view, name }) => {
+    if (!VIEWS.some((entry) => entry.id === view)) return;
+    setView(view);
+    if (view === "library" && name && LX.library.reveal) LX.library.reveal(name);
+  });
 
   // --- boot --------------------------------------------------------------
 
   LX.app = { renderActions, renderSubtitle, currentView: () => current, refresh };
 
-  setTheme(localStorage.getItem("leutheria-theme") || "dark");
+  renderThemeButton();
+  migrateTheme();
   setView("assistant");
   refresh();
 })(window.LX);

@@ -43,4 +43,31 @@ contextBridge.exposeInMainWorld("leutheria", {
   getOverlayManifest: () => ipcRenderer.invoke("overlay-manifest"),
   // true while the overlay shows something clickable (a confirmation card)
   setOverlayInteractive: (interactive) => ipcRenderer.send("overlay-interactive", interactive),
+
+  // --- appearance (every window: js/appearance.js) ---
+  // Read once, synchronously, before the page paints; then kept current.
+  initialAppearance: ipcRenderer.sendSync("get-appearance-sync"),
+  onAppearance: (callback) => ipcRenderer.on("appearance", (_event, appearance) => callback(appearance)),
+
+  // --- panels and their settings ---
+  getOverlaySettings: () => ipcRenderer.invoke("get-overlay-settings"),
+  // patch: a partial settings object; refused whole if any of it is invalid
+  setOverlaySettings: (patch) => ipcRenderer.invoke("set-overlay-settings", patch),
+  checkAccent: (hex) => ipcRenderer.invoke("check-accent", hex),
+  resetPanelLayout: (id) => ipcRenderer.invoke("reset-panel-layout", id),
+  onOverlaySettings: (callback) => ipcRenderer.on("overlay-settings", (_event, settings) => callback(settings)),
+  showPanel: (id, query) => ipcRenderer.invoke("show-panel", id, query),
+  hidePanel: (id) => ipcRenderer.invoke("hide-panel", id),
+  listTimers: () => ipcRenderer.invoke("list-timers"),
+  openMain: (view, name) => ipcRenderer.send("open-main", { view, name }),
+  onNavigate: (callback) => ipcRenderer.on("navigate", (_event, target) => callback(target)),
+  onSkillResolved: (callback) => ipcRenderer.on("skill-resolved", (_event, payload) => callback(payload)),
+
+  // --- a panel window's own chrome (renderer/panels/panel.js) ---
+  // op: ready | move-start | move | move-end | resize-start | resize |
+  // resize-end | dock | orientation | opacity | pin | auto-hide | close
+  panelOp: (op, data) => ipcRenderer.invoke("panel-op", op, data),
+  onPanelConfig: (callback) => ipcRenderer.on("panel-config", (_event, config) => callback(config)),
+  onPanelQuery: (callback) => ipcRenderer.on("panel-query", (_event, query) => callback(query)),
+  getChatHistory: () => ipcRenderer.invoke("chat-history"),
 });
