@@ -284,6 +284,11 @@ body.leaving .stage {
   animation: drop var(--t-base) var(--ease);
 }
 
+/* answered: neutral, like the main window's settled card */
+.ov-confirm.resolved {
+  --tone: var(--text-3);
+}
+
 .ov-confirm-head {
   display: flex;
   align-items: center;
@@ -331,6 +336,37 @@ body.leaving .stage {
   flex: 1;
   font-size: var(--fs-sm);
   color: var(--text-2);
+}
+
+/* why this one asks: one line, under the command */
+.ov-confirm-reason {
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* a spoken yes won't do: a state, so it takes the card's amber and an
+   indicator, set like the plate's label */
+.ov-confirm-hint.click-only {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--amber);
+}
+
+.ov-confirm-hint.click-only::before {
+  content: "";
+  width: var(--led);
+  height: var(--led);
+  background: var(--amber);
 }
 
 .ov-confirm-actions {

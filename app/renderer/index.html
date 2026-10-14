@@ -16,15 +16,15 @@
           </div>
         </div>
 
-        <nav class="nav" id="nav"></nav>
+        <nav class="nav" id="nav" aria-label="Views"></nav>
 
         <div class="sidebar-footer">
-          <div class="status" id="status" data-state="connecting">
+          <div class="status" id="status" data-state="connecting" role="status">
             <span class="status-label">Agent</span>
             <span class="status-dot"></span>
             <span class="status-text">connecting</span>
           </div>
-          <button class="icon-button" id="theme-toggle" title="Toggle appearance"></button>
+          <button class="icon-button" id="theme-toggle" title="Toggle appearance" aria-label="Toggle light or dark appearance"></button>
         </div>
       </aside>
 
@@ -42,10 +42,14 @@
           </button>
         </header>
 
+        <!-- The agent couldn't read a settings file (inventory.settings_errors).
+             Shown on the views those settings belong to. -->
+        <div class="settings-errors callout callout-danger" id="settings-errors" role="alert" hidden></div>
+
         <!-- Assistant -->
         <section class="view view-assistant" id="view-assistant">
           <div class="chat-scroll" id="chat-scroll">
-            <div class="chat" id="chat"></div>
+            <div class="chat" id="chat" role="log" aria-live="polite" aria-label="Transcript"></div>
           </div>
           <div class="composer">
             <div class="composer-field">
@@ -55,9 +59,10 @@
                 type="text"
                 placeholder="Tell Leutheria what to do"
                 autocomplete="off"
+                aria-label="Command"
                 autofocus
               />
-              <button class="mic-button" id="mic-button" title="Push to talk"></button>
+              <button class="mic-button" id="mic-button" title="Push to talk" aria-label="Push to talk: record one command"></button>
             </div>
             <p class="composer-hint">
               <span><kbd>Enter</kbd> send</span>
@@ -71,7 +76,7 @@
         <section class="view view-scroll" id="view-library" hidden>
           <div class="library">
             <div class="library-list" id="library-list"></div>
-            <div class="library-detail" id="library-detail"></div>
+            <div class="library-detail" id="library-detail" role="region" aria-label="Capability details" tabindex="-1"></div>
           </div>
         </section>
 
@@ -92,15 +97,16 @@
 
         <!-- Logs -->
         <section class="view view-logs" id="view-logs" hidden>
-          <pre class="logs" id="logs"></pre>
+          <pre class="logs" id="logs" tabindex="0" aria-label="Log"></pre>
         </section>
       </main>
     </div>
 
-    <div class="toasts" id="toasts"></div>
+    <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 
     <script src="js/util.js"></script>
     <script src="js/chat.js"></script>
+    <script src="js/library-groups.js"></script>
     <script src="js/library.js"></script>
     <script src="js/activity.js"></script>
     <script src="js/permissions.js"></script>

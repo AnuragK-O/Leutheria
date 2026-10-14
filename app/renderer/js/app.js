@@ -30,35 +30,80 @@
 
   // --- chrome ------------------------------------------------------------
 
+  // The nav buttons are built once and updated in place: rebuilding them on
+  // every render would drop keyboard focus from the one just pressed.
+  const navButtons = new Map();
+
   function renderNav() {
-    clear(navEl);
     for (const view of VIEWS) {
-      const count = module(view.id) && module(view.id).count ? module(view.id).count() : null;
-      navEl.appendChild(
-        el(
+      let button = navButtons.get(view.id);
+      if (!button) {
+        button = el(
           "button.nav-item",
-          { class: view.id === current ? "active" : "", onclick: () => setView(view.id) },
+          { onclick: () => setView(view.id) },
           icon(view.id),
           el("span", { text: view.label }),
-          count !== null && count !== undefined ? el("span.nav-count", { text: String(count) }) : null
-        )
-      );
+          el("span.nav-count", { hidden: true })
+        );
+        navButtons.set(view.id, button);
+        navEl.appendChild(button);
+      }
+      const active = view.id === current;
+      button.classList.toggle("active", active);
+      if (active) button.setAttribute("aria-current", "page");
+      else button.removeAttribute("aria-current");
+
+      const count = module(view.id) && module(view.id).count ? module(view.id).count() : null;
+      const countEl = button.querySelector(".nav-count");
+      countEl.hidden = count === null || count === undefined;
+      countEl.textContent = countEl.hidden ? "" : String(count);
     }
   }
 
+  function renderSubtitle() {
+    const view = VIEWS.find((entry) => entry.id === current);
+    const mod = module(current);
+    subtitleEl.textContent = (mod && mod.subtitle ? mod.subtitle() : view.subtitle) || "";
+  }
+
+  // inventory.settings_errors: the agent couldn't read a settings file (say,
+  // a corrupt preferences.json) and is running on defaults. It matters where
+  // those settings are shown and changed, so it heads those two views.
+  const settingsErrorsEl = document.getElementById("settings-errors");
+  const SETTINGS_VIEWS = ["library", "permissions"];
+
+  function renderSettingsErrors() {
+    const errors = (LX.state.inventory && LX.state.inventory.settings_errors) || [];
+    const show = errors.length > 0 && SETTINGS_VIEWS.includes(current);
+    settingsErrorsEl.hidden = !show;
+    if (!show) return;
+    settingsErrorsEl.replaceChildren(
+      icon("warning"),
+      el(
+        "div.settings-errors-text",
+        {},
+        el("strong", { text: errors.length === 1 ? "A settings file couldn't be read" : "Settings files couldn't be read" }),
+        ...errors.map((text) => el("span", { text }))
+      )
+    );
+  }
+
   function renderActions() {
+    renderSettingsErrors();
     const view = VIEWS.find((entry) => entry.id === current);
     const mod = module(current);
     titleEl.textContent = view.title;
-    subtitleEl.textContent = (mod && mod.subtitle ? mod.subtitle() : view.subtitle) || "";
-    clear(actionsEl);
-    if (mod && mod.actions) {
-      for (const node of mod.actions()) actionsEl.appendChild(node);
-    }
+    renderSubtitle();
+    const nodes = mod && mod.actions ? mod.actions() : [];
+    // A view may hand back the same nodes each time (the Library's filter
+    // field); re-inserting them would take focus out of a field mid-typing.
+    const same = nodes.length === actionsEl.children.length && nodes.every((node, index) => actionsEl.children[index] === node);
+    if (!same) actionsEl.replaceChildren(...nodes);
   }
 
   function setView(id) {
     current = id;
+    document.body.dataset.view = id;
     for (const view of VIEWS) {
       document.getElementById(`view-${view.id}`).hidden = view.id !== id;
     }
@@ -110,6 +155,19 @@
   // the window reopened later), so ask rather than wait for an event -- BUGS.md #18.
   window.leutheria.getStatus().then(showStatus);
 
+  // --- input modality ---------------------------------------------------
+  // Text fields match :focus-visible however they got focus, so the composer
+  // can't rely on it. Track how the user is moving instead.
+  document.body.dataset.modality = "pointer";
+  document.addEventListener(
+    "keydown",
+    (event) => {
+      if (event.key === "Tab" || event.key.startsWith("Arrow") || event.key === "/") document.body.dataset.modality = "keyboard";
+    },
+    true
+  );
+  document.addEventListener("pointerdown", () => (document.body.dataset.modality = "pointer"), true);
+
   // --- theme -------------------------------------------------------------
 
   function setTheme(theme) {
@@ -124,7 +182,7 @@
 
   // --- boot --------------------------------------------------------------
 
-  LX.app = { renderActions, currentView: () => current, refresh };
+  LX.app = { renderActions, renderSubtitle, currentView: () => current, refresh };
 
   setTheme(localStorage.getItem("leutheria-theme") || "dark");
   setView("assistant");

@@ -247,3 +247,37 @@ module.exports = {
   proposalFor,
   now,
 };
+
+// A 300-character command, for the confirmation card's long-content case.
+module.exports.LONG_COMMAND =
+  "find ~/Projects/demo -type f \\( -name '*.log' -o -name '*.tmp' -o -name '*.cache' \\) -mtime +14 -print0 | " +
+  "xargs -0 tar -czf ~/Archive/demo-logs-$(date +%Y%m%d).tar.gz && find ~/Projects/demo -type f \\( -name '*.log' -o -name '*.tmp' \\) " +
+  "-mtime +14 -delete && echo 'archived and cleaned' && du -sh ~/Projects/demo ~/Archive";
+
+// What the agent puts in inventory.settings_errors for a corrupt preferences file.
+module.exports.SETTINGS_ERROR =
+  "preferences.json couldn't be read (Expecting value: line 1 column 1), so every capability is using its built-in default until the file is fixed.";
+
+// Long content: a learned skill with a very long name and 40 steps.
+module.exports.inventory.skills.push({
+  kind: "skill",
+  name: "export_quarterly_reports_to_the_shared_finance_drive_and_notify_the_team",
+  description:
+    "Export every quarterly report in the Reports folder to the shared finance drive, then post a notification. Learned from a run on Oct 2.",
+  input_schema: { type: "object", properties: { quarter: { type: "string", description: "Quarter, like 2026-Q3." } }, required: ["quarter"] },
+  enabled: true,
+  requires_confirmation: false,
+  default_requires_confirmation: false,
+  is_overridden: false,
+  runs: 1,
+  failures: 0,
+  last_used: now() - 86400 * 11,
+  origin: "generated",
+  deletable: true,
+  created_at: now() - 86400 * 11,
+  steps: Array.from({ length: 40 }, (_unused, index) =>
+    index % 4 === 3
+      ? { tool: "show_notification", args: { title: `Exported part ${index + 1} of 40`, message: "{quarter}" } }
+      : { tool: "copy_file", args: { src: `~/Reports/{quarter}/part-${String(index + 1).padStart(2, "0")}.pdf`, dest: "/Volumes/Finance/{quarter}/" } }
+  ),
+});

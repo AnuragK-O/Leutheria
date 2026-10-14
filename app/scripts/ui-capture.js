@@ -215,6 +215,9 @@ async function runTheme(theme) {
         MOCK_PORT: String(MOCK_PORT),
         MOCK_AUTOSTART: "0",
         MOCK_CONFIRM_TIMEOUT_MS: "15000",
+        MOCK_TIMEOUT_MS: "2500",
+        // The second theme's session asks for a click, not a spoken yes.
+        MOCK_VOICE_APPROVABLE: theme === THEMES[0] ? "1" : "0",
       },
       stdio: "ignore",
     });
@@ -260,6 +263,16 @@ async function runTheme(theme) {
 
     // --- assistant
     await main.shot(file("assistant-empty"));
+    check(
+      `[${theme}] the autofocused composer rests quietly`,
+      await main.eval(`document.activeElement.id === "command-input" && document.body.dataset.modality !== "keyboard"`)
+    );
+    await main.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 });
+    await main.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 });
+    await main.eval(`document.getElementById("command-input").focus()`);
+    check(`[${theme}] keyboard focus switches the composer to the focus ring`, await main.eval(`document.body.dataset.modality === "keyboard"`));
+    await main.shot(file("assistant-empty-keyboard-focus"));
+    await main.eval(`document.dispatchEvent(new PointerEvent("pointerdown"))`);
     await main.eval(typeCommand("what time is it"));
     check(`[${theme}] typed command gets a reply`, await main.waitFor(`document.querySelectorAll("#chat .msg.assistant").length === 1`));
     await main.eval(typeCommand("this one will fail"));
@@ -309,6 +322,24 @@ async function runTheme(theme) {
     await main.eval(`document.getElementById("chat-scroll").scrollTop = 1e6`);
     await main.shot(file("proposal-saved"));
 
+    // A confirmation nobody answers: a 300-character command, a reason, and
+    // voice_approvable:false; the agent times it out (by:"timeout").
+    await main.eval(typeCommand("let this one timeout"));
+    check(
+      `[${theme}] a confirmation shows its reason and that it needs a click`,
+      (await main.waitFor(`[...document.querySelectorAll("#chat .prompt-card.confirm")].pop()?.querySelector(".needs-click")`)) &&
+        (await main.eval(`/outside your usual folders/.test([...document.querySelectorAll("#chat .prompt-card.confirm")].pop().querySelector(".prompt-reason")?.textContent || "")`))
+    );
+    await main.eval(`document.getElementById("chat-scroll").scrollTop = 1e6`);
+    await main.shot(file("confirm-card-long-needs-click"));
+    check(
+      `[${theme}] a timed-out confirmation says so and settles`,
+      (await main.waitFor(`/Timed out with no answer/.test([...document.querySelectorAll("#chat .prompt-card.confirm")].pop().querySelector(".prompt-resolved")?.textContent || "")`, 6000)) &&
+        (await main.waitFor(`[...document.querySelectorAll("#chat .msg-body")].some((n) => /didn't run it/.test(n.textContent))`))
+    );
+    await main.eval(`document.getElementById("chat-scroll").scrollTop = 1e6`);
+    await main.shot(file("confirm-timeout"));
+
     // --- library
     await main.eval(clickNav(NAV.library));
     check(`[${theme}] library lists the catalog`, await main.waitFor(`document.querySelectorAll("#library-list .list-row").length >= 13`));
@@ -335,7 +366,7 @@ async function runTheme(theme) {
     await main.eval(clickText("#view-actions .segmented button", "Skills"));
     check(
       `[${theme}] Skills filter hides tools`,
-      await main.eval(`[...document.querySelectorAll("#library-list .list-group-label")].every((n) => !/^Tools/i.test(n.textContent.trim()))`)
+      await main.eval(`(() => { const rows = [...document.querySelectorAll("#library-list .list-row")]; return rows.length > 0 && rows.every((n) => n.dataset.kind === "skill"); })()`)
     );
     await main.eval(clickText("#view-actions .segmented button", "All"));
     await main.eval(setInput("#view-actions .search input", "file"));
@@ -348,6 +379,26 @@ async function runTheme(theme) {
     check(`[${theme}] search with no matches says so`, await main.eval(`/No matches/.test(document.getElementById("library-list").textContent)`));
     await main.shot(file("library-no-matches"));
     await main.eval(setInput("#view-actions .search input", ""));
+
+    // --- a settings file the agent couldn't read (inventory.settings_errors)
+    await main.eval(clickNav(NAV.assistant));
+    await main.eval(typeCommand("break settings"));
+    await main.waitFor(`[...document.querySelectorAll("#chat .msg-body")].some((n) => /unreadable/.test(n.textContent))`);
+    await main.eval(`LX.app.refresh()`);
+    await main.eval(clickNav(NAV.library));
+    check(`[${theme}] a settings error heads the Library`, await main.waitFor(`!document.getElementById("settings-errors").hidden && /preferences.json/.test(document.getElementById("settings-errors").textContent)`));
+    await main.shot(file("library-settings-error"));
+    await main.eval(clickNav(NAV.permissions));
+    check(`[${theme}] ...and Permissions`, await main.eval(`!document.getElementById("settings-errors").hidden`));
+    await main.shot(file("permissions-settings-error"));
+    await main.eval(clickNav(NAV.activity));
+    check(`[${theme}] ...and not the other views`, await main.eval(`document.getElementById("settings-errors").hidden`));
+    await main.eval(clickNav(NAV.assistant));
+    await main.eval(typeCommand("fix settings"));
+    await main.waitFor(`[...document.querySelectorAll("#chat .msg-body")].some((n) => /reads again/.test(n.textContent))`);
+    await main.eval(`LX.app.refresh()`);
+    await main.eval(clickNav(NAV.library));
+    check(`[${theme}] the notice clears when the file is fixed`, await main.waitFor(`document.getElementById("settings-errors").hidden`));
 
     // --- activity
     await main.eval(clickNav(NAV.activity));
@@ -405,7 +456,74 @@ async function runTheme(theme) {
     // --- logs
     await main.eval(clickNav(NAV.logs));
     check(`[${theme}] logs show the bridge stream`, await main.waitFor(`/\\[bridge\\]/.test(document.getElementById("logs").textContent)`));
+    check(`[${theme}] log lines are rows with a tinted source tag`, await main.eval(`Boolean(document.querySelector("#logs .log-line.log-bridge .log-tag"))`));
     await main.shot(file("logs"));
+    await main.eval(clickText("#view-actions button", "Copy"));
+    // The clipboard may refuse an unfocused window; either way the button answers.
+    check(`[${theme}] Copy answers with a toast`, await main.waitFor(`/Copied|Couldn't copy/.test(document.getElementById("toasts").textContent)`));
+    await main.shot(file("logs-copied"));
+    await main.eval(clickText("#view-actions button", "Clear"));
+    check(`[${theme}] Clear empties the log`, await main.eval(`document.querySelectorAll("#logs .log-line").length === 0`));
+
+    // --- transcript edge cases
+    await main.eval(clickNav(NAV.assistant));
+    const replies = () => main.eval(`document.querySelectorAll("#chat .msg.assistant").length`);
+    await main.eval(typeCommand("unsaved skill"));
+    check(
+      `[${theme}] skill_save_failed shows as an error line`,
+      await main.waitFor(`[...document.querySelectorAll("#chat .msg-body.error")].some((n) => /Couldn't save "tidy_screenshots"/.test(n.textContent))`)
+    );
+    let before = await replies();
+    await main.eval(typeCommand("日本語のファイルを開いて, открой файл, افتح الملف, 한국어"));
+    await main.waitFor(`document.querySelectorAll("#chat .msg.assistant").length > ${before}`);
+    await main.shot(file("transcript-non-latin"));
+    if (theme === THEMES[0]) {
+      // Long transcript: ~200 entries, sent one at a time like a person would.
+      const start = Date.now();
+      for (let index = 0; index < 90; index += 1) {
+        before = await replies();
+        await main.eval(typeCommand(`command number ${index + 1}`));
+        await main.waitFor(`document.querySelectorAll("#chat .msg.assistant").length > ${before}`, 3000);
+      }
+      const entries = await main.eval(`document.querySelectorAll("#chat .msg").length`);
+      check(`[${theme}] a long transcript renders`, entries >= 200, `${entries} entries in ${Math.round((Date.now() - start) / 1000)} s`);
+      check(`[${theme}] ...and follows the newest entry`, await main.eval(`(() => { const s = document.getElementById("chat-scroll"); return s.scrollHeight - s.scrollTop - s.clientHeight < 80; })()`));
+      // Scrolled back to read: an arriving reply must not yank the view down.
+      before = await replies();
+      await main.eval(typeCommand("one more"));
+      await main.eval(`document.getElementById("chat-scroll").scrollTop = 0`);
+      await main.waitFor(`document.querySelectorAll("#chat .msg.assistant").length > ${before}`);
+      check(`[${theme}] a reply doesn't scroll away from what you're reading`, await main.eval(`document.getElementById("chat-scroll").scrollTop < 100`));
+      const frame = await main.eval(`(() => { const t = performance.now(); document.getElementById("chat-scroll").scrollTop = 1e6; document.body.offsetHeight; return performance.now() - t; })()`);
+      check(`[${theme}] scrolling the long transcript stays cheap`, frame < 50, `${frame.toFixed(1)} ms layout`);
+      await main.shot(file("transcript-long"));
+    }
+
+    // --- Library: a learned skill with a long name and 40 steps, then delete it
+    const LONG = "export_quarterly_reports_to_the_shared_finance_drive_and_notify_the_team";
+    await main.eval(clickNav(NAV.library));
+    await main.eval(clickText("#library-list .list-row-name", LONG));
+    check(`[${theme}] a 40-step learned skill lists every step`, await main.waitFor(`document.querySelectorAll("#library-detail .step").length === 40`));
+    await main.shot(file("library-detail-long-skill"));
+    await main.eval(`document.getElementById("library-detail").scrollTop = 1e6`);
+    await main.shot(file("library-detail-long-skill-bottom"));
+    await main.eval(clickText("#library-detail .danger-zone button", "Delete"));
+    check(`[${theme}] Delete asks first`, await main.waitFor(`/This can't be undone/.test(document.querySelector("#library-detail .danger-zone").textContent)`));
+    await main.shot(file("library-delete-confirm"));
+    await main.eval(clickText("#library-detail .danger-zone button", "Delete skill"));
+    check(
+      `[${theme}] a deleted skill leaves the list, with a toast`,
+      (await main.waitFor(`![...document.querySelectorAll("#library-list .list-row")].some((n) => n.dataset.name === "${LONG}")`)) &&
+        (await main.waitFor(`/Deleted/.test(document.getElementById("toasts").textContent)`))
+    );
+    await main.shot(file("library-deleted-toast"));
+
+    // --- reduced motion: toasts must still go away
+    await main.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+    await main.waitFor(`document.querySelectorAll("#toasts .toast").length === 0`, 6000);
+    await main.eval(`LX.toast("Reduced motion check")`);
+    check(`[${theme}] under reduced motion a toast still clears`, await main.waitFor(`document.querySelectorAll("#toasts .toast").length === 0`, 5000));
+    await main.send("Emulation.setEmulatedMedia", { features: [] });
 
     // --- every view again at the other widths
     for (const width of WIDTHS.slice(1)) {
@@ -451,8 +569,18 @@ async function runTheme(theme) {
           await overlay.shot(file(`overlay-${state}`));
         }
         const cardUp = await overlay.eval(`!document.getElementById("confirm").hidden && document.querySelectorAll("#confirm-actions button").length === 2`);
-        if (cardUp && !answered) {
+        // Answer only once the session is waiting on it, so the reticle's
+        // awaiting_confirmation state is reached and captured first.
+        if (cardUp && !answered && state === "awaiting_confirmation") {
           answered = true;
+          check(
+            `[${theme}] the overlay card's hint matches voice_approvable`,
+            await overlay.eval(
+              theme === THEMES[0]
+                ? `!document.getElementById("confirm-hint").classList.contains("click-only")`
+                : `document.getElementById("confirm-hint").classList.contains("click-only") && !document.getElementById("confirm-reason").hidden`
+            )
+          );
           await overlay.shot(file("overlay-confirm-card"));
           await main.eval(`document.getElementById("chat-scroll").scrollTop = 1e6`);
           await main.shot(file("voice-session-confirm"));
@@ -469,11 +597,12 @@ async function runTheme(theme) {
               await overlay.waitFor(`/main window/.test(document.querySelector(".ov-confirm-resolved")?.textContent || "")`)
             );
           }
+          check(`[${theme}] a settled overlay card goes neutral`, await overlay.eval(`document.getElementById("confirm").classList.contains("resolved")`));
           await overlay.shot(file("overlay-confirm-settled"));
         }
         await sleep(150);
       }
-      const expected = ["listening", "hearing", "transcribing", "thinking", "speaking"];
+      const expected = ["listening", "hearing", "transcribing", "thinking", "speaking", "awaiting_confirmation"];
       check(`[${theme}] overlay showed every state`, expected.every((state) => seen.has(state)), [...seen].join(", "));
       check(`[${theme}] the session's confirmation was answered`, answered);
       check(
@@ -483,6 +612,15 @@ async function runTheme(theme) {
       await main.eval(`document.getElementById("chat-scroll").scrollTop = 1e6`);
       await main.shot(file("voice-session-reply"));
       check(`[${theme}] the pill returns to idle when the session ends`, await main.waitFor(`document.getElementById("voice-indicator").dataset.state === "idle"`, 15000));
+    }
+    if (!REAL_URL && children[0]) {
+      children[0].kill();
+      check(
+        `[${theme}] losing the agent shows in the status`,
+        await main.waitFor(`["disconnected", "error"].includes(document.getElementById("status").dataset.state)`, 6000)
+      );
+      await main.eval(clickNav(NAV.library));
+      await main.shot(file("status-disconnected"));
     }
   } finally {
     for (const child of children) child.kill();
@@ -498,8 +636,29 @@ async function runReal(main, theme, file) {
   await main.eval(clickNav(NAV.library));
   check(`[${theme}] real: library lists the catalog`, await main.waitFor(`document.querySelectorAll("#library-list .list-row").length > 5`));
   await main.shot(file("real-library-list"));
+  check(
+    `[${theme}] real: every capability is filed under a group`,
+    await main.eval(`document.querySelectorAll("#library-list .list-row").length === LX.state.inventory.tools.length + LX.state.inventory.skills.length`)
+  );
+  const inOther = await main.eval(`[...document.querySelectorAll('#library-group-other .list-row')].map((n) => n.dataset.name).join(", ")`);
+  check(`[${theme}] real: nothing is left in the Other group`, !inOther, inOther);
   await main.eval(`document.querySelector("#library-list .list-row").click()`);
   await main.shot(file("real-library-detail-first"));
+  await main.eval(`document.querySelector(".library-rows").scrollTop = 1e6`);
+  await main.shot(file("real-library-list-end"));
+  // The longest description in the catalog, and one that names other capabilities.
+  for (const name of ["set_timer", "archive_folder", "run_command"]) {
+    if (await main.eval(clickText("#library-list .list-row-name", name))) await main.shot(file(`real-library-detail-${name}`));
+  }
+  await main.eval(setInput("#view-actions .search input", "zip"));
+  await main.shot(file("real-library-search"));
+  await main.eval(setInput("#view-actions .search input", ""));
+  await main.eval(`document.querySelector('.filter-chip[data-filter="asks"]').click()`);
+  await main.shot(file("real-library-filter-asks"));
+  await main.eval(`document.querySelector('.filter-chip[data-filter="asks"]').click()`);
+  await main.eval(`document.querySelectorAll(".list-group-label").forEach((n) => n.click())`);
+  await main.shot(file("real-library-collapsed"));
+  await main.eval(`document.querySelectorAll(".list-group-label").forEach((n) => n.click())`);
   // The last row is a tool; get_time-like safe ones sit there. Toggle "ask
   // before running" (the second switch) on and put it back with Reset.
   await main.eval(`[...document.querySelectorAll("#library-list .list-row")].pop().click()`);

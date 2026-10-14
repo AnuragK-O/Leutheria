@@ -16,6 +16,7 @@
   const confirmHeadEl = document.getElementById("confirm-head");
   const confirmCmdEl = document.getElementById("confirm-cmd");
   const confirmHintEl = document.getElementById("confirm-hint");
+  const confirmReasonEl = document.getElementById("confirm-reason");
   const confirmActionsEl = document.getElementById("confirm-actions");
 
   const VISUAL_STATES = ["listening", "hearing", "transcribing", "thinking", "speaking", "awaiting_confirmation"];
@@ -35,6 +36,8 @@
     manual: "Stopped listening",
     error: "Something went wrong",
   };
+
+  const TIMED_OUT = "timeout"; // settleConfirm's `how` for a timed-out card
 
   // Longest reply shown in the island; the full text is in the main window.
   const REPLY_CHARS = 150;
@@ -172,13 +175,20 @@
     setInteractive(false);
   }
 
-  function showConfirm({ id, tool, args }) {
+  function showConfirm({ id, tool, args, reason, voice_approvable }) {
     clearTimeout(confirmHideTimer);
     confirmation = { id, tool, args };
 
     clear(confirmHeadEl).append(icon("warning"), el("span", { text: "Approval required" }));
     confirmCmdEl.textContent = `${tool}(${formatArgs(args, 200) || ""})`;
-    confirmHintEl.textContent = "Say yes or no, or choose";
+    confirmReasonEl.textContent = reason || "";
+    confirmReasonEl.hidden = !reason;
+    // A spoken yes won't approve this one: say so in the hint's place, as a
+    // state (amber, like the card) rather than a caption.
+    const clickOnly = voice_approvable === false;
+    confirmHintEl.classList.toggle("click-only", clickOnly);
+    confirmHintEl.textContent = clickOnly ? "Needs a click" : "Say yes or no, or choose";
+    confirmEl.classList.remove("resolved");
     clear(confirmActionsEl).append(
       el("button.btn.btn-sm.btn-danger", { text: "Decline", onclick: () => answer(false) }),
       el("button.btn.btn-sm.btn-hot", { text: "Approve", onclick: () => answer(true) })
@@ -197,12 +207,15 @@
     setInteractive(false);
     clear(confirmActionsEl);
     confirmHintEl.textContent = "";
+    confirmHintEl.classList.remove("click-only");
+    // Answered: the amber leaves with the question, as in the main window.
+    confirmEl.classList.add("resolved");
     confirmActionsEl.appendChild(
       el(
         "div.ov-confirm-resolved",
         { class: approved ? "yes" : "no" },
         icon(approved ? "check" : "x"),
-        el("span", { text: `${approved ? "Approved" : "Declined"}${how}` })
+        el("span", { text: how === TIMED_OUT ? "Timed out, not run" : `${approved ? "Approved" : "Declined"}${how}` })
       )
     );
     confirmHideTimer = setTimeout(() => (confirmEl.hidden = true), 1100);
@@ -292,7 +305,10 @@
   api.onConfirmResolved(({ id, approved, by }) => {
     if (!confirmation || confirmation.id !== id) return;
     // by:"overlay" is the Qt overlay (only both run if it was started by hand).
-    const how = by === "voice" ? " by voice" : by === "overlay" ? " on the other overlay" : " in the main window";
+    // An unknown `by` still settles the card, without claiming who answered.
+    if (by === "timeout") return settleConfirm(false, TIMED_OUT);
+    const how =
+      by === "voice" ? " by voice" : by === "overlay" ? " on the other overlay" : by === "ui" || by === "user" || !by ? " in the main window" : "";
     settleConfirm(approved, how);
   });
 
