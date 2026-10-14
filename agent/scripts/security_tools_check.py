@@ -702,12 +702,81 @@ def check_fetch_url():
         check(allowed(address, 443), f"allows {address}")
 
 
+# --- opener gaps --------------------------------------------------------------
+
+def check_openers():
+    section("open_file / open_with: one classifier, the review's gaps closed (L1)")
+    base = TMP / "openers"
+    base.mkdir()
+
+    def make(name, body="hello\n", folder=False):
+        target = base / name
+        if folder:
+            target.mkdir()
+            (target / "Contents").mkdir()
+            (target / "Contents" / "Info.plist").write_text("<plist/>")
+        else:
+            target.write_text(body)
+        return target
+
+    plist = '<?xml version="1.0"?><plist version="1.0"><dict><key>URL</key><string>vnc://x</string></dict></plist>\n'
+    both_refused = [
+        make("flow.wflow"), make("page.webarchive"), make("Play.playground", folder=True), make("ext.crx"),
+        make("report.docm"), make("sheet.xlsm"), make("deck.pptm"), make("tpl.dotm"), make("web.jnlp"),
+        make("share.afploc", plist), make("screen.vncloc", plist), make("proj.code-workspace", '{"folders":[]}\n'),
+        make("Widget.wdgt", folder=True), make("Spot.mdimporter", folder=True), make("file.zip.download", folder=True),
+        make("remote.rdp"), make("run.command"), make("build.sh"), make("addin.xlam"), make("Book.swiftpm", folder=True),
+    ]
+    for target in both_refused:
+        launches.clear()
+        opened = tool("open_file", path=str(target))
+        check(opened["ok"] is False and launches == [], f"open_file refuses {target.name}: {opened['error'][:60]}")
+        for app in ("Visual Studio Code", "TextEdit", "Finder", "Xcode"):
+            result = tool("open_with", path=str(target), app=app)
+            check(result["ok"] is False and launches == [], f"open_with refuses {target.name} into {app}")
+    # Symlinks are judged by what they point at.
+    for link_name, points_at in [("notes.txt", "flow.wflow"), ("page.html", "page.webarchive"), ("Folder", "Widget.wdgt"),
+                                 ("settings.json", "proj.code-workspace"), ("doc.docx", "report.docm")]:
+        link = base / link_name
+        link.symlink_to(base / points_at)
+        check(tool("open_file", path=str(link))["ok"] is False and tool("open_with", path=str(link), app="Visual Studio Code")["ok"] is False
+              and launches == [], f"both refuse {link_name}, a symlink to {points_at}")
+    inner = base / "Widget.wdgt" / "Contents" / "Info.plist"
+    check(tool("open_with", path=str(inner), app="TextEdit")["ok"] is False, "a file inside a package is refused")
+
+    # What must keep working.
+    folder = base / "project"
+    folder.mkdir()
+    for app in ("Visual Studio Code", "Finder"):
+        launches.clear()
+        result = tool("open_with", path=str(folder), app=app)
+        check(result["ok"] and launches == [["open", "-a", app, str(folder)]], f"a folder still opens in {app}")
+    for name, body in [("main.py", "print(1)\n"), ("index.js", "x\n"), ("Makefile", "all:\n\ttrue\n"), (".gitignore", "x\n"),
+                       ("Dockerfile", "FROM x\n"), ("page.html", "<p>x</p>\n"), ("notes.md", "# x\n"), ("data.json", "{}\n"),
+                       ("conf.toml", "a = 1\n"), ("app.ts", "let a = 1\n")]:
+        target = base / "project" / name
+        target.write_text(body)
+        launches.clear()
+        result = tool("open_with", path=str(target), app="Visual Studio Code")
+        check(result["ok"] and len(launches) == 1, f"open_with still opens {name} in an editor")
+    launches.clear()
+    result = tool("open_file", path=str(base / "project" / "page.html"))
+    check(result["ok"] and launches and launches[0][1] == "-a", "open_file still opens an .html page in the browser")
+    binary = base / "project" / "blob.bin"
+    binary.write_bytes(b"\x00\x01\x02binary")
+    check(tool("open_with", path=str(binary), app="Visual Studio Code")["ok"] is False, "an undeclared binary file is still refused")
+    script = base / "project" / "tool.py"
+    script.write_text("print(1)\n")
+    check(tool("open_file", path=str(script))["ok"] is False, "open_file still refuses a .py (its default app could be a runner)")
+
+
 SECTIONS = {
     "open_url": check_open_url,
     "open_app": check_open_app,
     "extract_archive": check_extract_archive,
     "git_status": check_git_status,
     "fetch_url": check_fetch_url,
+    "openers": check_openers,
 }
 
 

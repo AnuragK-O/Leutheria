@@ -586,8 +586,9 @@ TOOLS = {
         "description": (
             "Open a document, image, audio or video file, or a folder, in the app the Mac "
             "normally uses for it, as if the user had double-clicked it. It refuses "
-            "applications, scripts, programs, installers and anything it cannot identify, "
-            "because opening those would run them; use open_app for an application and "
+            "applications, scripts, programs, installers, documents that run code when opened "
+            "(macro-enabled Office files, playgrounds, Shortcuts workflows, web archives) and "
+            "anything it cannot identify, because opening those would run them; use open_app for an application and "
             "reveal_in_finder to just show a file. To read a text file's contents "
             "yourself use read_file instead; this only puts it on screen."
         ),
