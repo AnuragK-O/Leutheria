@@ -180,6 +180,17 @@ async def _resolve_confirmation_by_voice(text: str, websocket, pending: dict) ->
     confirmation_id, future = next(reversed(pending.items()))
     if future.done():
         return False
+    from agent.core.dispatcher import voice_yes_allowed  # local: keeps this hunk self-contained
+
+    if resolution is True and not voice_yes_allowed(confirmation_id):
+        # A command the listener can't judge by ear (too long to have been
+        # read out, or with pipes, substitutions, downloaders...): the card
+        # stays open and only a click approves it. Consumed as an answer,
+        # so "yes" is never re-run as a new command. A "no" always counts
+        # (voice_confirm.needs_click, review H4).
+        log_event("confirmation_voice_yes_refused", id=confirmation_id)
+        await speak(websocket, "That one needs a click on the card to approve. You can still say no to cancel it.")
+        return True
     future.set_result({"approved": resolution, "remember": None})
     log_event("confirmation_answered_by_voice", id=confirmation_id, approved=resolution)
     # Tell the UI too, so the on-screen card settles into its answered state

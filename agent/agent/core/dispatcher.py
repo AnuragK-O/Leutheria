@@ -7,7 +7,7 @@ import traceback
 import urllib.parse
 import uuid
 
-from agent.core import path_policy, preferences, session, trust, ui_access
+from agent.core import path_policy, preferences, session, trust, ui_access, voice_confirm
 from agent.core.logging_util import log_event
 from agent.core.tts import speak
 from agent.skills.registry import SKILLS
@@ -263,13 +263,34 @@ async def _check_scope(
     return True, None
 
 
-def _fallback_prompt(tool_name: str, args: dict) -> str:
-    """Spoken when the model gave no explanation of its own. It has to say
-    *what* will happen: the old "I want to run run_command" named the tool
-    and left out the only part a listener can judge (BUGS.md #22)."""
-    if tool_name == "run_command" and args.get("cmd"):
-        return f"I want to run the command: {args['cmd'][:120]}. Should I go ahead?"
-    return f"I want to use {tool_name.replace('_', ' ')}. Should I go ahead?"
+# The argument a listener needs to hear to judge a call, per tool kind.
+_KEY_ARGS = ("cmd", "path", "destination", "source", "url", "archive", "save_path", "app", "name", "folder")
+
+
+def _system_line(tool_name: str, args: dict) -> str:
+    """The part of a spoken confirmation that the agent writes, never the
+    model: what will actually run. Always spoken, after the model's own
+    sentence if it gave one -- a voice-only user used to hear only the
+    model's explanation, which an injected model can make say anything,
+    and the fallback cut the command at 120 characters (review H4;
+    BUGS.md #22 for the earlier "I want to run run_command")."""
+    if tool_name == "run_command":
+        cmd = str(args.get("cmd") or "").strip()
+        if len(cmd) <= voice_confirm.SPOKEN_COMMAND_MAX:
+            return f"The exact command is: {cmd}."
+        return (
+            f"The command is {len(cmd)} characters long, too long to read out; it begins: "
+            f"{cmd[:voice_confirm.SPOKEN_COMMAND_MAX]}. The whole command is on screen."
+        )
+    what = tool_name.replace("_", " ")
+    for key in _KEY_ARGS:
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            shown = value.strip()
+            if len(shown) > 160:
+                shown = shown[:160] + ", and more, shown on screen"
+            return f"That is {what}, on {shown}."
+    return f"That is {what}."
 
 
 def _spoken_path_reason(path: str, why: str) -> str:
@@ -290,6 +311,9 @@ async def _confirm(
     confirmation_id = str(uuid.uuid4())
     future = asyncio.get_running_loop().create_future()
     pending[confirmation_id] = future
+    reasons = reasons or []
+    voice_yes = not (tool_name == "run_command" and voice_confirm.needs_click(args.get("cmd")))
+    _voice_yes_allowed[confirmation_id] = voice_yes
 
     await websocket.send(
         json.dumps(
@@ -301,6 +325,8 @@ async def _confirm(
                 # Why a normally silent tool is asking, written by the agent,
                 # never the model. Absent when the tool always asks.
                 **({"reason": "; ".join(card for card, _ in reasons)} if reasons else {}),
+                # False: a spoken yes won't approve this one (needs_click).
+                "voice_approvable": voice_yes,
             }
         )
     )
@@ -309,14 +335,19 @@ async def _confirm(
         reasons=[card for card, _ in reasons] if reasons else None,
     )
 
-    # Speak the prompt so this can be answered by voice alone. Prefer the
-    # model's own accompanying explanation for this turn (SYSTEM_PROMPT.md
-    # already asks it to briefly explain a destructive action before taking
-    # it) over a generic fallback -- it's more natural and specific.
-    spoken = intro_text.strip() or _fallback_prompt(tool_name, args)
+    # Speak the prompt so this can be answered by voice alone: the model's
+    # own explanation for this turn first, if it gave one (SYSTEM_PROMPT.md
+    # asks it to), then -- always -- the agent's own line saying what will
+    # really run, why it is asking, and whether a spoken yes counts.
+    parts = [intro_text.strip(), _system_line(tool_name, args)]
     if reasons:
-        spoken += " I'm asking because " + "; and ".join(said for _, said in reasons) + "."
-    await speak(websocket, spoken)
+        parts.append("I'm asking because " + "; and ".join(said for _, said in reasons) + ".")
+    if voice_yes:
+        if not intro_text.strip().endswith("?"):
+            parts.append("Should I go ahead?")
+    else:
+        parts.append("This one needs a click on the card to approve. You can say no to cancel.")
+    await speak(websocket, " ".join(p for p in parts if p))
 
     try:
         result = await asyncio.wait_for(future, timeout=CONFIRMATION_TIMEOUT)
@@ -338,3 +369,14 @@ async def _confirm(
         return False, None
     finally:
         pending.pop(confirmation_id, None)
+        _voice_yes_allowed.pop(confirmation_id, None)
+
+
+# confirmation id -> whether a spoken yes may approve it. Read by
+# server._resolve_confirmation_by_voice for both voice paths.
+_voice_yes_allowed: dict = {}
+
+
+def voice_yes_allowed(confirmation_id: str) -> bool:
+    """Unknown ids are not voice-approvable: fail closed."""
+    return _voice_yes_allowed.get(confirmation_id, False)
