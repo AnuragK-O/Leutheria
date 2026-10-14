@@ -6,6 +6,7 @@
 
 #include "AgentClient.h"
 #include "AssetManifest.h"
+#include "Fonts.h"
 #include "FrameCapture.h"
 #include "MacWindow.h"
 #include "OverlayModel.h"
@@ -85,6 +86,7 @@ int main(int argc, char *argv[])
     QGuiApplication::setApplicationName(u"LeutheriaOverlay"_s);
     QGuiApplication::setApplicationVersion(u"0.1.0"_s);
     MacWindow::neverActivate();
+    Fonts::registerBundled(); // before any QML: Chakra Petch + JetBrains Mono, see Fonts.h
 
     QCommandLineParser cli;
     cli.setApplicationDescription(u"Leutheria voice-session overlay"_s);
