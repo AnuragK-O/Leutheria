@@ -367,6 +367,7 @@ svg {
 
 .section-label,
 .list-group-label,
+.filter-label,
 .stat-label,
 .msg-role,
 .prompt-head,
@@ -607,6 +608,22 @@ svg {
   width: 220px;
   min-width: 0;
   padding-left: 30px;
+}
+
+.search input:has(+ kbd) {
+  padding-right: 30px;
+}
+
+/* the key that jumps to this field */
+.search kbd {
+  position: absolute;
+  right: 7px;
+  pointer-events: none;
+}
+
+.search input:focus + kbd,
+.search input:not(:placeholder-shown) + kbd {
+  display: none;
 }
 
 .search input::-webkit-search-cancel-button {
@@ -1000,6 +1017,21 @@ kbd {
   color: var(--line-strong);
 }
 
+/* A null value on its own line, where a boxed row would be mostly padding. */
+.empty.empty-inline {
+  padding: 0;
+}
+
+/* Read by a screen reader, not drawn. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 .callout {
   --tone: var(--violet-hi);
   display: flex;
@@ -1053,6 +1085,11 @@ kbd {
   gap: var(--hair);
   background: var(--line);
   border: var(--hair) solid var(--line);
+}
+
+/* Six readouts as two even rows of three, so no row ends in an empty slot. */
+.stat-grid-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .stat {
@@ -1986,8 +2023,9 @@ kbd {
 }
 
 .library-list {
+  display: flex;
+  flex-direction: column;
   min-height: 0;
-  overflow-y: auto;
   background: var(--base);
   border-right: var(--hair) solid var(--line);
 }
@@ -1997,22 +2035,137 @@ kbd {
   overflow-y: auto;
 }
 
+/* The state filters: a readout strip that is also the control. Each cell is
+   a count over its label; pressing one narrows the list to those entries. */
+.library-filters {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  flex: none;
+  border-bottom: var(--hair) solid var(--line);
+}
+
+.filter-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  min-width: 0;
+  padding: 7px 4px 8px 12px;
+  text-align: left;
+  color: var(--text-3);
+  transition: color var(--t-fast), background-color var(--t-fast);
+}
+
+.filter-chip:first-child {
+  padding-left: 18px;
+}
+
+.filter-chip + .filter-chip {
+  border-left: var(--hair) solid var(--line);
+}
+
+.filter-count {
+  order: -1;
+  font-family: var(--font-mono);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.filter-chip:hover {
+  color: var(--text);
+  background: var(--surface);
+}
+
+.filter-chip:focus-visible,
+.list-group-label:focus-visible {
+  outline-offset: -2px;
+}
+
+/* active: the same fill and underline as an active segment */
+.filter-chip.active {
+  color: var(--text);
+  background: var(--raised-2);
+  box-shadow: inset 0 calc(var(--rule) * -1) 0 var(--violet);
+}
+
+.filter-chip:disabled {
+  cursor: default;
+  pointer-events: none;
+}
+
+.filter-chip:disabled .filter-count {
+  color: var(--text-3);
+}
+
+.library-rows {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* A group heading: sticky, and the button that folds the group away. */
 .list-group-label {
   position: sticky;
   top: 0;
   z-index: 1;
   display: flex;
-  justify-content: space-between;
-  padding: 8px 14px 7px 18px;
-  color: var(--text-3);
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: var(--hit);
+  padding: 0 14px 0 18px;
+  text-align: left;
+  color: var(--text-2);
   background: var(--sunken);
+  border-bottom: var(--hair) solid var(--line);
+  transition: color var(--t-fast);
+}
+
+.list-group-label:hover {
+  color: var(--text);
+}
+
+/* the caret: two hairlines, pointing down when the group is open */
+.list-group-caret {
+  width: 5px;
+  height: 5px;
+  flex: none;
+  margin: 0 1px 2px 0;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform var(--t-fast);
+}
+
+.list-group-label[aria-expanded="false"] .list-group-caret {
+  margin: 0 2px 0 0;
+  transform: rotate(-45deg);
+}
+
+.list-group-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.list-group-count {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-3);
+}
+
+.list-group-body {
+  padding: 2px 0 6px;
   border-bottom: var(--hair) solid var(--line);
 }
 
-.list-group-label span {
-  font-variant-numeric: tabular-nums;
-}
-
+/* A row is one line: the name. Compact on purpose -- the catalog runs to
+   ninety-odd entries. A second line appears only when a search matched in
+   the description, to show where. */
 .list-row {
   position: relative;
   display: grid;
@@ -2020,10 +2173,9 @@ kbd {
   align-items: center;
   column-gap: 10px;
   width: 100%;
-  min-height: 48px;
-  padding: 7px 12px 7px 18px;
+  min-height: var(--hit);
+  padding: 3px 12px 3px 18px;
   text-align: left;
-  border-bottom: var(--hair) solid color-mix(in srgb, var(--line) 65%, transparent);
   transition: background-color var(--t-fast);
 }
 
@@ -2055,8 +2207,8 @@ kbd {
 }
 
 .list-row-icon svg {
-  width: 13px;
-  height: 13px;
+  width: 12px;
+  height: 12px;
 }
 
 .list-row.active .list-row-icon {
@@ -2072,15 +2224,20 @@ kbd {
 .list-row-name {
   font-family: var(--font-mono);
   font-size: var(--fs-sm);
-  font-weight: 500;
+  font-weight: 400;
   color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+.list-row.active .list-row-name {
+  font-weight: 500;
+}
+
 .list-row-desc {
-  font-size: var(--fs-sm);
+  padding-bottom: 2px;
+  font-size: var(--fs-xs);
   color: var(--text-3);
   white-space: nowrap;
   overflow: hidden;
@@ -2096,6 +2253,32 @@ kbd {
 .list-row-flags {
   display: flex;
   gap: 4px;
+}
+
+.list-row-flags .badge {
+  height: 16px;
+  padding: 0 5px;
+}
+
+.list-none {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: var(--s2) 0;
+}
+
+.list-none .empty {
+  padding: var(--s2) 18px;
+}
+
+.list-none .link-button {
+  margin-left: 14px;
+}
+
+/* a search hit, in a name or a description */
+mark {
+  color: var(--text);
+  background: color-mix(in srgb, var(--violet) 38%, transparent);
 }
 
 .detail {
@@ -2129,10 +2312,60 @@ kbd {
   user-select: text;
 }
 
-.detail-desc {
-  max-width: 68ch;
+/* The first sentence of the description: what it does. */
+.detail-summary {
+  max-width: 60ch;
   font-size: var(--fs-lg);
+  line-height: 1.5;
+  color: var(--text);
+  text-wrap: pretty;
+  user-select: text;
+}
+
+/* The rest of it -- when the model is told to use the thing and when not --
+   one sentence per line, threaded on a hairline like a tool trace. */
+.guidance {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 66ch;
+  padding-left: var(--s3);
+  border-left: var(--hair) solid var(--line-strong);
+}
+
+.guidance p {
+  font-size: var(--fs-md);
+  line-height: 1.5;
   color: var(--text-2);
+  text-wrap: pretty;
+  user-select: text;
+}
+
+/* another capability named in a description: a link to it */
+.ref-link {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  color: var(--violet-hi);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--violet) 55%, transparent);
+  text-underline-offset: 3px;
+}
+
+.ref-link:hover {
+  color: var(--text);
+}
+
+.key-list {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px var(--s3);
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+
+.key-list kbd {
+  justify-self: start;
 }
 
 /* settings rows (Library permissions, Voice) */
@@ -2537,7 +2770,7 @@ kbd {
   }
 
   .search input {
-    width: 150px;
+    width: 168px;
   }
 
   .stack,

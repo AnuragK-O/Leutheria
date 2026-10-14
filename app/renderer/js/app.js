@@ -30,31 +30,52 @@
 
   // --- chrome ------------------------------------------------------------
 
+  // The nav buttons are built once and updated in place: rebuilding them on
+  // every render would drop keyboard focus from the one just pressed.
+  const navButtons = new Map();
+
   function renderNav() {
-    clear(navEl);
     for (const view of VIEWS) {
-      const count = module(view.id) && module(view.id).count ? module(view.id).count() : null;
-      navEl.appendChild(
-        el(
+      let button = navButtons.get(view.id);
+      if (!button) {
+        button = el(
           "button.nav-item",
-          { class: view.id === current ? "active" : "", onclick: () => setView(view.id) },
+          { onclick: () => setView(view.id) },
           icon(view.id),
           el("span", { text: view.label }),
-          count !== null && count !== undefined ? el("span.nav-count", { text: String(count) }) : null
-        )
-      );
+          el("span.nav-count", { hidden: true })
+        );
+        navButtons.set(view.id, button);
+        navEl.appendChild(button);
+      }
+      const active = view.id === current;
+      button.classList.toggle("active", active);
+      if (active) button.setAttribute("aria-current", "page");
+      else button.removeAttribute("aria-current");
+
+      const count = module(view.id) && module(view.id).count ? module(view.id).count() : null;
+      const countEl = button.querySelector(".nav-count");
+      countEl.hidden = count === null || count === undefined;
+      countEl.textContent = countEl.hidden ? "" : String(count);
     }
+  }
+
+  function renderSubtitle() {
+    const view = VIEWS.find((entry) => entry.id === current);
+    const mod = module(current);
+    subtitleEl.textContent = (mod && mod.subtitle ? mod.subtitle() : view.subtitle) || "";
   }
 
   function renderActions() {
     const view = VIEWS.find((entry) => entry.id === current);
     const mod = module(current);
     titleEl.textContent = view.title;
-    subtitleEl.textContent = (mod && mod.subtitle ? mod.subtitle() : view.subtitle) || "";
-    clear(actionsEl);
-    if (mod && mod.actions) {
-      for (const node of mod.actions()) actionsEl.appendChild(node);
-    }
+    renderSubtitle();
+    const nodes = mod && mod.actions ? mod.actions() : [];
+    // A view may hand back the same nodes each time (the Library's filter
+    // field); re-inserting them would take focus out of a field mid-typing.
+    const same = nodes.length === actionsEl.children.length && nodes.every((node, index) => actionsEl.children[index] === node);
+    if (!same) actionsEl.replaceChildren(...nodes);
   }
 
   function setView(id) {
@@ -124,7 +145,7 @@
 
   // --- boot --------------------------------------------------------------
 
-  LX.app = { renderActions, currentView: () => current, refresh };
+  LX.app = { renderActions, renderSubtitle, currentView: () => current, refresh };
 
   setTheme(localStorage.getItem("leutheria-theme") || "dark");
   setView("assistant");

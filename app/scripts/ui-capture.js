@@ -316,7 +316,7 @@ async function runTheme(theme) {
     await main.eval(clickText("#view-actions .segmented button", "Skills"));
     check(
       `[${theme}] Skills filter hides tools`,
-      await main.eval(`[...document.querySelectorAll("#library-list .list-group-label")].every((n) => !/^Tools/i.test(n.textContent.trim()))`)
+      await main.eval(`(() => { const rows = [...document.querySelectorAll("#library-list .list-row")]; return rows.length > 0 && rows.every((n) => n.dataset.kind === "skill"); })()`)
     );
     await main.eval(clickText("#view-actions .segmented button", "All"));
     await main.eval(setInput("#view-actions .search input", "file"));
@@ -479,8 +479,29 @@ async function runReal(main, theme, file) {
   await main.eval(clickNav(NAV.library));
   check(`[${theme}] real: library lists the catalog`, await main.waitFor(`document.querySelectorAll("#library-list .list-row").length > 5`));
   await main.shot(file("real-library-list"));
+  check(
+    `[${theme}] real: every capability is filed under a group`,
+    await main.eval(`document.querySelectorAll("#library-list .list-row").length === LX.state.inventory.tools.length + LX.state.inventory.skills.length`)
+  );
+  const inOther = await main.eval(`[...document.querySelectorAll('#library-group-other .list-row')].map((n) => n.dataset.name).join(", ")`);
+  check(`[${theme}] real: nothing is left in the Other group`, !inOther, inOther);
   await main.eval(`document.querySelector("#library-list .list-row").click()`);
   await main.shot(file("real-library-detail-first"));
+  await main.eval(`document.querySelector(".library-rows").scrollTop = 1e6`);
+  await main.shot(file("real-library-list-end"));
+  // The longest description in the catalog, and one that names other capabilities.
+  for (const name of ["set_timer", "archive_folder", "run_command"]) {
+    if (await main.eval(clickText("#library-list .list-row-name", name))) await main.shot(file(`real-library-detail-${name}`));
+  }
+  await main.eval(setInput("#view-actions .search input", "zip"));
+  await main.shot(file("real-library-search"));
+  await main.eval(setInput("#view-actions .search input", ""));
+  await main.eval(`document.querySelector('.filter-chip[data-filter="asks"]').click()`);
+  await main.shot(file("real-library-filter-asks"));
+  await main.eval(`document.querySelector('.filter-chip[data-filter="asks"]').click()`);
+  await main.eval(`document.querySelectorAll(".list-group-label").forEach((n) => n.click())`);
+  await main.shot(file("real-library-collapsed"));
+  await main.eval(`document.querySelectorAll(".list-group-label").forEach((n) => n.click())`);
   // The last row is a tool; get_time-like safe ones sit there. Toggle "ask
   // before running" (the second switch) on and put it back with Reset.
   await main.eval(`[...document.querySelectorAll("#library-list .list-row")].pop().click()`);
