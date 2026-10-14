@@ -23,10 +23,10 @@ Item {
     required property Theme theme
 
     readonly property bool amber: visualState === "awaiting_confirmation"
-    readonly property color core: amber ? theme.amberCore : theme.orbCore
-    readonly property color mid: amber ? theme.warning : theme.orbMid
-    readonly property color edge: amber ? theme.amberEdge : theme.orbEdge
-    readonly property color ring: amber ? theme.amberRing : theme.ring
+    readonly property color core: amber ? theme.amber : theme.violetHi
+    readonly property color mid: amber ? theme.amber : theme.violet
+    readonly property color edge: amber ? theme.amber : theme.violetLo
+    readonly property color ring: amber ? theme.amber : theme.violet
     readonly property real d: Math.min(width, height) * 0.64 // .orb { width: 64% }
     // The window is hidden between sessions, still in its last state; nothing
     // should tick while there's nothing on screen.
@@ -178,7 +178,7 @@ Item {
             preferredRendererType: Shape.CurveRenderer
             ShapePath {
                 fillColor: "transparent"
-                strokeColor: orb.theme.accent
+                strokeColor: orb.theme.violetHi
                 strokeWidth: 1.5
                 capStyle: ShapePath.FlatCap
                 PathAngleArc {

@@ -36,7 +36,7 @@ Item {
         layer.enabled: slot.entry.react === "glow"
         layer.effect: MultiEffect {
             shadowEnabled: true
-            shadowColor: slot.theme.ring
+            shadowColor: slot.theme.violet
             shadowHorizontalOffset: 0
             shadowVerticalOffset: 0
             blurMax: 14

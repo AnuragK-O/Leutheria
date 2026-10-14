@@ -14,10 +14,10 @@ Rectangle {
     implicitWidth: label.implicitWidth + 20
     implicitHeight: 26
     radius: 6
-    color: primary ? (mouse.containsMouse ? theme.accent : theme.accentStrong)
-                   : (mouse.containsMouse ? theme.surfaceHover : theme.surface)
+    color: primary ? (mouse.containsMouse ? theme.violetHi : theme.violetLo)
+                   : (mouse.containsMouse ? theme.raised2 : theme.surface)
     border.width: 1
-    border.color: primary ? color : (mouse.containsMouse ? theme.borderStrong : theme.border)
+    border.color: primary ? color : (mouse.containsMouse ? theme.lineStrong : theme.line)
     Behavior on color { ColorAnimation { duration: 120 } }
 
     Text {

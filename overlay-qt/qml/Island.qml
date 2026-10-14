@@ -39,10 +39,10 @@ Item {
         id: pill
         anchors.fill: parent
         radius: (island.slotSize + 20) / 2
-        color: island.theme.islandBg
+        color: island.theme.surface
         border.width: 1
-        border.color: island.confirming ? island.theme.mix(island.theme.warning, "transparent", 0.5)
-                                        : island.theme.islandBorder
+        border.color: island.confirming ? island.theme.mix(island.theme.amber, "transparent", 0.5)
+                                        : island.theme.lineStrong
         Behavior on border.color { ColorAnimation { duration: 300 } }
     }
 
@@ -69,7 +69,7 @@ Item {
             Text {
                 Layout.fillWidth: true
                 text: island.overlay.label.toUpperCase()
-                color: island.confirming ? island.theme.warning : island.theme.accent
+                color: island.confirming ? island.theme.amber : island.theme.violetHi
                 font.pointSize: 10.5
                 font.weight: Font.DemiBold
                 font.letterSpacing: 10.5 * 0.08
@@ -81,7 +81,7 @@ Item {
             Text {
                 Layout.fillWidth: true
                 text: island.overlay.line
-                color: island.overlay.lineMuted ? island.theme.textMuted : island.theme.text
+                color: island.overlay.lineMuted ? island.theme.text2 : island.theme.text
                 font.pointSize: 13.5
                 lineHeightMode: Text.FixedHeight
                 lineHeight: 13.5 * 1.4 // CSS line-height is px, not Qt's "proportional"

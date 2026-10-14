@@ -39,9 +39,9 @@ Item {
         width: parent.width
         implicitHeight: content.implicitHeight + 2
         radius: 14
-        color: card.theme.islandBg
+        color: card.theme.surface
         border.width: 1
-        border.color: card.theme.mix(card.theme.warning, card.theme.border, 0.45)
+        border.color: card.theme.mix(card.theme.amber, card.theme.line, 0.45)
 
         ColumnLayout {
             id: content
@@ -54,7 +54,7 @@ Item {
             Rectangle {
                 Layout.fillWidth: true
                 implicitHeight: 12 * 1.5 + 16 // padding 8px 14px around one 12px line
-                color: card.theme.warningSoft
+                color: card.theme.raised
                 topLeftRadius: 13
                 topRightRadius: 13
 
@@ -64,11 +64,11 @@ Item {
                     anchors.leftMargin: 14
                     anchors.rightMargin: 14
                     spacing: 8
-                    Icon { name: "warning"; color: card.theme.warning }
+                    Icon { name: "warning"; color: card.theme.amber }
                     Text {
                         Layout.fillWidth: true
                         text: qsTr("Leutheria wants to run %1").arg(card.overlay.confirmationTool)
-                        color: card.theme.warning
+                        color: card.theme.amber
                         font.pointSize: 12
                         font.weight: Font.DemiBold
                         elide: Text.ElideRight
@@ -91,9 +91,9 @@ Item {
                     Layout.fillWidth: true
                     implicitHeight: command.implicitHeight + 18
                     radius: 6
-                    color: card.theme.bg
+                    color: card.theme.sunken
                     border.width: 1
-                    border.color: card.theme.border
+                    border.color: card.theme.line
 
                     Text {
                         id: command
@@ -119,7 +119,7 @@ Item {
                     Text {
                         Layout.fillWidth: true
                         text: card.overlay.confirmationAnswered ? "" : qsTr("Say yes or no, or choose")
-                        color: card.theme.textMuted
+                        color: card.theme.text2
                         font.pointSize: 11.5
                         elide: Text.ElideRight
                     }
@@ -146,11 +146,11 @@ Item {
                         spacing: 6
                         Icon {
                             name: card.overlay.confirmationApproved ? "check" : "x"
-                            color: card.theme.textMuted
+                            color: card.theme.text2
                         }
                         Text {
                             text: card.overlay.confirmationOutcome
-                            color: card.theme.textMuted
+                            color: card.theme.text2
                             font.pointSize: 12
                             font.weight: Font.Medium
                         }
