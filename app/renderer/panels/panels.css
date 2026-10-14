@@ -460,7 +460,10 @@ body[data-panel="skills"][data-orientation="horizontal"] .library-rows {
 }
 
 body[data-panel="skills"][data-orientation="horizontal"] .list-group {
-  flex: 0 0 240px;
+  /* Grow to share the strip: with a filter leaving one or two groups, a
+     fixed 240px column left most of the panel empty. */
+  flex: 1 1 240px;
+  min-width: 240px;
   overflow-y: auto;
   border-right: var(--hair) solid var(--line);
 }
