@@ -124,6 +124,13 @@ int main(int argc, char *argv[])
 
     OverlayModel model;
     AgentClient client(url);
+    // The agent's socket is authenticated. Electron hands the per-launch
+    // token over in the environment; run by hand, export LEUTHERIA_TOKEN
+    // yourself (overlay-qt/README.md). Deliberately not a command-line option.
+    client.setAuthToken(AgentClient::takeTokenFromEnvironment());
+    if (!client.hasAuthToken())
+        qCWarning(lcMain) << "LEUTHERIA_TOKEN is not set: the real agent will refuse this connection"
+                             " (the mock agent accepts it unless it was given a token)";
     QObject::connect(&client, &AgentClient::messageReceived, &model, &OverlayModel::handleMessage);
     QObject::connect(&client, &AgentClient::connectedChanged, &model, [&model](bool connected) {
         if (!connected)

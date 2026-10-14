@@ -15,13 +15,21 @@
        # every view opens and renders the real catalog, one preference is
        # toggled and reset, a bad voice setting is refused and reverted.
        # Nothing is sent that makes the agent act on the machine.
+       # The agent's socket is authenticated: run this with LEUTHERIA_TOKEN
+       # set to the token that agent was started with (or, for a standalone
+       # agent that generated its own, leave it unset and the app reads the
+       # agent's token file).
 
    It starts its own mock agent (port 8797 by default, never 8765) and its own
    Electron with an isolated userData directory, and stops exactly those two
    processes when it finishes. The app's windows do appear on screen while it
    runs. Nothing in the app's normal path knows about this script: it talks to
    the renderer over Chromium's remote-debugging port, which is only open
-   because this script passed the flag.
+   because this script passed the flag. That port is unauthenticated: while
+   this script runs, any local process can drive the app's renderer through
+   it -- and so, with --real, send commands to that agent and answer its
+   confirmations. Don't leave it running, and don't point --real at an agent
+   you care about on a machine you don't trust.
 
    One line per check; exits non-zero if any failed. */
 
@@ -30,6 +38,7 @@ const fs = require("fs");
 const http = require("http");
 const path = require("path");
 const WebSocket = require("ws");
+const { childEnv, generateToken } = require("../agent-auth");
 
 const APP_DIR = path.join(__dirname, "..");
 
@@ -194,16 +203,26 @@ async function runTheme(theme) {
   const file = (name) => path.join(dir, `${name}.png`);
   const children = [];
 
+  // The mock is given a fresh token and checks it, so every run exercises
+  // the app's real authentication path (main.js -> agent-auth.js). Against a
+  // real agent (--real) the token is that agent's: LEUTHERIA_TOKEN from this
+  // script's environment, passed through to Electron unchanged.
+  const token = REAL_URL ? process.env.LEUTHERIA_TOKEN : generateToken();
   if (!REAL_URL) {
     const mock = spawn(process.execPath, [path.join(__dirname, "mock-agent.js")], {
-      env: { ...process.env, MOCK_PORT: String(MOCK_PORT), MOCK_AUTOSTART: "0", MOCK_CONFIRM_TIMEOUT_MS: "15000" },
+      env: {
+        ...childEnv(token),
+        MOCK_PORT: String(MOCK_PORT),
+        MOCK_AUTOSTART: "0",
+        MOCK_CONFIRM_TIMEOUT_MS: "15000",
+      },
       stdio: "ignore",
     });
     children.push(mock);
   }
 
   const env = {
-    ...process.env,
+    ...childEnv(token),
     LEUTHERIA_AGENT_URL: REAL_URL || `ws://127.0.0.1:${MOCK_PORT}`,
     LEUTHERIA_NO_SPAWN: "1",
     // Isolates userData and keeps an occluded window painting (main.js).

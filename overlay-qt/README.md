@@ -32,13 +32,44 @@ The output is `overlay-qt/build/LeutheriaOverlay.app`. Its `Info.plist` sets
 `LSUIElement`, so it has no Dock icon and no menu bar.
 
 ```bash
-# Against the real agent (the default URL)
-overlay-qt/build/LeutheriaOverlay.app/Contents/MacOS/LeutheriaOverlay
-
 # Against the scripted mock, no Python, mic or API key needed
 cd app && node scripts/mock-agent.js &      # port 8799; plays a session with a confirmation
 ../overlay-qt/build/LeutheriaOverlay.app/Contents/MacOS/LeutheriaOverlay --url ws://127.0.0.1:8799
+
+# Against a real agent you started yourself (`cd agent && ./.venv/bin/python -m agent`):
+# it needs that agent's token, in the environment
+LEUTHERIA_TOKEN="$(cat ~/Library/Application\ Support/Leutheria/agent-8765.token)" \
+  overlay-qt/build/LeutheriaOverlay.app/Contents/MacOS/LeutheriaOverlay
 ```
+
+### The token
+
+The agent authenticates every connection in the WebSocket handshake (the main README's
+"Authentication" section): `Authorization: Bearer <token>`, and no `Origin` header. The
+overlay reads the token from the **`LEUTHERIA_TOKEN` environment variable** — there is
+deliberately no command-line option for it, because argv is visible to every user through
+`ps` — removes the variable from its own environment, and never logs it.
+
+- Launched by Electron (`LEUTHERIA_OVERLAY=qt`): Electron passes the app's per-launch token
+  in the overlay's environment. Nothing to do.
+- Run by hand against a standalone agent: export the token from the agent's token file, as
+  above. The agent writes a new one each time it starts, so restart the overlay too.
+- Against the mock: no token needed, unless the mock itself was started with
+  `LEUTHERIA_TOKEN` set — then it checks, and the overlay needs the same value.
+
+`QWebSocket` sends an `Origin` header only when constructed with a non-empty origin;
+`AgentClient` doesn't, and `tst_agentclient` asserts on the raw request that none goes out
+(the agent would answer 403).
+
+If the agent refuses the handshake, the overlay logs one warning —
+`the agent refused the connection (HTTP 401): LEUTHERIA_TOKEN is not the token that agent
+was started with` (or `no token -- LEUTHERIA_TOKEN is not set ...`) — and keeps retrying at
+the slowest interval (8 s) instead of the usual 0.5 s doubling: a wrong token doesn't fix
+itself, but an agent restarted with a matching one should still be picked up. Qt has no
+accessor for the HTTP status, so this is read from `errorString()`, and in Qt 6.11 a 401
+is reported as "Unsupported WWW-Authenticate challenges encountered" with no number in it
+(a 403 does include its number); the code matches on the `processHandshake` failure, not
+on "401".
 
 | option | meaning |
 |---|---|
@@ -47,8 +78,8 @@ cd app && node scripts/mock-agent.js &      # port 8799; plays a session with a 
 | `--theme light\|dark` | Force an appearance. Default: follow the macOS appearance (`Application.styleHints.colorScheme`). |
 | `--capture-dir <dir>` | Debug: write a PNG of the overlay on every state change (`03-hearing.png`, `06-confirm-card.png`, ...), named like the Electron capture path's frames so the two can be compared side by side. |
 
-Electron launches it when `LEUTHERIA_OVERLAY=qt` is set (with `--url` and `--assets`),
-and skips its own overlay in that case.
+Electron launches it when `LEUTHERIA_OVERLAY=qt` is set (with `--url` and `--assets`, and
+the token in its environment), and skips its own overlay in that case.
 
 Logging uses Qt categories under `leutheria.*`. Per-event detail (window state, socket
 retries) is at debug level and off by default:
@@ -71,7 +102,7 @@ something is shown, only *how* it looks.
 
 | file | responsibility |
 |---|---|
-| `src/AgentClient.{h,cpp}` | The `QWebSocket`. Sends `{"type":"hello","role":"overlay"}` first on every connection, reconnects forever with capped exponential backoff (0.5 s doubling to 8 s), drops anything that isn't a JSON object with a string `type`, and sends `confirm`. It never interprets a message. |
+| `src/AgentClient.{h,cpp}` | The `QWebSocket`. Presents the token (`Authorization: Bearer`, from `LEUTHERIA_TOKEN`) in the handshake, sends `{"type":"hello","role":"overlay"}` first on every connection, reconnects forever with capped exponential backoff (0.5 s doubling to 8 s), drops anything that isn't a JSON object with a string `type`, and sends `confirm`. It never interprets a message. |
 | `src/OverlayModel.{h,cpp}` | Every rule about what the overlay shows, ported from `overlay.js`: session start and end, the 650 ms linger after a session ends, label and line text per state, reply shortening, level smoothing, and the confirmation card's lifecycle. Exposed to QML as properties; no QML or socket dependency, so the tests drive it with plain `QJsonObject`s. |
 | `src/AssetManifest.{h,cpp}` | Loads `manifest.json` with the same validation and fallbacks as `main.js loadOverlayManifest()`. Any problem costs only that one state, which falls back to the built-in orb with a logged reason. |
 | `src/MacWindow.h`, `MacWindow_mac.mm` | The Objective-C++ layer: activation policy, window level, Spaces behaviour, click-through. `MacWindow_stub.cpp` keeps non-Apple builds compiling (QML can be worked on anywhere). |

@@ -35,6 +35,22 @@ public:
     ~AgentClient() override;
 
     QUrl url() const { return m_url; }
+
+    // The agent authenticates every connection during the opening handshake
+    // (agent/agent/core/ws_auth.py): `Authorization: Bearer <token>`, and no
+    // Origin header. Set before start(). The token is a per-launch secret:
+    // it comes from the environment, never from the command line (argv is
+    // visible to every user through `ps`), and is never logged.
+    void setAuthToken(const QByteArray &token) { m_token = token; }
+    bool hasAuthToken() const { return !m_token.isEmpty(); }
+
+    // Reads LEUTHERIA_TOKEN and removes it from this process's environment,
+    // so nothing this process might launch inherits it.
+    static QByteArray takeTokenFromEnvironment();
+
+    // True from the moment an attempt is refused by the agent's handshake
+    // check (HTTP 401/403) until one connects or fails some other way.
+    bool authRejected() const { return m_authRejected; }
     bool isConnected() const { return m_connected; }
 
     // The delay before the next reconnect attempt (exposed for tests).
@@ -57,11 +73,15 @@ private:
     void open();
     void onConnected();
     void onStateChanged(QAbstractSocket::SocketState state);
+    void onError(QAbstractSocket::SocketError error);
     void onTextMessage(const QString &text);
     bool sendJson(const QJsonObject &object);
     void setConnected(bool connected);
 
     QUrl m_url;
+    QByteArray m_token;
+    bool m_authRejected = false;
+    bool m_rejectionLogged = false;
     Backoff m_backoff;
     std::chrono::milliseconds m_retryDelay;
     QWebSocket m_socket;

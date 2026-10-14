@@ -1063,9 +1063,16 @@ for name, fn in REAL_FNS.items():
 # --- 11. the real server: a timer set over a websocket speaks on that connection --
 async def server_checks():
     print("\n# timers through the real server (ephemeral port, no voice session)")
+    import secrets
+
     import websockets
 
-    from agent.core import server
+    from agent.core import server, ws_auth
+
+    # Through server.serve(), so this connection is authenticated like any
+    # other; and manual dispatch ({"tool": ...}) is off unless enabled.
+    auth = ws_auth.Auth(secrets.token_hex(32), ws_auth.SOURCE_ENV)
+    server.MANUAL_DISPATCH = True
 
     probe = socket.socket()
     probe.bind(("127.0.0.1", 0))
@@ -1074,8 +1081,8 @@ async def server_checks():
     check(port != 8765, f"using port {port}, not 8765")
     notifications.clear(); spoken.clear()
 
-    async with websockets.serve(server.handler, "127.0.0.1", port):
-        async with websockets.connect(f"ws://127.0.0.1:{port}") as ui:
+    async with server.serve(auth, port):
+        async with websockets.connect(f"ws://127.0.0.1:{port}", additional_headers=ws_auth.bearer(auth.token)) as ui:
             await ui.send(json.dumps({"type": "inventory", "request_id": "1"}))
             inventory = json.loads(await asyncio.wait_for(ui.recv(), 10))
             names = {t["name"] for t in inventory["tools"]}

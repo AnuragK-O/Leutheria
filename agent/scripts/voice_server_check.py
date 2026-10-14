@@ -22,6 +22,7 @@ import argparse
 import asyncio
 import json
 import os
+import secrets
 import subprocess
 import sys
 import time
@@ -33,6 +34,12 @@ sys.path.insert(0, str(AGENT_DIR))
 
 import numpy as np  # noqa: E402
 import websockets  # noqa: E402
+
+from agent.core import ws_auth  # noqa: E402
+
+# The server's socket is authenticated: each server this check starts is
+# given this token, and every connection presents it.
+TOKEN = secrets.token_hex(32)
 
 from agent.core import audio_io, tts, voice_settings  # noqa: E402
 
@@ -66,7 +73,8 @@ def ptt_clip() -> str:
 
 
 def start_server(port: int) -> subprocess.Popen:
-    env = {**os.environ, "LEUTHERIA_PORT": str(port), "LEUTHERIA_VOICE_SOURCE": str(WAV_PATH)}
+    env = {**os.environ, "LEUTHERIA_PORT": str(port), "LEUTHERIA_VOICE_SOURCE": str(WAV_PATH),
+           ws_auth.TOKEN_ENV: TOKEN}
     proc = subprocess.Popen(
         [sys.executable, "-m", "agent"], cwd=AGENT_DIR, env=env,
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
@@ -127,7 +135,7 @@ async def run(port: int) -> list:
     print("\n--- run 1: settings, a live session, disable, manual start/end")
     proc = start_server(port)
     try:
-        async with websockets.connect(f"ws://127.0.0.1:{port}") as ws:
+        async with websockets.connect(f"ws://127.0.0.1:{port}", additional_headers=ws_auth.bearer(TOKEN)) as ws:
             c = Client(ws, time.monotonic())
             r = await c.control("get_voice_settings")
             check(r["ok"] and r["settings"] == voice_settings.DEFAULTS, "get_voice_settings returns defaults")
@@ -192,7 +200,7 @@ async def run(port: int) -> list:
     print("\n--- run 2: settings survive a restart")
     proc = start_server(port)
     try:
-        async with websockets.connect(f"ws://127.0.0.1:{port}") as ws:
+        async with websockets.connect(f"ws://127.0.0.1:{port}", additional_headers=ws_auth.bearer(TOKEN)) as ws:
             c = Client(ws, time.monotonic())
             r = await c.control("get_voice_settings")
             check(r["settings"]["enabled"] is False and r["settings"]["silence_timeout_s"] == 60,

@@ -25,6 +25,12 @@ Qt overlay), connected in both orders. It proves:
 Part 2 is in-process with fake sockets, for the voice-session sends the
 silent WAV can't produce (transcript, response, dismissal decline).
 
+The server's socket is authenticated (core/ws_auth.py): the check starts it
+with a random LEUTHERIA_TOKEN of its own and presents it on every connection.
+It also sets LEUTHERIA_MANUAL_DISPATCH=1, since the bare {"tool": ...}
+message it drives the confirmation flow with is off by default.
+scripts/ws_auth_check.py is where the authentication itself is tested.
+
 Needs no API key: nothing here reaches the LLM. Writes to the real
 logs/events.jsonl, like the other end-to-end checks. Exits non-zero on the
 first failed check.
@@ -34,6 +40,7 @@ import argparse
 import asyncio
 import json
 import os
+import secrets
 import subprocess
 import sys
 import time
@@ -44,6 +51,11 @@ AGENT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(AGENT_DIR))
 
 import websockets  # noqa: E402
+
+from agent.core import ws_auth  # noqa: E402
+
+# This run's token: handed to the server it starts, presented by its clients.
+TOKEN = secrets.token_hex(32)
 
 # Runs the server exactly as __main__.py does, after stubbing TTS output.
 BOOTSTRAP = """
@@ -87,7 +99,7 @@ class Client:
 
     @classmethod
     async def connect(cls, name: str, url: str, overlay: bool) -> "Client":
-        ws = await websockets.connect(url, max_size=20 * 1024 * 1024)
+        ws = await websockets.connect(url, max_size=20 * 1024 * 1024, additional_headers=ws_auth.bearer(TOKEN))
         client = cls(name, ws)
         if overlay:
             await client.send({"type": "hello", "role": "overlay"})
@@ -116,7 +128,7 @@ class Client:
 def start_server(port: int) -> subprocess.Popen:
     if not os.environ.get("LEUTHERIA_VOICE_SOURCE"):
         raise SystemExit("set LEUTHERIA_VOICE_SOURCE to a WAV (silence is fine) so the mic is never opened")
-    env = {**os.environ, "LEUTHERIA_PORT": str(port)}
+    env = {**os.environ, "LEUTHERIA_PORT": str(port), ws_auth.TOKEN_ENV: TOKEN, "LEUTHERIA_MANUAL_DISPATCH": "1"}
     proc = subprocess.Popen(
         [sys.executable, "-c", BOOTSTRAP], cwd=AGENT_DIR, env=env,
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,

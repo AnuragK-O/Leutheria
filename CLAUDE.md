@@ -75,6 +75,7 @@ pkill -if "python -m agent"; pkill -f "Electron.app"
 ./.venv/bin/python scripts/skill_format_check.py        # generated-skill validation
 ./.venv/bin/python scripts/tts_check.py                 # TTS backends + fallbacks, fake ElevenLabs server
 ./.venv/bin/python scripts/overlay_protocol_check.py    # overlay role, real server on a spare port
+./.venv/bin/python scripts/ws_auth_check.py             # socket authentication, real server on a spare port
 ./.venv/bin/python scripts/skills_check_system.py       # system tools + skills; volume/media/banners/speech stubbed
 ./.venv/bin/python scripts/dispatch_loop_check.py       # tools off the loop, run_command limits, confirmation timeout
 ./.venv/bin/python scripts/voice_server_check.py        # real server + real LLM; speaks aloud, needs API key
@@ -93,6 +94,9 @@ ctest --test-dir overlay-qt/build                       # all three Qt Test suit
 ctest --test-dir overlay-qt/build -R overlaymodel       # one suite
 overlay-qt/build/tests/tst_overlaymodel endLingersThenHides   # one test function
 
+# Electron-side token plumbing + the mock's enforcement (no Electron, no Python)
+cd app && node scripts/auth-check.js
+
 # UI work without Python: a scripted agent on port 8799
 cd app && node scripts/mock-agent.js
 cd app && env -u ELECTRON_RUN_AS_NODE LEUTHERIA_AGENT_URL=ws://127.0.0.1:8799 LEUTHERIA_NO_SPAWN=1 npx electron .
@@ -109,7 +113,8 @@ Testing without disturbing a running app — `npm start` pkills any running agen
 8765 may be in use — goes through env overrides: `LEUTHERIA_PORT` (agent listens elsewhere),
 `LEUTHERIA_VOICE_SOURCE=<wav>` (a WAV replaces the mic, so no permission prompt and no live
 audio), `LEUTHERIA_AGENT_URL` + `LEUTHERIA_NO_SPAWN=1` (Electron connects to an agent it
-didn't start), `LEUTHERIA_CAPTURE_DIR` (PNG of each window on every voice-state change).
+didn't start; it then needs that agent's token in `LEUTHERIA_TOKEN`, or reads a standalone
+agent's token file), `LEUTHERIA_CAPTURE_DIR` (PNG of each window on every voice-state change).
 
 `ANTHROPIC_API_KEY` (and the optional `ELEVENLABS_API_KEY`) live in `.env` at the **repo
 root**, not in `agent/` — `__main__.py` calls `load_dotenv()`, which walks up from the
@@ -196,6 +201,23 @@ read loop by `core/control.py`, matched by `request_id`, so UI reads can't block
 blocked by a running command. The one exception is `list_input_devices` with `refresh: true`:
 it has to close and reopen the mic, so `server.py` answers it from a background task (same
 `request_id`).
+
+**The socket is authenticated, and refuses browsers.** Loopback is not a boundary: every
+local process and every web page can reach 127.0.0.1. `core/ws_auth.py` checks each
+connection in the opening handshake, before the upgrade: any request with an `Origin`
+header is refused (403 -- no value is allowed, not `null`, not `file://`; no real client
+sends one), and it must carry `Authorization: Bearer <token>` (401, constant-time compare).
+The token is per launch: Electron generates it (`app/agent-auth.js`) and passes it to the
+sidecar and the Qt overlay in their **environment** (`LEUTHERIA_TOKEN`) -- never argv, a
+file, a log line or a renderer; a standalone agent generates its own into a 0600 file under
+`~/Library/Application Support/Leutheria/`. The agent pops the variable from `os.environ`
+once read, so `run_command` children don't inherit it. `server.serve()` is the only place
+`handler` is bound and it always attaches the check -- never call `websockets.serve` with
+`handler` anywhere else, never add an unauthenticated mode or a "dev" bypass (a missing
+token means generate one, an unusable one means refuse to start), and never widen the bind
+address. The bare `{"tool": ...}` manual dispatch is off unless `LEUTHERIA_MANUAL_DISPATCH=1`
+(check scripts set it); no real client sends it. A new client of the socket needs the
+header; a new check script that starts a server sets its own random `LEUTHERIA_TOKEN`.
 
 **The system prompt applies to conversation only.** `agent/SYSTEM_PROMPT.md` is loaded once at
 import in `agent_loop.py` and passed as `system` on conversational calls. `skill_learning.py`
