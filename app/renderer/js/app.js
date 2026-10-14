@@ -103,6 +103,7 @@
 
   function setView(id) {
     current = id;
+    document.body.dataset.view = id;
     for (const view of VIEWS) {
       document.getElementById(`view-${view.id}`).hidden = view.id !== id;
     }
@@ -153,6 +154,19 @@
   // The bridge can connect before this page is listening (a fast agent, or
   // the window reopened later), so ask rather than wait for an event -- BUGS.md #18.
   window.leutheria.getStatus().then(showStatus);
+
+  // --- input modality ---------------------------------------------------
+  // Text fields match :focus-visible however they got focus, so the composer
+  // can't rely on it. Track how the user is moving instead.
+  document.body.dataset.modality = "pointer";
+  document.addEventListener(
+    "keydown",
+    (event) => {
+      if (event.key === "Tab" || event.key.startsWith("Arrow") || event.key === "/") document.body.dataset.modality = "keyboard";
+    },
+    true
+  );
+  document.addEventListener("pointerdown", () => (document.body.dataset.modality = "pointer"), true);
 
   // --- theme -------------------------------------------------------------
 

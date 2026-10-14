@@ -249,6 +249,16 @@ async function runTheme(theme) {
 
     // --- assistant
     await main.shot(file("assistant-empty"));
+    check(
+      `[${theme}] the autofocused composer rests quietly`,
+      await main.eval(`document.activeElement.id === "command-input" && document.body.dataset.modality !== "keyboard"`)
+    );
+    await main.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 });
+    await main.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 });
+    await main.eval(`document.getElementById("command-input").focus()`);
+    check(`[${theme}] keyboard focus switches the composer to the focus ring`, await main.eval(`document.body.dataset.modality === "keyboard"`));
+    await main.shot(file("assistant-empty-keyboard-focus"));
+    await main.eval(`document.dispatchEvent(new PointerEvent("pointerdown"))`);
     await main.eval(typeCommand("what time is it"));
     check(`[${theme}] typed command gets a reply`, await main.waitFor(`document.querySelectorAll("#chat .msg.assistant").length === 1`));
     await main.eval(typeCommand("this one will fail"));
@@ -432,7 +442,14 @@ async function runTheme(theme) {
     // --- logs
     await main.eval(clickNav(NAV.logs));
     check(`[${theme}] logs show the bridge stream`, await main.waitFor(`/\\[bridge\\]/.test(document.getElementById("logs").textContent)`));
+    check(`[${theme}] log lines are rows with a tinted source tag`, await main.eval(`Boolean(document.querySelector("#logs .log-line.log-bridge .log-tag"))`));
     await main.shot(file("logs"));
+    await main.eval(clickText("#view-actions button", "Copy"));
+    // The clipboard may refuse an unfocused window; either way the button answers.
+    check(`[${theme}] Copy answers with a toast`, await main.waitFor(`/Copied|Couldn't copy/.test(document.getElementById("toasts").textContent)`));
+    await main.shot(file("logs-copied"));
+    await main.eval(clickText("#view-actions button", "Clear"));
+    check(`[${theme}] Clear empties the log`, await main.eval(`document.querySelectorAll("#logs .log-line").length === 0`));
 
     // --- every view again at the other widths
     for (const width of WIDTHS.slice(1)) {

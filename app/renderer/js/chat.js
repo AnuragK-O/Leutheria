@@ -22,22 +22,26 @@
       el(
         "div.chat-empty",
         {},
-        // The logo mark as a watermark: a CSS mask, tinted by the theme.
-        el("div.empty-mark", { "aria-hidden": "true" }),
-        el("div.empty-eyebrow", { text: "No commands this session" }),
-        el("div.empty-title", { text: "Standing by" }),
-        el("div.empty-sub", {
-          text: "Type a command, or say it. Everything Leutheria can do is listed in the Library.",
-        }),
+        // The logo mark, framed: a CSS mask, tinted by the theme.
+        el("div.empty-emblem", { "aria-hidden": "true" }, el("div.empty-mark")),
         el(
-          "div.empty-keys",
+          "div.empty-readout",
           {},
-          el("kbd", { text: "Enter" }),
-          el("span", { text: "Send what you typed" }),
-          el("kbd", { text: "Mic" }),
-          el("span", { text: "Record one command, click again to send" }),
-          el("kbd", { text: "\u2325 Space" }),
-          el("span", { text: "Start or stop a hands-free session" })
+          el("div.empty-eyebrow", { text: "No commands this session" }),
+          el("div.empty-title", { text: "Standing by" }),
+          el("div.empty-sub", {
+            text: "Type a command, or say it. Everything Leutheria can do is listed in the Library.",
+          }),
+          el(
+            "div.empty-keys",
+            {},
+            el("kbd", { text: "Enter" }),
+            el("span", { text: "Send what you typed" }),
+            el("kbd", { text: "Mic" }),
+            el("span", { text: "Record one command, click again to send" }),
+            el("kbd", { text: "\u2325 Space" }),
+            el("span", { text: "Start or stop a hands-free session" })
+          )
         )
       )
     );
