@@ -47,10 +47,18 @@
     );
   }
 
-  function append(node) {
+  // Follow new entries only when the reader is already at the end (or sent
+  // the entry themselves). Someone scrolled back to read an earlier reply
+  // isn't yanked down by every line that arrives.
+  function nearEnd() {
+    return scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 80;
+  }
+
+  function append(node, force) {
     if (chatEl.querySelector(".chat-empty")) clear(chatEl);
+    const follow = force || nearEnd();
     chatEl.appendChild(node);
-    scrollToEnd();
+    if (follow) scrollToEnd();
   }
 
   // --- messages ----------------------------------------------------------
@@ -106,7 +114,8 @@
       );
     }
 
-    append(message);
+    // Your own line, and anything waiting on you, always comes into view.
+    append(message, role === "user");
   }
 
   // --- confirmation card -------------------------------------------------
@@ -190,7 +199,7 @@
       actions.remove();
       card.classList.add("resolved");
       card.appendChild(resolvedRow(note, approved));
-      scrollToEnd();
+      if (nearEnd()) scrollToEnd();
     };
 
     for (const spec of buttons) {
@@ -217,7 +226,7 @@
     }
 
     confirmCards.set(id, settle);
-    append(card);
+    append(card, true);
   }
 
   function resolveConfirmCard({ id, approved, by }) {
@@ -294,7 +303,7 @@
       actions.remove();
       card.classList.add("resolved");
       card.appendChild(resolvedRow(note, approved));
-      scrollToEnd();
+      if (nearEnd()) scrollToEnd();
     };
 
     actions.appendChild(
@@ -318,7 +327,7 @@
 
     body.appendChild(actions);
     card.appendChild(body);
-    append(card);
+    append(card, true);
   }
 
   // --- push to talk ------------------------------------------------------
@@ -330,6 +339,8 @@
   function setMicIcon(recording) {
     clear(micButton).appendChild(icon(recording ? "stop" : "mic"));
     micButton.classList.toggle("recording", recording);
+    micButton.setAttribute("aria-label", recording ? "Stop recording and send" : "Push to talk: record one command");
+    micButton.setAttribute("aria-pressed", String(recording));
   }
 
   async function startRecording() {

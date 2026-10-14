@@ -451,6 +451,66 @@ async function runTheme(theme) {
     await main.eval(clickText("#view-actions button", "Clear"));
     check(`[${theme}] Clear empties the log`, await main.eval(`document.querySelectorAll("#logs .log-line").length === 0`));
 
+    // --- transcript edge cases
+    await main.eval(clickNav(NAV.assistant));
+    const replies = () => main.eval(`document.querySelectorAll("#chat .msg.assistant").length`);
+    await main.eval(typeCommand("unsaved skill"));
+    check(
+      `[${theme}] skill_save_failed shows as an error line`,
+      await main.waitFor(`[...document.querySelectorAll("#chat .msg-body.error")].some((n) => /Couldn't save "tidy_screenshots"/.test(n.textContent))`)
+    );
+    let before = await replies();
+    await main.eval(typeCommand("日本語のファイルを開いて, открой файл, افتح الملف, 한국어"));
+    await main.waitFor(`document.querySelectorAll("#chat .msg.assistant").length > ${before}`);
+    await main.shot(file("transcript-non-latin"));
+    if (theme === THEMES[0]) {
+      // Long transcript: ~200 entries, sent one at a time like a person would.
+      const start = Date.now();
+      for (let index = 0; index < 90; index += 1) {
+        before = await replies();
+        await main.eval(typeCommand(`command number ${index + 1}`));
+        await main.waitFor(`document.querySelectorAll("#chat .msg.assistant").length > ${before}`, 3000);
+      }
+      const entries = await main.eval(`document.querySelectorAll("#chat .msg").length`);
+      check(`[${theme}] a long transcript renders`, entries >= 200, `${entries} entries in ${Math.round((Date.now() - start) / 1000)} s`);
+      check(`[${theme}] ...and follows the newest entry`, await main.eval(`(() => { const s = document.getElementById("chat-scroll"); return s.scrollHeight - s.scrollTop - s.clientHeight < 80; })()`));
+      // Scrolled back to read: an arriving reply must not yank the view down.
+      before = await replies();
+      await main.eval(typeCommand("one more"));
+      await main.eval(`document.getElementById("chat-scroll").scrollTop = 0`);
+      await main.waitFor(`document.querySelectorAll("#chat .msg.assistant").length > ${before}`);
+      check(`[${theme}] a reply doesn't scroll away from what you're reading`, await main.eval(`document.getElementById("chat-scroll").scrollTop < 100`));
+      const frame = await main.eval(`(() => { const t = performance.now(); document.getElementById("chat-scroll").scrollTop = 1e6; document.body.offsetHeight; return performance.now() - t; })()`);
+      check(`[${theme}] scrolling the long transcript stays cheap`, frame < 50, `${frame.toFixed(1)} ms layout`);
+      await main.shot(file("transcript-long"));
+    }
+
+    // --- Library: a learned skill with a long name and 40 steps, then delete it
+    const LONG = "export_quarterly_reports_to_the_shared_finance_drive_and_notify_the_team";
+    await main.eval(clickNav(NAV.library));
+    await main.eval(clickText("#library-list .list-row-name", LONG));
+    check(`[${theme}] a 40-step learned skill lists every step`, await main.waitFor(`document.querySelectorAll("#library-detail .step").length === 40`));
+    await main.shot(file("library-detail-long-skill"));
+    await main.eval(`document.getElementById("library-detail").scrollTop = 1e6`);
+    await main.shot(file("library-detail-long-skill-bottom"));
+    await main.eval(clickText("#library-detail .danger-zone button", "Delete"));
+    check(`[${theme}] Delete asks first`, await main.waitFor(`/This can't be undone/.test(document.querySelector("#library-detail .danger-zone").textContent)`));
+    await main.shot(file("library-delete-confirm"));
+    await main.eval(clickText("#library-detail .danger-zone button", "Delete skill"));
+    check(
+      `[${theme}] a deleted skill leaves the list, with a toast`,
+      (await main.waitFor(`![...document.querySelectorAll("#library-list .list-row")].some((n) => n.dataset.name === "${LONG}")`)) &&
+        (await main.waitFor(`/Deleted/.test(document.getElementById("toasts").textContent)`))
+    );
+    await main.shot(file("library-deleted-toast"));
+
+    // --- reduced motion: toasts must still go away
+    await main.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+    await main.waitFor(`document.querySelectorAll("#toasts .toast").length === 0`, 6000);
+    await main.eval(`LX.toast("Reduced motion check")`);
+    check(`[${theme}] under reduced motion a toast still clears`, await main.waitFor(`document.querySelectorAll("#toasts .toast").length === 0`, 5000));
+    await main.send("Emulation.setEmulatedMedia", { features: [] });
+
     // --- every view again at the other widths
     for (const width of WIDTHS.slice(1)) {
       await main.size(width, HEIGHT);
@@ -538,6 +598,15 @@ async function runTheme(theme) {
       await main.eval(`document.getElementById("chat-scroll").scrollTop = 1e6`);
       await main.shot(file("voice-session-reply"));
       check(`[${theme}] the pill returns to idle when the session ends`, await main.waitFor(`document.getElementById("voice-indicator").dataset.state === "idle"`, 15000));
+    }
+    if (!REAL_URL && children[0]) {
+      children[0].kill();
+      check(
+        `[${theme}] losing the agent shows in the status`,
+        await main.waitFor(`["disconnected", "error"].includes(document.getElementById("status").dataset.state)`, 6000)
+      );
+      await main.eval(clickNav(NAV.library));
+      await main.shot(file("status-disconnected"));
     }
   } finally {
     for (const child of children) child.kill();

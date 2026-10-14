@@ -389,6 +389,13 @@ async function handleMessage(client, message) {
         converse(client, { type: "error", text: "The model call failed: connection reset. Nothing was run." });
         return;
       }
+      if (/unsaved skill/i.test(text)) {
+        await sleep(200);
+        converse(client, { type: "response", text: "Done.", trace: [] });
+        await sleep(200);
+        send(client, { type: "skill_save_failed", name: "tidy_screenshots", error: "a skill named tidy_screenshots already exists" });
+        return;
+      }
       if (/break settings/i.test(text)) {
         fixtures.inventory.settings_errors = [fixtures.SETTINGS_ERROR];
         converse(client, { type: "response", text: "Mock: preferences.json is now unreadable.", trace: [] });

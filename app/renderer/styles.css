@@ -98,8 +98,14 @@
 
   /* Type. Two families: a squared technical face for everything you read,
      a monospace for everything the machine said. */
-  --font-ui: "Chakra Petch", "Avenir Next", "Helvetica Neue", system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  /* Chakra Petch is Latin only. Other scripts fall through, per glyph, to
+     named macOS faces of a similar plain, open build -- Helvetica Neue
+     (Cyrillic, Greek), PingFang and Hiragino (CJK), Apple SD Gothic Neo
+     (Hangul), Geeza Pro (Arabic) -- rather than whatever system-ui picks. */
+  --font-ui: "Chakra Petch", "Avenir Next", "Helvetica Neue", "PingFang SC", "Hiragino Sans", "Apple SD Gothic Neo",
+    "Geeza Pro", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, "PingFang SC", "Hiragino Sans", "Apple SD Gothic Neo",
+    "Geeza Pro", monospace;
 
   --fs-micro: 10px; /* uppercase labels */
   --fs-xs: 11px; /* mono meta, tags */
@@ -692,6 +698,14 @@ input[type="checkbox"]:checked {
   border: none;
 }
 
+.range:focus-visible {
+  outline-offset: 4px;
+}
+
+.range:focus-visible::-webkit-slider-thumb {
+  background: var(--focus);
+}
+
 .range:hover::-webkit-slider-thumb {
   background: var(--text);
 }
@@ -755,6 +769,10 @@ kbd {
   height: 10px;
   background: var(--text-3);
   transition: transform var(--t-base) var(--ease), background-color var(--t-base);
+}
+
+.switch:focus-visible {
+  outline-offset: 0;
 }
 
 .switch:hover::before {
@@ -1153,6 +1171,12 @@ body[data-view="assistant"] .toasts {
   font-size: var(--fs-sm);
   color: var(--text);
   animation: toast-in var(--t-base) var(--ease);
+}
+
+/* a long skill name in a toast wraps inside it rather than running out */
+.toast span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .toast.error {
@@ -2496,6 +2520,7 @@ mark {
 }
 
 .setting-text strong {
+  overflow-wrap: anywhere;
   font-size: var(--fs-md);
   font-weight: 600;
   letter-spacing: 0.02em;
