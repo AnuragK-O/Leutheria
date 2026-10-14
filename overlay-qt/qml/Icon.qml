@@ -22,7 +22,7 @@ Item {
     implicitHeight: 14
 
     // Drawn in the SVG's own 24x24 space and scaled as a whole, so the stroke
-    // scales with it just like `stroke-width="1.7"` in a viewBox does.
+    // scales with it just like `stroke-width="1.6"` in a viewBox does.
     Shape {
         width: 24
         height: 24
@@ -34,9 +34,9 @@ Item {
             property alias d: svg.path
             fillColor: "transparent"
             strokeColor: icon.color
-            strokeWidth: 1.7
-            capStyle: ShapePath.RoundCap
-            joinStyle: ShapePath.RoundJoin
+            strokeWidth: 1.6
+            capStyle: ShapePath.SquareCap
+            joinStyle: ShapePath.MiterJoin
             PathSvg { id: svg }
         }
 

@@ -1,4 +1,7 @@
+pragma ComponentBehavior: Bound
+
 import QtQuick
+import QtQuick.Effects
 import Leutheria.Core
 
 // The overlay window. Pixels only: every decision about what to show comes
@@ -12,7 +15,9 @@ Window {
     required property AssetManifest manifest
     // "light" / "dark" from --theme, or "" to follow the macOS appearance.
     required property string forcedTheme
-    // QFontDatabase::systemFont(FixedFont), for the card's code block.
+    // Set by main.cpp but no longer used: the mono face is the bundled
+    // JetBrains Mono (Typeface). Drop it together with main.cpp's
+    // setInitialProperties entry.
     required property string monoFamily
 
     // Same size as the Electron overlay window (main.js OVERLAY_SIZE): room
@@ -29,14 +34,14 @@ Window {
 
     Theme {
         id: theme
-        monoFamily: root.monoFamily
         dark: root.forcedTheme !== "" ? root.forcedTheme === "dark"
                                       : Application.styleHints.colorScheme === Qt.ColorScheme.Dark
     }
 
-    // Everything visible. Fades/drops in when a session starts and back out
-    // when it ends; C++ keeps the window mapped for OverlayModel::kLingerMs
-    // so the fade-out can finish (overlay.css body.leaving .stage).
+    // Everything visible. Arrives (opacity 0 -> 1, 8 px down) when a session
+    // starts and leaves the reverse way when it ends, --t-slow --ease; C++
+    // keeps the window mapped for OverlayModel::kLingerMs so the leave can
+    // finish (overlay.css .stage, body.leaving .stage).
     Item {
         id: stage
 
@@ -47,25 +52,29 @@ Window {
         width: 420
         height: column.implicitHeight
         opacity: shown ? 1 : 0
-        transform: [
-            Scale {
-                origin.x: stage.width / 2
-                origin.y: stage.height / 2
-                xScale: stage.shown ? 1 : 0.97
-                yScale: xScale
-                Behavior on xScale { NumberAnimation { duration: 400; easing.type: Easing.BezierSpline; easing.bezierCurve: theme.ease } }
-            },
-            Translate {
-                y: stage.shown ? 0 : -8
-                Behavior on y { NumberAnimation { duration: 400; easing.type: Easing.BezierSpline; easing.bezierCurve: theme.ease } }
-            }
-        ]
-        Behavior on opacity { NumberAnimation { duration: 400; easing.type: Easing.BezierSpline; easing.bezierCurve: theme.ease } }
+        transform: Translate {
+            y: stage.shown ? 0 : -8
+            Behavior on y { NumberAnimation { duration: theme.tSlow; easing.type: Easing.BezierSpline; easing.bezierCurve: theme.ease } }
+        }
+        Behavior on opacity { NumberAnimation { duration: theme.tSlow; easing.type: Easing.BezierSpline; easing.bezierCurve: theme.ease } }
+
+        // The product's one shadow, drop-shadow(0 8px 18px rgba(0,0,0,.4)),
+        // on the whole stage so it follows the cut corners like CSS's does.
+        layer.enabled: true
+        layer.effect: MultiEffect {
+            shadowEnabled: true
+            shadowColor: theme.shadow
+            shadowVerticalOffset: theme.shadowY
+            shadowHorizontalOffset: 0
+            blurMax: 64
+            shadowBlur: 1
+            autoPaddingEnabled: true
+        }
 
         Column {
             id: column
             width: parent.width
-            spacing: 8
+            spacing: theme.s2
 
             Island {
                 width: parent.width

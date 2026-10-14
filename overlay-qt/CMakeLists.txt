@@ -45,9 +45,27 @@ qt_add_qml_module(overlay_core
         src/AgentClient.cpp src/AgentClient.h
         src/AssetManifest.cpp src/AssetManifest.h
         src/OverlayModel.cpp src/OverlayModel.h
+        src/Fonts.cpp src/Fonts.h
+        src/CutGeometry.cpp src/CutGeometry.h
 )
 target_include_directories(overlay_core PUBLIC src)
 target_link_libraries(overlay_core PUBLIC Qt6::Core Qt6::Qml Qt6::WebSockets)
+target_link_libraries(overlay_core PUBLIC Qt6::Gui) # Fonts: QFontDatabase
+# The fonts the Electron overlay uses, the same woff2 files (Qt loads WOFF2
+# directly; see src/Fonts.cpp). Served at :/fonts/<name>.woff2.
+set(overlay_font_dir ${CMAKE_CURRENT_SOURCE_DIR}/../app/renderer/fonts)
+qt_add_resources(overlay_core "bundled_fonts"
+    PREFIX /fonts
+    BASE ${overlay_font_dir}
+    FILES
+        ${overlay_font_dir}/ChakraPetch-400.woff2
+        ${overlay_font_dir}/ChakraPetch-500.woff2
+        ${overlay_font_dir}/ChakraPetch-600.woff2
+        ${overlay_font_dir}/ChakraPetch-700.woff2
+        ${overlay_font_dir}/JetBrainsMono-Regular.woff2
+        ${overlay_font_dir}/JetBrainsMono-Medium.woff2
+        ${overlay_font_dir}/JetBrainsMono-Bold.woff2
+)
 target_compile_options(overlay_core PRIVATE
     $<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-Wall -Wextra -Wpedantic>)
 
@@ -68,11 +86,14 @@ endif()
 qt_add_qml_module(LeutheriaOverlay
     URI Leutheria.Overlay
     VERSION 1.0
+    SOURCES
+        src/CutBox.cpp src/CutBox.h
     QML_FILES
         qml/Main.qml
         qml/Island.qml
         qml/AssetSlot.qml
-        qml/Orb.qml
+        qml/Reticle.qml
+        qml/CssText.qml
         qml/ConfirmCard.qml
         qml/OverlayButton.qml
         qml/Icon.qml

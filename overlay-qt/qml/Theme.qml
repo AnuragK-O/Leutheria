@@ -1,50 +1,98 @@
 import QtQuick
 
-// The overlay's palette: the brand tokens from app/renderer/styles.css plus
-// the overlay-only ones from app/renderer/overlay/overlay.css, per theme.
-// Kept as literal values (not computed) so a diff against the CSS is easy.
+// The design tokens the overlay uses, for both themes.
+//
+// Source: app/renderer/DESIGN.md (the token tables), whose values are the
+// first two blocks of app/renderer/styles.css. Each property is the CSS
+// custom property of the same name in camelCase (--line-strong -> lineStrong,
+// --t-fast -> tFast), written as the same literal, so a diff against either
+// file stays easy. Nothing here is computed except where the CSS computes it
+// too (color-mix, the per-state tone). Change a value there first, then here.
 QtObject {
+    id: theme
+
     property bool dark: true
 
-    // island + card surface
-    readonly property color islandBg: dark ? Qt.rgba(23 / 255, 19 / 255, 31 / 255, 0.9) : Qt.rgba(1, 1, 1, 0.94)
-    readonly property color islandBorder: dark ? Qt.rgba(166 / 255, 139 / 255, 240 / 255, 0.22)
-                                               : Qt.rgba(120 / 255, 86 / 255, 196 / 255, 0.2)
-    readonly property color shadow: dark ? Qt.rgba(0, 0, 0, 0.45) : Qt.rgba(25 / 255, 19 / 255, 35 / 255, 0.16)
-    readonly property real shadowBlur: dark ? 34 : 30
+    // --- colour: ground ----------------------------------------------------
+    readonly property color base: dark ? "#0a0810" : "#efedf4"        // --base
+    readonly property color sunken: dark ? "#07060b" : "#e5e2ed"      // --sunken: code wells
+    readonly property color surface: dark ? "#110e19" : "#f8f7fb"     // --surface: the plate, the card
+    readonly property color raised: dark ? "#191524" : "#ffffff"      // --raised: controls
+    readonly property color raised2: dark ? "#231d31" : "#e9e4f4"     // --raised-2: hovered controls
+    readonly property color line: dark ? "#272138" : "#d2cce0"        // --line: hairlines
+    readonly property color lineStrong: dark ? "#3d3556" : "#aea6c4"  // --line-strong: control outlines
 
-    // text
-    readonly property color text: dark ? "#ede9f4" : "#191323"
-    readonly property color textMuted: dark ? "#a79fb8" : "#6b6379"
+    // --- colour: text ------------------------------------------------------
+    readonly property color text: dark ? "#ede9f6" : "#15111f"        // --text
+    readonly property color text2: dark ? "#aba3bf" : "#4c4561"       // --text-2: hints, outcomes
+    readonly property color text3: dark ? "#9088a9" : "#655e7c"       // --text-3: labels, meta
 
-    // brand
-    readonly property color accent: dark ? "#a68bf0" : "#7856c4"         // --violet-400 / 600
-    readonly property color accentStrong: dark ? "#8b6bd6" : "#63449f"   // --violet-500 / 700
-    readonly property color warning: dark ? "#e0b25c" : "#a97a1c"
-    readonly property color warningSoft: dark ? Qt.rgba(224 / 255, 178 / 255, 92 / 255, 0.14)
-                                              : Qt.rgba(169 / 255, 122 / 255, 28 / 255, 0.13)
+    // --- colour: brand and state. Colour means state, never decoration. ----
+    readonly property color violet: dark ? "#8e6fd4" : "#7353c9"      // --violet
+    readonly property color violetHi: dark ? "#b29af7" : "#5a3bb0"    // --violet-hi: working, talking
+    readonly property color violetLo: dark ? "#6c4dc2" : "#6444bd"    // --violet-lo
+    readonly property color textOnViolet: "#ffffff"                   // --on-violet
+    readonly property color cyan: dark ? "#38e1ee" : "#006f7c"        // --cyan: live (the mic is open)
+    readonly property color amber: dark ? "#ffb224" : "#8a5000"       // --amber: waiting on you
+    readonly property color red: dark ? "#ff5c7a" : "#b81d43"         // --red: declined, destructive
+    readonly property color green: dark ? "#5be49b" : "#156c3c"       // --green: succeeded
+    readonly property color textOnAccent: dark ? "#0a0810" : "#ffffff" // --on-accent (QML reserves on*): text on an amber fill
 
-    // surfaces used by the card's code block and buttons
-    readonly property color bg: dark ? "#131019" : "#f6f4fa"
-    readonly property color surface: dark ? "#1c1726" : "#ffffff"
-    readonly property color surfaceHover: dark ? "#221c2e" : "#f4f1f9"
-    readonly property color border: dark ? "#2b2338" : "#e5e0ee"
-    readonly property color borderStrong: dark ? "#3a3049" : "#d2cae1"
+    // --- type sizes (CSS px) and tracking (em) -----------------------------
+    readonly property int fsMicro: 10       // --fs-micro: uppercase labels
+    readonly property int fsXs: 11          // --fs-xs: mono meta, small buttons
+    readonly property int fsSm: 12          // --fs-sm: secondary text, mono data
+    readonly property int fsMd: 13          // --fs-md: body
+    readonly property real trackLabel: 0.12 // --track-label: micro-labels
+    readonly property real trackButton: 0.06 // .btn letter-spacing
 
-    // the placeholder orb (violet); Orb.qml swaps to amber for confirmations
-    readonly property color orbCore: dark ? "#b9a3f5" : "#a68bf0"
-    readonly property color orbMid: dark ? "#8b6bd6" : "#7856c4"
-    readonly property color orbEdge: "#63449f"
-    readonly property color ring: dark ? Qt.rgba(166 / 255, 139 / 255, 240 / 255, 0.55)
-                                       : Qt.rgba(120 / 255, 86 / 255, 196 / 255, 0.45)
+    // --- space: the 4 px scale ---------------------------------------------
+    readonly property int s1: 4
+    readonly property int s2: 8
+    readonly property int s3: 12
+    readonly property int s4: 16
 
-    readonly property color amberCore: "#f3d596"
-    readonly property color amberEdge: "#9a6c17"
-    readonly property color amberRing: Qt.rgba(warning.r, warning.g, warning.b, 0.6)
+    // --- geometry. Nothing is rounded. -------------------------------------
+    readonly property int hair: 1     // --hair: every border
+    readonly property int rule: 2     // --rule: state rules, bracket thickness
+    readonly property int cutSm: 6    // --cut-sm: buttons (bottom-right)
+    readonly property int cutMd: 10   // --cut-md: the confirmation card (top-right)
+    readonly property int cutLg: 14   // --cut-lg: the plate (top-right)
+    readonly property int bracket: 12 // --bracket: corner bracket arm
+    readonly property int hit: 28     // --hit: small buttons, the card's footer row
 
-    // CSS color-mix(in srgb, a p%, b) -- used for the amber borders. CSS
-    // interpolates premultiplied, so mixing with "transparent" fades the
-    // colour instead of darkening it towards black.
+    // --- motion ------------------------------------------------------------
+    readonly property int tFast: 90   // --t-fast: hover, press, level-driven movement
+    readonly property int tBase: 160  // --t-base: state changes, the card arriving
+    readonly property int tSlow: 320  // --t-slow: the overlay arriving and leaving
+    // --ease: cubic-bezier(0.2, 0.8, 0.2, 1), as Easing.BezierSpline wants it
+    readonly property var ease: [0.2, 0.8, 0.2, 1, 1, 1]
+
+    // --- the product's one shadow: drop-shadow(0 8px 18px rgba(0,0,0,.4)) ---
+    readonly property color shadow: Qt.rgba(0, 0, 0, 0.4)
+    readonly property int shadowY: 8
+    readonly property int shadowBlur: 18
+
+    // --tone: the colour of a voice state (overlay.css .island[data-state]).
+    // Cyan while the mic is live, violet while Leutheria is working or
+    // talking, amber when it needs an answer.
+    function tone(state: string): color {
+        switch (state) {
+        case "transcribing":
+        case "thinking":
+        case "speaking":
+            return violetHi
+        case "awaiting_confirmation":
+            return amber
+        default: // listening, hearing
+            return cyan
+        }
+    }
+
+    // CSS color-mix(in srgb, a p, b), p as 0..1. Tints are mixed from tokens
+    // in place, never written as new literals, so they follow the theme.
+    // CSS interpolates premultiplied, so mixing with "transparent" fades a
+    // colour instead of darkening it.
     function mix(a: color, b: color, p: real): color {
         const wa = a.a * p, wb = b.a * (1 - p), alpha = wa + wb
         if (alpha <= 0)
@@ -53,9 +101,4 @@ QtObject {
                        (a.b * wa + b.b * wb) / alpha, alpha)
     }
 
-    // CSS asks for ui-monospace (SF Mono); Qt can't resolve that by name,
-    // so main.cpp passes the system fixed-pitch family in.
-    property string monoFamily: "Menlo"
-    // --ease: cubic-bezier(0.32, 0.72, 0, 1)
-    readonly property var ease: [0.32, 0.72, 0, 1, 1, 1]
 }

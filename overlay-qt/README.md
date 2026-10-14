@@ -18,7 +18,7 @@ and Ninja.
 ```bash
 cmake -S overlay-qt -B overlay-qt/build -G Ninja -DCMAKE_PREFIX_PATH=/opt/homebrew/opt/qt
 cmake --build overlay-qt/build
-ctest --test-dir overlay-qt/build            # 3 Qt Test suites, about 10 s
+ctest --test-dir overlay-qt/build            # 5 Qt Test suites, about 15 s
 cmake --build overlay-qt/build --target all_qmllint   # optional, currently clean
 ```
 
@@ -93,7 +93,7 @@ something is shown, only *how* it looks.
 ```
  AgentClient ──messageReceived(QJsonObject)──▶ OverlayModel ──Q_PROPERTYs──▶ Main.qml
       ▲                                           │  visibleChanged      Island, ConfirmCard,
-      └──────────── sendConfirm(id, approved) ◀───┘  interactiveChanged  AssetSlot, Orb
+      └──────────── sendConfirm(id, approved) ◀───┘  interactiveChanged  AssetSlot, Reticle
                                                          │
                                          main.cpp ───────┴──▶ MacWindow (.mm): show without
                                                                 activating, click-through
@@ -104,14 +104,18 @@ something is shown, only *how* it looks.
 |---|---|
 | `src/AgentClient.{h,cpp}` | The `QWebSocket`. Presents the token (`Authorization: Bearer`, from `LEUTHERIA_TOKEN`) in the handshake, sends `{"type":"hello","role":"overlay"}` first on every connection, reconnects forever with capped exponential backoff (0.5 s doubling to 8 s), drops anything that isn't a JSON object with a string `type`, and sends `confirm`. It never interprets a message. |
 | `src/OverlayModel.{h,cpp}` | Every rule about what the overlay shows, ported from `overlay.js`: session start and end, the 650 ms linger after a session ends, label and line text per state, reply shortening, level smoothing, and the confirmation card's lifecycle. Exposed to QML as properties; no QML or socket dependency, so the tests drive it with plain `QJsonObject`s. |
-| `src/AssetManifest.{h,cpp}` | Loads `manifest.json` with the same validation and fallbacks as `main.js loadOverlayManifest()`. Any problem costs only that one state, which falls back to the built-in orb with a logged reason. |
+| `src/AssetManifest.{h,cpp}` | Loads `manifest.json` with the same validation and fallbacks as `main.js loadOverlayManifest()`. Any problem costs only that one state, which falls back to the built-in reticle with a logged reason. |
+| `src/Fonts.{h,cpp}` | Registers the bundled faces and names each one once; exposed to QML as the `Typeface` singleton (`Typeface.mono(500, 10, 0.12)`). See "Design" below. |
+| `src/CutGeometry.{h,cpp}` | The cut-corner and corner-bracket geometry, as plain maths (unit tested). |
+| `src/CutBox.{h,cpp}` | The one shape item: fill, 1 px outline that follows the cut, optional brackets. Plate, card, buttons and the reticle's frame are all CutBoxes. |
 | `src/MacWindow.h`, `MacWindow_mac.mm` | The Objective-C++ layer: activation policy, window level, Spaces behaviour, click-through. `MacWindow_stub.cpp` keeps non-Apple builds compiling (QML can be worked on anywhere). |
 | `src/FrameCapture.{h,cpp}` | `--capture-dir` only: `QQuickWindow::grabWindow()` 500 ms after each state change. |
 | `src/main.cpp` | CLI parsing and wiring, nothing else. |
-| `qml/Main.qml` | The transparent 460x300 window and the fade in/out "stage". |
-| `qml/Island.qml`, `ConfirmCard.qml`, `OverlayButton.qml`, `Icon.qml` | Ports of the matching `overlay.css` / `styles.css` rules. `Icon.qml` draws the same 24x24 SVG paths as `util.js icon()`. |
-| `qml/AssetSlot.qml`, `Orb.qml` | The asset slot: the manifest's image or video, or the placeholder orb, which has a distinct look per state driven by the mic level. Animations only drive "phase" properties; every visual property is a binding, so no animation's last value can stick after a state change. |
-| `qml/Theme.qml` | The palette, as literal values copied from the two CSS files, so a diff against them stays easy. |
+| `qml/Main.qml` | The transparent 460x300 window and the "stage" that arrives and leaves, carrying the one drop shadow. |
+| `qml/Island.qml`, `ConfirmCard.qml`, `OverlayButton.qml`, `Icon.qml` | Ports of the matching `overlay.css` / `styles.css` rules. `Icon.qml` draws the same 24x24 SVG paths as `util.js icon()`, square-capped and mitred. |
+| `qml/CssText.qml` | `Text` with a CSS px line-height: puts the half-leading above the glyphs, as CSS does (Qt puts it all below). |
+| `qml/AssetSlot.qml`, `Reticle.qml` | The asset slot: the manifest's image or video, or the placeholder reticle, which has a distinct behaviour per state driven by the mic level. Animations only drive "phase" properties; every visual property is a binding, so no animation's last value can stick after a state change. |
+| `qml/Theme.qml` | The design tokens, both themes, as literals named after the CSS custom properties (`--line-strong` is `lineStrong`). |
 
 **Build layout.** `overlay_core` is a static library holding the three logic classes,
 linked by both the app and the tests, so the tests exercise exactly what ships. It is also
@@ -124,7 +128,7 @@ with `loadFromModule`.
 
 Same file, same rules as Electron:
 
-- A state that is missing or `css` gets the placeholder orb.
+- A state that is missing or `css` gets the placeholder reticle.
 - Anything else falls back for that state only, with a log line saying why: an unknown
   `type`, no `src`, a `src` that resolves outside the assets folder, or a file that
   doesn't exist.
@@ -139,7 +143,7 @@ Two differences, both on the strict side:
   list.
 
 A file that passes validation but fails at runtime (a corrupt PNG, a truncated MP4) is
-reported by the QML through `AssetManifest::markBroken()` and swapped for the orb.
+reported by the QML through `AssetManifest::markBroken()` and swapped for the reticle.
 
 ### Focus and clicks (measured on macOS 26, Qt 6.11)
 
@@ -178,6 +182,47 @@ These are applied once. Qt does not reset them on show.
 The overlay appears top-center of the display under the mouse when a session starts, in
 the display's work area, 12 px below the menu bar. It doesn't move during a session.
 
+## Design
+
+The look is ported from `app/renderer/DESIGN.md` (the token tables, the plate, the
+reticle, the card), checked against `overlay.css` and `styles.css`, which win where the
+two disagree. Captures from `--capture-dir` are compared side by side with the Electron
+overlay's (`app/scripts/ui-capture.js`) at 2x.
+
+**Fonts.** The same Chakra Petch and JetBrains Mono files the Electron app loads
+(`app/renderer/fonts/*.woff2`, SIL OFL 1.1, licences next to them) are compiled in as
+resources by `CMakeLists.txt`; there is no second copy. Qt 6.11 loads WOFF2 directly
+(measured: `QFontDatabase::addApplicationFont` returns a valid id and the glyphs render,
+on cocoa and offscreen; it does need an absolute or resource path -- a relative path
+returns -1, which looks exactly like "no WOFF2 support"). Two traps, both silent:
+
+- The webfont builds give Chakra Petch 500 and 600 their own family names
+  ("Chakra Petch Medium", "Chakra Petch SemiBold"); asking "Chakra Petch" at weight 600
+  draws Bold.
+- JetBrains Mono Medium shares the family "JetBrains Mono" but its OS/2 weight is 436 and
+  Bold's 558, so a weight-500 request draws Bold. It has to be asked for by style name.
+
+`Fonts.h` names every face once and `tst_fonts` asserts each request resolves to the
+bundled face (family, style, fixed pitch, and what `QRawFont` actually draws), so a
+missing file fails a test instead of substituting (BUGS.md #32). Ligatures are off
+(`liga`, `clig`, `dlig`, `hlig`, `calt` set to 0, as `font-variant-ligatures: none`);
+the test proves the check can fail by shaping `->` with them on.
+
+**Shapes.** Qt Quick has no `clip-path`, and a stroked path can't reproduce the CSS: the
+outline there is two stacked polygons (outline colour, then the fill inset by one
+hairline with its cut shrunk by 2 - sqrt 2), which keeps the diagonal exactly one
+hairline thick. `CutBox` does the same with QPainter, antialiased, into a texture at the
+window's device pixel ratio (a `QQuickPaintedItem`; it repaints only when a property or
+its size changes, i.e. on hover and state changes, never per frame). The geometry is in
+`CutGeometry`, tested by `tst_cutgeometry`, including that the band between the two
+diagonals is the line width for every cut, width and corner.
+
+**Shadow.** `drop-shadow(0 8px 18px rgba(0,0,0,.4))` is a `MultiEffect` on the whole
+stage, so it follows the cut corners. Its blur is calibrated by measurement, not by
+formula: the alpha profile under the plate matches the Electron capture to within 1-2/255
+per row with `blurMax: 64` (the effect's blur is in texture pixels, so at 2x the CSS
+radius needs about twice the value).
+
 ## Relation to the Electron overlay
 
 | | Electron (`app/renderer/overlay/`) | Qt (`overlay-qt/`) |
@@ -199,7 +244,7 @@ confirmation card and skill proposals stay in the main window.
   (`libdarwinmediaplugin`), and Apple's framework has no WebM/VP9 support: its containers
   are avi, mp4, mov and some audio types. (Qt's own installer builds also include an FFmpeg
   backend, which does read WebM; this project doesn't depend on that.) A WebM state shows
-  the orb, with a log line naming the file. The asset guide therefore recommends animated
+  the reticle, with a log line naming the file. The asset guide therefore recommends animated
   WebP, which is an *image* format (`AnimatedImage`, Qt's `qwebp` plugin) and needs no
   video backend at all. H.264 MP4 or MOV plays,
   but H.264 has no alpha. HEVC-with-alpha `.mov` should decode through AVFoundation but
@@ -207,12 +252,16 @@ confirmation card and skill proposals stay in the main window.
   APNG shows its first frame only.
 - **Theme choice.** The theme follows macOS, not the main window's in-app theme choice
   (that lives in Electron's `localStorage`). Electron can pass `--theme` if this matters.
-- **Shadow under the island.** CSS `box-shadow` isn't painted under the element,
-  `RectangularShadow` is. Behind the 94%-opaque light island that makes the background
-  about 1% darker than Electron's (252 vs 255 per channel).
-- **Fonts.** The code block uses the system fixed-pitch font from `QFontDatabase`; CSS
-  `ui-monospace` resolves to SF Mono, which Qt can't request by name. Line heights
-  are fixed to the CSS values, so layout matches to within about a pixel.
+- **Pixel differences from Electron** (2x captures, both themes): geometry, colours and
+  type match; text baselines are within 1 device pixel (half a CSS px). Fills differ by
+  at most 1/255 per channel (colour management). Chakra Petch has no CJK, Arabic or
+  Hangul; Electron's font stack falls back per script to named macOS faces, Qt to its own
+  fallback for the family.
+- **The thinking ring.** DESIGN.md describes it pulsing 1 to 0.45; in `overlay.css` the
+  `idle` keyframes animate towards .45 from the ring's own .45, so Electron shows it
+  steady at .45. The Qt overlay matches what Electron renders.
+- **Main.qml's `monoFamily`.** Still required because `main.cpp` sets it, but unused
+  now that the mono face is bundled; remove both together.
 - **Argument order.** The card's argument summary is sorted by key: `QJsonObject` keeps
   keys sorted, while JavaScript keeps insertion order. One-argument calls are unaffected.
 - **Video lifetime.** A video restarts from its first frame each time its state is
