@@ -746,7 +746,7 @@ SKILLS = {
             "Commit everything that has changed in a git repository: stage all changes "
             "and commit them with the given message. It checks the repository's state "
             "itself, so call it directly without running git_status first. The user is "
-            "shown the command and asked before it runs. It stops without committing if there is nothing to "
+            "shown the command and asked before it runs. Because it runs real git, the repository's own hooks and filters run too, so tell the user that when the repository came from somewhere they do not trust. It stops without committing if there is nothing to "
             "commit, if there are merge conflicts, or if a changed file looks like it "
             "holds secrets. It does not push (git_sync does) and it cannot commit only "
             "some files. Not for a copy of a folder outside git: that is backup_folder."
@@ -771,7 +771,7 @@ SKILLS = {
             "remote. It checks the repository itself, so call it directly without running "
             "git_status first, and never skip a pull because git_status showed nothing "
             "behind, since git_status does not contact the remote. The user is shown the "
-            "command and asked before it runs. A pull only "
+            "command and asked before it runs. Because it runs real git, the repository's own hooks and filters run too, so tell the user that when the repository came from somewhere they do not trust. A pull only "
             "fast-forwards: if it would need a merge it stops and says so. It does not "
             "commit anything first; use git_snapshot for that."
         ),
@@ -788,7 +788,8 @@ SKILLS = {
         "fn": clone_repo.run,
         "description": (
             "Clone a git repository from GitHub, or any https address, into a new folder. "
-            "The user is shown the command and asked before it runs. It refuses if the "
+            "The user is shown the command and asked before it runs. The checkout runs the git "
+            "filters set up on this Mac (such as Git LFS) on the files it brings down. It refuses if the "
             "destination folder already exists. Not for looking at a repository in the "
             "browser: that is github_open."
         ),

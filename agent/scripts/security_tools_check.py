@@ -459,10 +459,152 @@ def check_extract_archive():
     check(launches == [], "nothing was handed to open")
 
 
+# --- git_status ---------------------------------------------------------------
+
+def _git(repo, *args):
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, timeout=30)
+
+
+def hostile_repo(where: Path, marker_dir: Path) -> Path:
+    """A repository whose own config names programs at every hook git offers
+    a read-only caller, each of which would touch a marker file if run."""
+    repo = where
+    repo.mkdir(parents=True)
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "t@example.invalid")
+    _git(repo, "config", "user.name", "t")
+    (repo / "a.txt").write_text("one\n")
+    (repo / "sub").mkdir()
+    (repo / "sub" / "b.dat").write_text("two\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "first")
+
+    def marker(name):
+        return f"touch {marker_dir / name}"
+
+    included = repo / "extra.gitconfig"
+    included.write_text(f'[filter "inc.dotted"]\n\tclean = {marker("include_clean")}\n')
+    attributes = "* filter=x\n*.dat filter=inc.dotted diff=tc\n"
+    (repo / ".gitattributes").write_text(attributes)
+    hooks = repo / "hooks"
+    hooks.mkdir()
+    for hook in ("post-index-change", "pre-commit", "post-checkout", "reference-transaction"):
+        (hooks / hook).write_text(f"#!/bin/sh\n{marker('hook_' + hook)}\n")
+        (hooks / hook).chmod(0o755)
+    config = [
+        ("filter.x.clean", marker("filter_clean")),
+        ("filter.x.smudge", marker("filter_smudge")),
+        ("filter.x.process", marker("filter_process")),
+        ("filter.x.required", "true"),
+        ("core.fsmonitor", marker("fsmonitor")),
+        ("core.hooksPath", str(hooks)),
+        ("core.pager", marker("pager")),
+        ("pager.status", marker("pager_status")),
+        ("pager.log", marker("pager_log")),
+        ("core.editor", marker("editor")),
+        ("core.sshCommand", marker("ssh")),
+        ("core.askPass", marker("askpass")),
+        ("credential.helper", "!" + marker("credential")),
+        ("diff.external", marker("diff_external")),
+        ("diff.tc.textconv", marker("textconv")),
+        ("gpg.program", marker("gpg")),
+        ("log.showSignature", "true"),
+        ("alias.status", "!" + marker("alias")),
+        ("alias.log", "!" + marker("alias_log")),
+        ("include.path", str(included)),
+        ("remote.origin.url", "https://example.invalid/r.git"),
+        ("remote.origin.uploadpack", marker("uploadpack")),
+        ("remote.origin.receivepack", marker("receivepack")),
+        ("core.untrackedCache", "true"),
+    ]
+    for key, value in config:
+        _git(repo, "config", key, value)
+    # Every tracked file stat-dirty, as after unzipping a project: status has
+    # to re-hash them, which is when the clean filter runs.
+    time.sleep(1.1)
+    for path in (repo / "a.txt", repo / "sub" / "b.dat"):
+        path.write_text(path.read_text())
+    return repo
+
+
+async def check_git_status():
+    from agent.tools import git_status as gs
+
+    section("git_status runs nothing the repository chooses (H3, chain F)")
+    home = TMP / "git_home"
+    home.mkdir()
+    saved = {k: os.environ.get(k) for k in ("HOME", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM")}
+    os.environ.update({"HOME": str(home), "GIT_CONFIG_GLOBAL": str(home / ".gitconfig"), "GIT_CONFIG_NOSYSTEM": "1"})
+    try:
+        markers = TMP / "git_markers"
+        markers.mkdir()
+        repo = hostile_repo(TMP / "git_repo", markers)
+
+        # The PoC, unneutralised: plain `git status` in this repo does run the filter.
+        subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, timeout=30,
+                       env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"})
+        check((markers / "filter_process").exists() or (markers / "filter_clean").exists(),
+              f"the PoC is live: bare git status ran the repository's filter {sorted(p.name for p in markers.iterdir())}")
+        for p in markers.iterdir():
+            p.unlink()
+        time.sleep(1.1)
+        for path in (repo / "a.txt", repo / "sub" / "b.dat"):
+            path.write_text(path.read_text())
+
+        result, asked = await through_dispatch("git_status", {"path": str(repo), "log_count": 5})
+        ran = sorted(p.name for p in markers.iterdir())
+        check(result.get("ok") is True and asked == [], f"git_status reads the repository: {result.get('message', result.get('error'))}")
+        check(ran == [], f"and nothing the repository named was run: {ran}")
+        check(result["branch"] == "main" and result["commits"] and result["commits"][0]["subject"] == "first",
+              "branch and commits are still read")
+        check(result["remote_url"] == "https://example.invalid/r.git", "the remote URL is still read")
+
+        # And with submodules: a submodule's own filter is not run either.
+        inner = hostile_repo(TMP / "git_inner", markers)
+        outer = TMP / "git_outer"
+        outer.mkdir()
+        _git(outer, "init", "-q", "-b", "main")
+        _git(outer, "config", "user.email", "t@example.invalid")
+        _git(outer, "config", "user.name", "t")
+        _git(outer, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(inner), "inner")
+        _git(outer, "commit", "-q", "-m", "with submodule")
+        for p in markers.iterdir():
+            p.unlink()
+        sub_config = outer / ".git" / "modules" / "inner" / "config"
+        with open(sub_config, "a") as f:
+            f.write(f'[filter "x"]\n\tclean = touch {markers / "submodule_clean"}\n'
+                    f'\tprocess = touch {markers / "submodule_process"}\n'
+                    f'[core]\n\tfsmonitor = touch {markers / "submodule_fsmonitor"}\n')
+        time.sleep(1.1)
+        (outer / "inner" / "a.txt").write_text("one\n")
+        result, _ = await through_dispatch("git_status", {"path": str(outer)})
+        check(result.get("ok") is True and sorted(p.name for p in markers.iterdir()) == [],
+              f"a submodule's filters are not run either: {sorted(p.name for p in markers.iterdir())}")
+
+        # An ordinary repository is unaffected.
+        plain = TMP / "git_plain"
+        plain.mkdir()
+        _git(plain, "init", "-q", "-b", "trunk")
+        (plain / "x.txt").write_text("x")
+        result, _ = await through_dispatch("git_status", {"path": str(plain)})
+        check(result.get("ok") and result["branch"] == "trunk" and result["untracked"] == 1, "an ordinary repository reads as before")
+        check(gs._neutralising_args(plain) == [], "and needs no filter overrides")
+        check(gs._neutralising_args(repo)[:2] == ["-c", "filter.inc.dotted.clean="] or
+              "filter.inc.dotted.clean=" in gs._neutralising_args(repo),
+              "a dotted filter name pulled in by include.path is neutralised too")
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 SECTIONS = {
     "open_url": check_open_url,
     "open_app": check_open_app,
     "extract_archive": check_extract_archive,
+    "git_status": check_git_status,
 }
 
 
