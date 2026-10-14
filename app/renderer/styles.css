@@ -2912,6 +2912,129 @@ mark {
 }
 
 /* ==========================================================================
+   Overlay settings (js/overlay-settings.js)
+   ========================================================================== */
+
+/* A row of buttons closing a card (Open the chat panel, Reset every panel). */
+.card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s2);
+  padding: 10px 14px;
+  border-top: var(--hair) solid var(--line);
+}
+
+.inline-controls.below {
+  align-self: flex-end;
+}
+
+.panel-row .btn {
+  flex: none;
+}
+
+/* The alerts anchor: a screen, drawn as a hairline frame at 16:10, with a
+   spot for each of the seven places. The chosen spot is filled and ringed,
+   and named beside the picture. */
+.anchor-picker {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  flex: none;
+}
+
+.anchor-name {
+  min-width: 96px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+}
+
+.anchor-screen {
+  position: relative;
+  width: 128px;
+  height: 80px;
+  background: var(--sunken);
+  border: var(--hair) solid var(--line-strong);
+}
+
+.anchor-spot {
+  position: absolute;
+  width: var(--hit);
+  height: 18px;
+  display: grid;
+  place-items: center;
+}
+
+.anchor-spot::before {
+  content: "";
+  width: 18px;
+  height: 8px;
+  box-shadow: inset 0 0 0 1px var(--text-3);
+  transition: background-color var(--t-fast), box-shadow var(--t-fast);
+}
+
+.anchor-spot:hover::before {
+  box-shadow: inset 0 0 0 1px var(--text);
+}
+
+.anchor-spot.selected::before {
+  background: var(--violet-hi);
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px var(--violet);
+}
+
+.anchor-spot:focus-visible {
+  outline-offset: -2px;
+}
+
+.anchor-spot[data-anchor^="top"] {
+  top: 3px;
+}
+.anchor-spot[data-anchor^="bottom"] {
+  bottom: 3px;
+}
+.anchor-spot[data-anchor="center"] {
+  top: calc(50% - 9px);
+}
+.anchor-spot[data-anchor$="left"] {
+  left: 4px;
+}
+.anchor-spot[data-anchor$="right"] {
+  right: 4px;
+}
+.anchor-spot[data-anchor$="center"] {
+  left: calc(50% - var(--hit) / 2);
+}
+
+/* Accent presets: a choice with a colour chip. */
+.swatch {
+  width: 12px;
+  height: 12px;
+  background: var(--swatch);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 20%, transparent);
+}
+
+.color-well {
+  width: var(--control-h);
+  height: var(--control-h);
+  padding: 2px;
+  background: var(--sunken);
+  border: var(--hair) solid var(--line-strong);
+  cursor: pointer;
+}
+
+.color-well::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.color-well::-webkit-color-swatch {
+  border: none;
+}
+
+.field-input.hex {
+  width: 110px;
+}
+
+/* ==========================================================================
    Logs
    ========================================================================== */
 

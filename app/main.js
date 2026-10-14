@@ -549,6 +549,10 @@ function updateSettings(patch) {
     log(`[panels] couldn't save overlay-layout.json: ${err.message}`);
   }
   if (panels) panels.applySettings(previous, settings);
+  // A new alerts anchor applies at once if the overlay is up.
+  if (alive(overlayWindow) && overlayWindow.isVisible() && JSON.stringify(previous.alerts) !== JSON.stringify(settings.alerts)) {
+    positionOverlay();
+  }
   const appearance = appearancePayload();
   for (const win of [devWindow, overlayWindow, ...panelWindows()]) {
     if (!alive(win)) continue;
@@ -993,7 +997,22 @@ ipcMain.on("skill-response", (event, { id, approved, resolutions }) => {
 
 // --- panels and overlay settings ----------------------------------------------
 
-ipcMain.handle("get-overlay-settings", () => ({ settings, presets: overlaySettings.PRESETS }));
+// Which screen edge the Dock is on, for the hot edge's conflict note. Read
+// from the Dock's own preferences; "bottom" is its default (no key set).
+function dockEdge() {
+  try {
+    return execSync("defaults read com.apple.dock orientation", { stdio: ["ignore", "pipe", "ignore"] }).toString().trim() || "bottom";
+  } catch (_err) {
+    return "bottom";
+  }
+}
+
+ipcMain.handle("get-overlay-settings", () => ({
+  settings,
+  presets: overlaySettings.PRESETS,
+  dockEdge: dockEdge(),
+  qtOverlay: OVERLAY_MODE === "qt",
+}));
 ipcMain.handle("set-overlay-settings", (_event, patch) => updateSettings(patch));
 ipcMain.handle("check-accent", (_event, hex) => overlaySettings.deriveAccent(hex));
 ipcMain.handle("reset-panel-layout", (_event, id) => {
