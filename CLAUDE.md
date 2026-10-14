@@ -78,6 +78,7 @@ pkill -if "python -m agent"; pkill -f "Electron.app"
 ./.venv/bin/python scripts/ws_auth_check.py             # socket authentication, real server on a spare port
 ./.venv/bin/python scripts/skills_check_system.py       # system tools + skills; volume/media/banners/speech stubbed
 ./.venv/bin/python scripts/security_policy_check.py     # path zones, taint, voice approval, fail-closed, log redaction
+./.venv/bin/python scripts/security_tools_check.py      # safe tier launches nothing: openers, archives, repos, fetch deadline
 ./.venv/bin/python scripts/dispatch_loop_check.py       # tools off the loop, run_command limits, confirmation timeout
 ./.venv/bin/python scripts/voice_server_check.py        # real server + real LLM; speaks aloud, needs API key
 ./.venv/bin/python scripts/skills_e2e_check.py --scripted   # agent_loop + dispatch in a sandbox home, written plans, no model
@@ -300,10 +301,17 @@ signatures. A timer can only notify and speak; don't give one the ability to run
 chosen at set time — that would be a deferred action nobody is present to confirm. Timers
 are in-memory only, and count wall-clock time (macOS's monotonic clock stops during sleep).
 
-**`open_file` is an allowlist, not `open <path>`.** Opening a `.command`, a unix executable,
-a `.jar` or an app bundle *runs* it, which would be `run_command` without the prompt. The
-tool opens only content types (by UTI) whose handler isn't a terminal or launcher, and names
-that handler explicitly. Widen it by type, with a check in `skills_check_system.py`.
+**Nothing in the safe tier can launch code.** `open <x>` runs whatever `x` is, so no safe
+tool hands `open` anything it chose freely. `open_file` is an allowlist: content types (by
+UTI) that don't act when opened, no execute bit or binary header, whose handler isn't a
+terminal or launcher, named explicitly. `open_with` uses the same classifier
+(`open_file.classify`, one place to get right) plus allowances for source and undeclared
+text files into a named non-runner app. `open_url` takes only `http`/`https` URLs with a host
+(never a path, `file:` or a custom scheme). `open_app` takes a name, resolved to a bundle in
+the Applications folders, and passes that bundle and nothing else. `extract_archive` never
+creates an executable file and copies the archive's quarantine mark onto everything it
+writes. `git_status` neutralises every program a repository's config can name. Widen any of
+them by type, with a check in `scripts/security_tools_check.py`.
 
 TTS, skill learning and the voice session are additive: a failure in any of them is logged
 and skipped (voice goes to `off`), never blocking or delaying the text reply.

@@ -7,10 +7,35 @@ repository chooses:
   no index refresh   GIT_OPTIONAL_LOCKS=0 stops `git status` from rewriting
                      .git/index, which it otherwise does opportunistically.
   no repo-run code   a repository's own .git/config can name programs for git
-                     to run (core.fsmonitor on status, gpg.program when
-                     log.showSignature is on). Those are switched off on the
-                     command line, so pointing this at a folder someone else
-                     made stays a read.
+                     to run, and a folder someone else made -- an unzipped
+                     download -- is exactly where that config comes from
+                     (review H3: a `filter.x.clean` with `* filter=x` in
+                     .gitattributes ran on `git status`). What can fire in
+                     the argv below, and what is done about it:
+                       filter.<n>.clean/process  status re-hashes stat-dirty
+                           files through them. The config is listed first
+                           (read-only, includes followed) and every filter
+                           found is overridden to nothing, required=false.
+                       submodules  status recurses and runs each one's own
+                           config: --ignore-submodules=all.
+                       core.fsmonitor  run by status: =false.
+                       gpg.program  run by log when log.showSignature:
+                           --no-show-signature.
+                       hooks (post-index-change)  only on an index write,
+                           which GIT_OPTIONAL_LOCKS=0 prevents; hooksPath is
+                           pointed at /dev/null as well.
+                       pagers  --no-pager, GIT_PAGER=cat, PAGER=cat.
+                       askpass, credential helpers, ssh, upload/receive-pack
+                           only on network operations, and none is made;
+                           GIT_TERMINAL_PROMPT=0 and the askpass variables
+                           cleared regardless.
+                       diff.external, textconv  only when a diff is shown;
+                           status and log --oneline never show one.
+                       alias.*  git never lets an alias replace a built-in
+                           command, and only built-ins are run.
+                       core.editor  only for commands that edit; none here.
+                     scripts/security_tools_check.py runs all of these
+                     against a repository that sets every one.
   bounded            a timeout per call, capped file list and commit count.
 
 It is also strictly local: it never contacts the remote (a fetch would
@@ -36,23 +61,60 @@ UPSTREAM_NOTE = (
     "The remote was not contacted, so this cannot tell whether there is anything new to pull."
 )
 
-_GIT = ["git", "--no-pager", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false"]
+_GIT = [
+    "git", "--no-pager",
+    "-c", "core.fsmonitor=false",
+    "-c", "core.untrackedCache=false",
+    "-c", "core.hooksPath=/dev/null",
+    "-c", "diff.ignoreSubmodules=all",
+]
+_FILTER_KEYS = ("clean", "smudge", "process")
 
 
-def _git(path: Path, *args: str) -> subprocess.CompletedProcess:
+def _env() -> dict:
     env = {
         **os.environ,
         "GIT_OPTIONAL_LOCKS": "0",
         "GIT_TERMINAL_PROMPT": "0",
+        "GIT_PAGER": "cat",
+        "PAGER": "cat",
         "LC_ALL": "C",
     }
+    for name in ("GIT_ASKPASS", "SSH_ASKPASS", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_EXTERNAL_DIFF"):
+        env.pop(name, None)
+    return env
+
+
+def _neutralising_args(path: Path) -> list:
+    """`-c filter.<name>.clean=` (and smudge, process, required=false) for
+    every filter the repository's config -- local, global, system and
+    anything they include -- defines. An empty command means no filter, so
+    files are compared as they are on disk. Listing config runs nothing."""
+    listed = subprocess.run(
+        [*_GIT, "-C", str(path), "config", "--list", "--name-only", "--includes", "-z"],
+        capture_output=True, text=True, errors="replace", timeout=TIMEOUT, env=_env(), stdin=subprocess.DEVNULL,
+    )
+    names = set()
+    for key in listed.stdout.split("\0"):
+        key = key.strip()
+        # filter.<name>.<var>; the name may itself contain dots.
+        if key.lower().startswith("filter.") and key.count(".") >= 2:
+            names.add(key[len("filter."): key.rindex(".")])
+    args = []
+    for name in sorted(names):
+        args += [arg for var in _FILTER_KEYS for arg in ("-c", f"filter.{name}.{var}=")]
+        args += ["-c", f"filter.{name}.required=false"]
+    return args
+
+
+def _git(path: Path, *args: str, overrides: list = ()) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [*_GIT, "-C", str(path), *args],
+        [*_GIT, *overrides, "-C", str(path), *args],
         capture_output=True,
         text=True,
         errors="replace",
         timeout=TIMEOUT,
-        env=env,
+        env=_env(),
         stdin=subprocess.DEVNULL,
     )
 
@@ -123,7 +185,11 @@ def git_status(path: str, log_count: int = DEFAULT_COMMITS) -> dict:
         # --untracked-files=all: list the files inside a new folder rather
         # than just the folder, so the counts are files and a caller can see
         # exactly what a commit would pick up.
-        status = _git(target, "status", "--porcelain=v1", "-b", "--untracked-files=all")
+        overrides = _neutralising_args(target)
+        status = _git(
+            target, "status", "--porcelain=v1", "-b", "--untracked-files=all", "--ignore-submodules=all",
+            overrides=overrides,
+        )
         if status.returncode != 0:
             err = status.stderr.strip()
             if "not a git repository" in err.lower():
@@ -136,14 +202,17 @@ def git_status(path: str, log_count: int = DEFAULT_COMMITS) -> dict:
         if log_count:
             # --no-show-signature: log.showSignature in the repo's config
             # would otherwise run whatever gpg.program names.
-            log = _git(target, "log", "-n", str(log_count), "--oneline", "--no-decorate", "--no-show-signature")
+            log = _git(
+                target, "log", "-n", str(log_count), "--oneline", "--no-decorate", "--no-show-signature",
+                overrides=overrides,
+            )
             if log.returncode == 0:  # fails on a repo with no commits: that's just "none"
                 for line in log.stdout.splitlines():
                     sha, _, subject = line.partition(" ")
                     commits.append({"hash": sha, "subject": subject[:200]})
 
-        top = _git(target, "rev-parse", "--show-toplevel")
-        remote = _git(target, "remote", "get-url", "origin")
+        top = _git(target, "rev-parse", "--show-toplevel", overrides=overrides)
+        remote = _git(target, "remote", "get-url", "origin", overrides=overrides)
     except FileNotFoundError:
         return {"ok": False, "error": "git is not installed"}
     except subprocess.TimeoutExpired:

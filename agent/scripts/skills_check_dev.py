@@ -193,6 +193,17 @@ TOOLS["get_clipboard"]["fn"] = _fake_get_clipboard
 TOOLS["set_clipboard"]["fn"] = _fake_set_clipboard
 TOOLS["show_notification"]["fn"] = _fake_notification
 open_with_mod._launch = _fake_launch
+file_launches = []
+
+
+def _fake_file_launch(argv, timeout=3.0):
+    file_launches.append(list(argv))
+    return 0, "", ""
+
+
+from agent.tools import open_file as open_file_mod  # noqa: E402
+
+open_file_mod._launch = _fake_file_launch
 dispatcher.speak = _silent_speak
 
 
@@ -817,6 +828,7 @@ async def check_scaffolds():
     # Web page
     hostile = 'Tom & "Jerry" <script>alert(1)</script>'
     opened_urls.clear()
+    file_launches.clear()
     result, asked = await call("new_web_page", {"name": "site", "title": hostile, "base_dir": str(base), "open_in_browser": True})
     root = base / "site"
     check(result["ok"] and asked == [] and tree(root) == ["index.html", "script.js", "styles.css"], f"web page: {tree(root)}")
@@ -824,7 +836,11 @@ async def check_scaffolds():
     check(parsed.doctype and not parsed.errors and not parsed.stack, f"index.html is well-formed {parsed.errors} {parsed.stack}")
     check(parsed.text.get("title") == hostile and parsed.text.get("h1") == hostile, "the title is escaped, and reads back exactly")
     check(parsed.tags.count("script") == 1 and "alert(1)</script>" not in (root / "index.html").read_text(), "a title cannot inject a script tag")
-    check(opened_urls == [(root / "index.html").as_uri()], f"open_in_browser opens the file URL: {opened_urls}")
+    # Through open_file, not open_url: open_url takes web addresses only (review C3).
+    index = str((root / "index.html").resolve())
+    check(opened_urls == [] and step_tools(result)[-1] == "open_file", f"open_in_browser goes through open_file: {step_tools(result)}")
+    check(len(file_launches) == 1 and file_launches[0][:2] == ["open", "-a"] and file_launches[0][3:] == [index]
+          and file_launches[0][2].endswith(".app"), f"and opens index.html in a named browser: {file_launches}")
     if node:
         js = (root / "script.js").read_text()
         probe = "const document={getElementById:()=>({set textContent(v){console.log(v)}})};\n" + js

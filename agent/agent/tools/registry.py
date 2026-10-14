@@ -78,7 +78,13 @@ TOOLS = {
     "open_app": {
         "fn": open_app,
         "safety": "safe",
-        "description": "Open a macOS application by its name.",
+        "description": (
+            "Launch an installed macOS application by its name, for example Safari or "
+            "Visual Studio Code. It takes a name only, never a path, and only launches "
+            "applications installed in the Applications folders; anything else is refused. "
+            "It cannot hand the application a file: use open_file to open a document and "
+            "open_with to open one in a particular application."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -159,11 +165,17 @@ TOOLS = {
         "fn": open_url,
         "safety": "safe",
         "outbound": "url",
-        "description": "Open a URL in the default web browser.",
+        "description": (
+            "Open a web page in the default web browser. Web pages only: the address must "
+            "be a full http or https URL. It refuses file paths, file: URLs and every other "
+            "kind of link (app links such as shortcuts:, ssh:, smb:, mailto:, tel:), and "
+            "addresses with a username or password in them. To open a file or folder on "
+            "this Mac use open_file; to launch an application use open_app."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "url": {"type": "string", "description": "The URL to open, e.g. 'https://u.gg'."}
+                "url": {"type": "string", "description": "The full web address, e.g. 'https://u.gg'."}
             },
             "required": ["url"],
         },
@@ -603,8 +615,9 @@ TOOLS = {
         "description": (
             "Open a document, image, audio or video file, or a folder, in the app the Mac "
             "normally uses for it, as if the user had double-clicked it. It refuses "
-            "applications, scripts, programs, installers and anything it cannot identify, "
-            "because opening those would run them; use open_app for an application and "
+            "applications, scripts, programs, installers, documents that run code when opened "
+            "(macro-enabled Office files, playgrounds, Shortcuts workflows, web archives) and "
+            "anything it cannot identify, because opening those would run them; use open_app for an application and "
             "reveal_in_finder to just show a file. To read a text file's contents "
             "yourself use read_file instead; this only puts it on screen."
         ),
@@ -770,7 +783,10 @@ TOOLS = {
             "Unpack a zip or tar archive, including tar.gz, into a brand new folder. The "
             "archive itself is kept. It refuses if the destination already exists, so it never "
             "mixes files into an existing folder or replaces anything, and it refuses an "
-            "archive whose entries try to write outside that folder. Use this when the user "
+            "archive whose entries try to write outside that folder. Everything comes out as "
+            "ordinary files: nothing extracted is runnable, even if the archive marked it so, "
+            "and the contents of a downloaded archive stay marked as downloaded. Say so if the "
+            "user expects to run a script from it. Use this when the user "
             "names the archive to unzip or extract. Other formats such as rar, 7z and dmg are "
             "not supported."
         ),
