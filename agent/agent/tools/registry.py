@@ -67,6 +67,13 @@ from agent.tools.open_with import open_with
 # Each such entry says why. Don't add the flag for convenience: a "main" tool
 # blocks confirmations, control messages and the voice session for as long as
 # it runs, so it must be quick. scripts/dispatch_loop_check.py checks the set.
+#
+# Where a tool may read and write: every argument that is a filesystem path
+# is declared under "paths" with what the tool does to it (read, inspect,
+# archive, copy_from, write, remove, move_into -- see core/path_policy.py),
+# and dispatch() judges it before the tool runs. A tool whose schema has a
+# path-like argument without a declaration is refused outright, so a new
+# tool can't forget; scripts/security_policy_check.py checks the whole table.
 TOOLS = {
     "open_app": {
         "fn": open_app,
@@ -83,6 +90,7 @@ TOOLS = {
     "create_folder": {
         "fn": create_folder,
         "safety": "safe",
+        "paths": {"path": "write"},
         "description": "Create a folder (and any missing parent folders) at the given path.",
         "input_schema": {
             "type": "object",
@@ -95,6 +103,7 @@ TOOLS = {
     "list_files": {
         "fn": list_files,
         "safety": "safe",
+        "paths": {"path": "inspect"},
         "description": "List the names of files and folders inside a given directory.",
         "input_schema": {
             "type": "object",
@@ -169,6 +178,7 @@ TOOLS = {
     "take_screenshot": {
         "fn": take_screenshot,
         "safety": "safe",
+        "paths": {"save_path": "write"},
         "description": "Take a screenshot of the whole screen and save it as a PNG file.",
         "input_schema": {
             "type": "object",
@@ -184,6 +194,7 @@ TOOLS = {
     "read_file": {
         "fn": read_file,
         "safety": "safe",
+        "paths": {"path": "read"},
         "description": "Read the text contents of a file (capped at 20,000 characters).",
         "input_schema": {
             "type": "object",
@@ -194,6 +205,7 @@ TOOLS = {
     "append_text": {
         "fn": append_text,
         "safety": "safe",
+        "paths": {"path": "write"},
         "description": "Append a line of text to a file, creating the file (and any missing parent folders) if it doesn't exist. Never overwrites existing content.",
         "input_schema": {
             "type": "object",
@@ -207,6 +219,7 @@ TOOLS = {
     "trash_file": {
         "fn": trash_file,
         "safety": "safe",
+        "paths": {"path": "remove"},
         "description": "Move a file or folder to the system Trash. Recoverable -- not a permanent delete.",
         "input_schema": {
             "type": "object",
@@ -217,6 +230,7 @@ TOOLS = {
     "move_file": {
         "fn": move_file,
         "safety": "safe",
+        "paths": {"source": "remove", "destination": "move_into"},
         "description": "Move or rename a file or folder. Refuses if the destination already exists, rather than overwriting it.",
         "input_schema": {
             "type": "object",
@@ -230,6 +244,7 @@ TOOLS = {
     "copy_file": {
         "fn": copy_file,
         "safety": "safe",
+        "paths": {"source": "copy_from", "destination": "write"},
         "description": "Copy a file or folder. Refuses if the destination already exists, rather than overwriting it.",
         "input_schema": {
             "type": "object",
@@ -571,6 +586,7 @@ TOOLS = {
     "open_file": {
         "fn": open_file,
         "safety": "safe",
+        "paths": {"path": "inspect"},
         "description": (
             "Open a document, image, audio or video file, or a folder, in the app the Mac "
             "normally uses for it, as if the user had double-clicked it. It refuses "
@@ -590,6 +606,7 @@ TOOLS = {
     "reveal_in_finder": {
         "fn": reveal_in_finder,
         "safety": "safe",
+        "paths": {"path": "inspect"},
         "description": (
             "Show a file or folder in a Finder window with it selected, without opening "
             "it. Use this for 'show me where that is' or when a file should be visible but "
@@ -618,6 +635,7 @@ TOOLS = {
     "find_files": {
         "fn": find_files,
         "safety": "safe",
+        "paths": {"path": "inspect"},
         "description": (
             "Search inside one folder for files by name, type, size or age, and get back their "
             "paths, sizes and modified times. Use this when the user asks where a file is in a "
@@ -662,6 +680,7 @@ TOOLS = {
     "file_info": {
         "fn": file_info,
         "safety": "safe",
+        "paths": {"path": "inspect"},
         "description": (
             "Get the facts about one file or folder: whether it exists, whether it is a file or "
             "a folder, its size, and when it was created and last modified. Use this to check a "
@@ -680,6 +699,7 @@ TOOLS = {
     "folder_size": {
         "fn": folder_size,
         "safety": "safe",
+        "paths": {"path": "inspect"},
         "description": (
             "Measure how much space a folder takes in total and list the largest items directly "
             "inside it, where an item is a file or a whole subfolder. Use this for questions "
@@ -703,6 +723,7 @@ TOOLS = {
     "zip_folder": {
         "fn": zip_folder,
         "safety": "safe",
+        "paths": {"source": "archive", "destination": {"mode": "write", "default_beside": "source"}},
         "description": (
             "Compress a folder, or a single file, into a new zip file. The original is left "
             "exactly as it was. It refuses if a file already exists at the destination rather "
@@ -730,6 +751,7 @@ TOOLS = {
     "extract_archive": {
         "fn": extract_archive,
         "safety": "safe",
+        "paths": {"archive": "archive", "destination": {"mode": "write", "default_beside": "archive"}},
         "description": (
             "Unpack a zip or tar archive, including tar.gz, into a brand new folder. The "
             "archive itself is kept. It refuses if the destination already exists, so it never "
@@ -753,6 +775,7 @@ TOOLS = {
     "find_duplicates": {
         "fn": find_duplicates,
         "safety": "safe",
+        "paths": {"path": "inspect"},
         "description": (
             "Find files inside a folder that are exact copies of each other, compared by their "
             "content rather than their names, and report each set with how much space the "
@@ -780,6 +803,7 @@ TOOLS = {
     "write_new_file": {
         "fn": write_new_file,
         "safety": "safe",
+        "paths": {"path": "write"},
         "description": (
             "Create a new text file with the given content, making any missing parent folders. "
             "It only ever creates: if anything already exists at that path it refuses and "
@@ -801,6 +825,7 @@ TOOLS = {
     "search_file_contents": {
         "fn": search_file_contents,
         "safety": "safe",
+        "paths": {"path": "read"},
         "description": (
             "Find which text files in a folder contain a word or phrase, and show the matching "
             "lines. Use this when the user remembers what a file says but not what it is "
@@ -826,6 +851,7 @@ TOOLS = {
     "spotlight_search": {
         "fn": spotlight_search,
         "safety": "safe",
+        "paths": {"folder": "inspect"},
         "description": (
             "Find files and folders by name anywhere on the Mac using the Spotlight index, most "
             "recently modified first. Use this when the user asks where something is and you do "
@@ -878,6 +904,7 @@ TOOLS = {
     "git_status": {
         "fn": git_status,
         "safety": "safe",
+        "paths": {"path": "read"},
         "description": (
             "Read the state of a git repository without changing it: current branch, "
             "which files are staged, modified or untracked, the most recent commits, the "
@@ -903,6 +930,7 @@ TOOLS = {
     "open_with": {
         "fn": open_with,
         "safety": "safe",
+        "paths": {"path": "inspect"},
         "description": (
             "Open an existing file or folder in a specific application, for example a "
             "project folder in Visual Studio Code or an image in Preview. The item must "

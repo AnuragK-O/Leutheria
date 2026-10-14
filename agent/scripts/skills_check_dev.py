@@ -73,7 +73,11 @@ trust.TRUST_FILE = TMP / "trusted_commands.json"
 trust._permanent_trust.clear()
 trust._session_trust.clear()
 
-from agent.core import dispatcher  # noqa: E402
+from agent.core import dispatcher, path_policy  # noqa: E402
+
+# The check's scratch folders sit beside the temp home, under /private/var:
+# a user-content folder for this run, as far as the path policy goes.
+path_policy.EXTRA_FREE_ROOTS.append(str(TMP))
 from agent.skills import git_snapshot as git_snapshot_skill  # noqa: E402
 from agent.skills.code_scratchpad import LANGUAGES  # noqa: E402
 from agent.skills.registry import BUILTIN_SKILLS, SKILLS  # noqa: E402

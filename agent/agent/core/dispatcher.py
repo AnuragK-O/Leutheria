@@ -1,11 +1,12 @@
 import asyncio
 import inspect
 import json
+import os
 import threading
 import traceback
 import uuid
 
-from agent.core import preferences, session, trust, ui_access
+from agent.core import path_policy, preferences, session, trust, ui_access
 from agent.core.logging_util import log_event
 from agent.core.tts import speak
 from agent.skills.registry import SKILLS
@@ -53,15 +54,30 @@ async def dispatch(
             return {"ok": False, "error": error}
         return await _run_tool(tool_name, tool, args)
 
+    # Where it reads and writes (core/path_policy.py). Decided here, from the
+    # registry's declared "paths", so no tool can forget it and a skill's
+    # steps are held to it exactly like a direct call. DENY is final -- no
+    # trust entry or preference reaches past it. ASK means this call needs a
+    # yes even though the tool is "safe".
+    reasons = []
+    if tool is not None:
+        verdict = path_policy.check_call(tool_name, tool, args)
+        if verdict.error:
+            arg, path, why = verdict.denied
+            log_event("path_denied", tool=tool_name, arg=arg, path=path, why=why)
+            return {"ok": False, "error": verdict.error, "denied": True}
+        reasons += [f"{path}: {why}" for _, path, why in verdict.asks]
+
     # Built-in policy: destructive tools ask, everything else doesn't. Skills
     # default to not asking because each of their *steps* dispatches back
     # through here and confirms on its own. Either default can be overridden
     # per capability from the Library ("always ask before using this one").
+    # A policy reason is not a default: a preference can add asking to a
+    # call, never take away an ask the policy raised.
     default_confirm = tool is not None and tool["safety"] == "destructive"
-    if preferences.requires_confirmation(tool_name, default_confirm) and not trust.is_trusted(
-        tool_name, args
-    ):
-        approved, remember = await _confirm(tool_name, args, websocket, pending, intro_text)
+    needs = preferences.requires_confirmation(tool_name, default_confirm) or bool(reasons)
+    if needs and not trust.is_trusted(tool_name, args):
+        approved, remember = await _confirm(tool_name, args, websocket, pending, intro_text, reasons)
 
         if remember == "session":
             trust.trust_for_session(tool_name, args)
@@ -239,7 +255,17 @@ def _fallback_prompt(tool_name: str, args: dict) -> str:
     return f"I want to use {tool_name.replace('_', ' ')}. Should I go ahead?"
 
 
-async def _confirm(tool_name: str, args: dict, websocket, pending: dict, intro_text: str = "") -> tuple:
+def _spoken_reason(reason: str) -> str:
+    """'/Users/me/Other/x.txt: it is outside your usual folders' read aloud
+    as 'x.txt in Other is outside your usual folders'."""
+    path, _, why = reason.partition(": ")
+    where = f"{os.path.basename(path)} in {os.path.basename(os.path.dirname(path)) or 'the top folder'}"
+    return f"{where} {why[3:] if why.startswith('it ') else why}"
+
+
+async def _confirm(
+    tool_name: str, args: dict, websocket, pending: dict, intro_text: str = "", reasons: list = None
+) -> tuple:
     if websocket is None or pending is None:
         # No interactive channel to confirm through (e.g. dispatch called
         # directly outside a live connection) -- fail closed, not open.
@@ -256,16 +282,21 @@ async def _confirm(tool_name: str, args: dict, websocket, pending: dict, intro_t
                 "id": confirmation_id,
                 "tool": tool_name,
                 "args": args,
+                # Why a normally silent tool is asking, written by the agent,
+                # never the model. Absent when the tool always asks.
+                **({"reason": "; ".join(reasons)} if reasons else {}),
             }
         )
     )
-    log_event("confirmation_requested", id=confirmation_id, tool=tool_name, args=args)
+    log_event("confirmation_requested", id=confirmation_id, tool=tool_name, args=args, reasons=reasons or None)
 
     # Speak the prompt so this can be answered by voice alone. Prefer the
     # model's own accompanying explanation for this turn (SYSTEM_PROMPT.md
     # already asks it to briefly explain a destructive action before taking
     # it) over a generic fallback -- it's more natural and specific.
     spoken = intro_text.strip() or _fallback_prompt(tool_name, args)
+    if reasons:
+        spoken += " I'm asking because " + "; and ".join(_spoken_reason(r) for r in reasons) + "."
     await speak(websocket, spoken)
 
     try:

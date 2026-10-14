@@ -177,24 +177,18 @@ def unique_name(name: str, taken: set) -> str:
 
 # --- guard rails ------------------------------------------------------------
 
-_SYSTEM_ROOTS = ("/System", "/Library", "/Applications", "/usr", "/bin", "/sbin", "/etc", "/private/etc", "/opt", "/dev")
-
-
 def refuse_to_reorganise(folder: Path):
     """Why a bulk skill won't rearrange this folder, or None if it may.
     These are places where moving files by type breaks things rather than
-    tidies them."""
-    text = str(folder)
-    if text == "/" or folder == home() or folder == Path.home():
-        return "that is the top of the home folder or disk, not a folder of loose files"
-    library = str(Path.home() / "Library")
-    if text == library or text.startswith(library + os.sep):
-        return "that is inside the Library folder, which apps manage themselves"
-    if any(text == root or text.startswith(root + os.sep) for root in _SYSTEM_ROOTS):
-        return "that is a system folder"
-    if any(part.lower().endswith(".app") for part in folder.parts):
-        return "that is inside an application"
-    return None
+    tidies them.
+
+    Decided by core/path_policy.py on the resolved path and file identity.
+    The old string-prefix list here was walked around by "/users/<me>",
+    "~/library/Preferences", a folder inside a .photoslibrary, /Volumes/X
+    and any subfolder of a repository (review M1)."""
+    from agent.core import path_policy
+
+    return path_policy.bulk_refusal(folder)
 
 
 async def check_reorganisable(log, folder: Path):
