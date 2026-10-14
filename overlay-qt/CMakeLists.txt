@@ -46,6 +46,7 @@ qt_add_qml_module(overlay_core
         src/AssetManifest.cpp src/AssetManifest.h
         src/OverlayModel.cpp src/OverlayModel.h
         src/Fonts.cpp src/Fonts.h
+        src/CutGeometry.cpp src/CutGeometry.h
 )
 target_include_directories(overlay_core PUBLIC src)
 target_link_libraries(overlay_core PUBLIC Qt6::Core Qt6::Qml Qt6::WebSockets)
@@ -85,6 +86,8 @@ endif()
 qt_add_qml_module(LeutheriaOverlay
     URI Leutheria.Overlay
     VERSION 1.0
+    SOURCES
+        src/CutBox.cpp src/CutBox.h
     QML_FILES
         qml/Main.qml
         qml/Island.qml
