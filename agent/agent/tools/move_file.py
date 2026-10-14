@@ -1,3 +1,4 @@
+import os
 import shutil
 from pathlib import Path
 
@@ -8,7 +9,7 @@ def move_file(source: str, destination: str) -> dict:
 
     if not src.exists():
         return {"ok": False, "error": f"{src} does not exist"}
-    if dst.exists():
+    if os.path.lexists(dst):  # a dangling symlink counts as occupied
         # Refuse rather than silently overwrite -- this is what keeps
         # move_file "safe" instead of needing a confirmation prompt.
         return {"ok": False, "error": f"{dst} already exists -- refusing to overwrite"}

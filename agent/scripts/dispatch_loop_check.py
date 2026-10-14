@@ -507,7 +507,7 @@ def fake_run(argv, **kwargs):
 
 OLD_TOOLS = {
     "get_battery_status": {},
-    "open_app": {"name": "Nothing Real"},
+    "open_app": {"name": "Calculator"},  # must be installed: open_app resolves the name itself
     "open_url": {"url": "https://example.invalid/"},
     "show_notification": {"title": "t", "message": "m"},
     "get_clipboard": {},

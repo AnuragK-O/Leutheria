@@ -1,6 +1,7 @@
 import json
 
-from agent.core.logging_util import LOG_FILE, log_event
+from agent.core import logging_util
+from agent.core.logging_util import log_event
 from agent.skills import validate
 from agent.skills.registry import SKILLS, available_name, validation_kwargs
 from agent.skills.template_skill import TOKEN_RE, escape_literal, placeholders
@@ -15,22 +16,17 @@ def _signature(trace: list) -> tuple:
 
 def _load_historical_traces() -> list:
     """Every past successful multi-step trace (trace length >= 2), oldest first."""
-    if not LOG_FILE.exists():
-        return []
-
+    # Across rotated files. Logged args have content scrubbed
+    # (logging_util.CONTENT_KEYS): a past example may show '[N chars not
+    # logged]' where the text was, which reads as "this varied".
     traces = []
-    with LOG_FILE.open() as f:
-        for line in f:
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if record.get("type") != "message_out":
-                continue
-            response = record.get("response", {})
-            trace = response.get("trace")
-            if response.get("type") == "response" and trace and len(trace) >= 2:
-                traces.append(trace)
+    for record in logging_util.iter_records():
+        if record.get("type") != "message_out":
+            continue
+        response = record.get("response", {})
+        trace = response.get("trace") if isinstance(response, dict) else None
+        if response.get("type") == "response" and isinstance(trace, list) and len(trace) >= 2:
+            traces.append(trace)
     return traces
 
 
@@ -105,19 +101,11 @@ def has_declined_signature(trace: list) -> bool:
     """True if a proposal for this exact tool sequence was declined before --
     keyed by signature (not name, which can vary per generation attempt) so
     it holds regardless of what the model happened to call it each time."""
-    if not LOG_FILE.exists():
-        return False
-
     sig = list(_signature(trace))
-    with LOG_FILE.open() as f:
-        for line in f:
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if record.get("type") == "skill_declined" and record.get("source_signature") == sig:
-                return True
-    return False
+    return any(
+        record.get("type") == "skill_declined" and record.get("source_signature") == sig
+        for record in logging_util.iter_records()
+    )
 
 
 def _extract_json(text: str):

@@ -12,6 +12,7 @@ const { spawn, execSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const WebSocket = require("ws");
+const { TOKEN_ENV, createAuth, childEnv, connectOptions, explainRejection } = require("./agent-auth");
 
 const AGENT_DIR = path.join(__dirname, "..", "agent");
 const AGENT_PYTHON = path.join(AGENT_DIR, ".venv", "bin", "python");
@@ -20,6 +21,13 @@ const AGENT_PYTHON = path.join(AGENT_DIR, ".venv", "bin", "python");
 // and, just as importantly, skips pkill-ing -- the real Python sidecar.
 const AGENT_URL = process.env.LEUTHERIA_AGENT_URL || "ws://127.0.0.1:8765";
 const NO_SPAWN = process.env.LEUTHERIA_NO_SPAWN === "1";
+// The agent's socket is authenticated (agent-auth.js, core/ws_auth.py). When
+// this app spawns the agent it makes a fresh token and hands it over in the
+// child's environment; with LEUTHERIA_NO_SPAWN=1 it uses LEUTHERIA_TOKEN from
+// its own environment (or a standalone agent's token file). Taken out of
+// process.env here so nothing but the two children that need it inherits it.
+const agentAuth = createAuth({ noSpawn: NO_SPAWN, agentUrl: AGENT_URL });
+delete process.env[TOKEN_ENV];
 const ASSETS_DIR = path.join(__dirname, "..", "assets");
 const OVERLAY_DIR = path.join(__dirname, "renderer", "overlay");
 const OVERLAY_ASSETS_DIR = path.join(OVERLAY_DIR, "assets");
@@ -307,7 +315,12 @@ function spawnQtOverlay() {
   // shortcut and the main window's voice pill don't depend on either overlay.
   const args = ["--url", AGENT_URL, "--assets", OVERLAY_ASSETS_DIR];
   log(`[overlay] LEUTHERIA_OVERLAY=qt -- spawning ${QT_OVERLAY_BIN} ${args.join(" ")}`);
-  const child = spawn(QT_OVERLAY_BIN, args, { stdio: ["ignore", "pipe", "pipe"] });
+  // The token goes in the environment, never in args: argv is visible to
+  // every user through `ps`, and is logged on the line above.
+  const child = spawn(QT_OVERLAY_BIN, args, {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: childEnv(agentAuth.current()),
+  });
   qtOverlayProcess = child;
   child.stdout.on("data", (data) => log(`[overlay-qt] ${data.toString().trim()}`));
   // Qt's logging (qInfo included) all goes to stderr, so stderr isn't an
@@ -555,7 +568,9 @@ function startAgent() {
 }
 
 function spawnAgent() {
-  agentProcess = spawn(AGENT_PYTHON, ["-m", "agent"], { cwd: AGENT_DIR });
+  // The agent requires this token on every connection (and removes it from
+  // its own environment once read, so commands it runs don't inherit it).
+  agentProcess = spawn(AGENT_PYTHON, ["-m", "agent"], { cwd: AGENT_DIR, env: childEnv(agentAuth.current()) });
 
   agentProcess.stdout.on("data", (data) => {
     const text = data.toString().trim();
@@ -593,7 +608,7 @@ function logReceived(payload) {
 }
 
 function connectToAgent() {
-  ws = new WebSocket(AGENT_URL);
+  ws = new WebSocket(AGENT_URL, connectOptions(agentAuth.current()));
 
   ws.on("open", () => {
     log(`[bridge] connected to agent at ${AGENT_URL}`);
@@ -714,6 +729,8 @@ function connectToAgent() {
 
   ws.on("error", (err) => {
     log(`[bridge:err] ${err.message}`);
+    const why = explainRejection(err.message, agentAuth);
+    if (why) log(`[bridge:err] ${why}`);
     setStatus("error");
   });
 

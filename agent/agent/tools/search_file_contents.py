@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from agent.core import path_policy
 from agent.tools import fs_common
 
 MAX_LIMIT = 100
@@ -47,7 +48,15 @@ def search_file_contents(path: str, text: str, extension=None, limit: int = 20) 
     if root.is_file():
         candidates = [(str(root), root.name)]
     elif root.is_dir():
-        candidates = ((p, n) for p, n, st in fs_common.walk_files(root, budget) if st.st_size <= MAX_FILE_BYTES)
+        # dispatch() checked the folder; the files under it are checked one
+        # by one, so a search of ~ never quotes a line from ~/Library or a
+        # key file (core/path_policy.py).
+        allowed = path_policy.ReadFilter()
+        candidates = (
+            (p, n)
+            for p, n, st in fs_common.walk_files(root, budget)
+            if st.st_size <= MAX_FILE_BYTES and allowed.allows(p)
+        )
     else:
         return {"ok": False, "error": f"{root} does not exist"}
 

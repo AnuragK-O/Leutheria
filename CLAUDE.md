@@ -75,7 +75,10 @@ pkill -if "python -m agent"; pkill -f "Electron.app"
 ./.venv/bin/python scripts/skill_format_check.py        # generated-skill validation
 ./.venv/bin/python scripts/tts_check.py                 # TTS backends + fallbacks, fake ElevenLabs server
 ./.venv/bin/python scripts/overlay_protocol_check.py    # overlay role, real server on a spare port
+./.venv/bin/python scripts/ws_auth_check.py             # socket authentication, real server on a spare port
 ./.venv/bin/python scripts/skills_check_system.py       # system tools + skills; volume/media/banners/speech stubbed
+./.venv/bin/python scripts/security_policy_check.py     # path zones, taint, voice approval, fail-closed, log redaction
+./.venv/bin/python scripts/security_tools_check.py      # safe tier launches nothing: openers, archives, repos, fetch deadline
 ./.venv/bin/python scripts/dispatch_loop_check.py       # tools off the loop, run_command limits, confirmation timeout
 ./.venv/bin/python scripts/voice_server_check.py        # real server + real LLM; speaks aloud, needs API key
 ./.venv/bin/python scripts/skills_e2e_check.py --scripted   # agent_loop + dispatch in a sandbox home, written plans, no model
@@ -93,6 +96,9 @@ ctest --test-dir overlay-qt/build                       # all three Qt Test suit
 ctest --test-dir overlay-qt/build -R overlaymodel       # one suite
 overlay-qt/build/tests/tst_overlaymodel endLingersThenHides   # one test function
 
+# Electron-side token plumbing + the mock's enforcement (no Electron, no Python)
+cd app && node scripts/auth-check.js
+
 # UI work without Python: a scripted agent on port 8799
 cd app && node scripts/mock-agent.js
 cd app && env -u ELECTRON_RUN_AS_NODE LEUTHERIA_AGENT_URL=ws://127.0.0.1:8799 LEUTHERIA_NO_SPAWN=1 npx electron .
@@ -109,7 +115,8 @@ Testing without disturbing a running app — `npm start` pkills any running agen
 8765 may be in use — goes through env overrides: `LEUTHERIA_PORT` (agent listens elsewhere),
 `LEUTHERIA_VOICE_SOURCE=<wav>` (a WAV replaces the mic, so no permission prompt and no live
 audio), `LEUTHERIA_AGENT_URL` + `LEUTHERIA_NO_SPAWN=1` (Electron connects to an agent it
-didn't start), `LEUTHERIA_CAPTURE_DIR` (PNG of each window on every voice-state change).
+didn't start; it then needs that agent's token in `LEUTHERIA_TOKEN`, or reads a standalone
+agent's token file), `LEUTHERIA_CAPTURE_DIR` (PNG of each window on every voice-state change).
 
 `ANTHROPIC_API_KEY` (and the optional `ELEVENLABS_API_KEY`) live in `.env` at the **repo
 root**, not in `agent/` — `__main__.py` calls `load_dotenv()`, which walks up from the
@@ -159,7 +166,46 @@ control, above), and `destructive`. `run_command` is the only `"destructive"` to
 because it's the only unbounded one; the rest of the non-GUI tools are `"safe"` *by construction* —
 `trash_file` uses the recoverable Trash, `move_file`/`copy_file` refuse to overwrite,
 `append_text` can't truncate. A new tool that can destroy data must either be redesigned to
-be structurally safe or tagged `"destructive"`. Where that safety is "check, then write",
+be structurally safe or tagged `"destructive"`.
+
+**"Safe" also means *where*, and that is decided in `dispatch()`, never in the tool.** Every
+path argument is declared in the tool's registry entry (`"paths": {"source": "remove",
+"destination": "move_into"}`; modes read / inspect / archive / copy_from / write / remove /
+move_into) and judged by `core/path_policy.py` on the realpath and file identity (case- and
+symlink-proof, never string prefixes) before the tool runs. A schema argument that looks like
+a path but isn't declared makes the tool refuse — a new tool can't forget. Write-side zones:
+FREE (no prompt) in `FREE_HOME_FOLDERS` — Documents, Desktop, Downloads, Pictures, Movies,
+Music, and the skills' defaults Notes, Projects, Scratch, Snapshots; ASK (a confirmation with
+a system-written reason line) anywhere else, including /Volumes and temp folders; DENY (no
+prompt, trust or preference reaches past it) for the agent's install tree and state files
+wherever they're configured, `~/Library`, any top-level dot entry in home, system roots,
+anything inside a bundle or a `.git`, temp folders and `.Trash` as a move target, and a
+symlinked destination. Reads are denied for credentials (`~/.ssh`, `~/.gnupg`, `~/.aws`,
+`.env*`, `*.pem`, `id_*`, `.netrc`…), `~/Library`, and the agent's own `.env`/state/log.
+Roots come from the effective home, so checks point HOME at a temp dir; a check's scratch
+folder outside it goes in `path_policy.EXTRA_FREE_ROOTS`, never anywhere else.
+
+**Taint is per request and declared, too.** `"untrusted_output": True` marks a tool whose
+result is text a stranger may have written (files, clipboard, pages, repos, command output,
+on-screen text); `"outbound": "<arg>"` marks a tool that contacts or opens that URL. Once a
+request (a `session.begin_request` ContextVar opened by `agent_loop.run()`, so skills' steps
+share it) has run an untrusted tool, an outbound call asks — full URL on the card — unless
+the URL or its host is in the user's own words. Never hard-code tool names for this.
+
+**Settings fail closed.** An unreadable `preferences.json` makes every capability ask
+until it's fixed and the agent restarts; an unreadable trust file trusts nothing; neither is
+overwritten in place (kept as `.corrupt-<time>`); the inventory carries `settings_errors`.
+
+**A spoken confirmation always ends with the agent's own line** naming the real action
+(`dispatcher._system_line`: the exact command, up to 200 characters, or tool + key argument),
+after the model's sentence. A spoken "yes" is refused for a command
+`voice_confirm.needs_click()` flags (too long to have been read out, shell metacharacters,
+quoting, non-ASCII, downloaders/interpreters/deleters) — the card stays open for a click. A
+spoken "no" always counts. Timer reminders are spoken after a fixed "Timer reminder:" lead-in.
+
+**The event log never holds content.** `log_event` scrubs values under content keys
+(`logging_util.CONTENT_KEYS`) to their size and caps every other string; it rotates at 5 MB.
+Read the log only through `logging_util.iter_records()` (spans rotated files). Where that safety is "check, then write",
 the tool's name also goes in `dispatcher._FS_WRITERS`: tools run on worker threads now, and
 that set shares one lock so two of them can never interleave. `run_command` is bounded even
 so (timeout with a process-group kill, capped output — README "Where tools run"), and every
@@ -196,6 +242,23 @@ read loop by `core/control.py`, matched by `request_id`, so UI reads can't block
 blocked by a running command. The one exception is `list_input_devices` with `refresh: true`:
 it has to close and reopen the mic, so `server.py` answers it from a background task (same
 `request_id`).
+
+**The socket is authenticated, and refuses browsers.** Loopback is not a boundary: every
+local process and every web page can reach 127.0.0.1. `core/ws_auth.py` checks each
+connection in the opening handshake, before the upgrade: any request with an `Origin`
+header is refused (403 -- no value is allowed, not `null`, not `file://`; no real client
+sends one), and it must carry `Authorization: Bearer <token>` (401, constant-time compare).
+The token is per launch: Electron generates it (`app/agent-auth.js`) and passes it to the
+sidecar and the Qt overlay in their **environment** (`LEUTHERIA_TOKEN`) -- never argv, a
+file, a log line or a renderer; a standalone agent generates its own into a 0600 file under
+`~/Library/Application Support/Leutheria/`. The agent pops the variable from `os.environ`
+once read, so `run_command` children don't inherit it. `server.serve()` is the only place
+`handler` is bound and it always attaches the check -- never call `websockets.serve` with
+`handler` anywhere else, never add an unauthenticated mode or a "dev" bypass (a missing
+token means generate one, an unusable one means refuse to start), and never widen the bind
+address. The bare `{"tool": ...}` manual dispatch is off unless `LEUTHERIA_MANUAL_DISPATCH=1`
+(check scripts set it); no real client sends it. A new client of the socket needs the
+header; a new check script that starts a server sets its own random `LEUTHERIA_TOKEN`.
 
 **The system prompt applies to conversation only.** `agent/SYSTEM_PROMPT.md` is loaded once at
 import in `agent_loop.py` and passed as `system` on conversational calls. `skill_learning.py`
@@ -238,10 +301,17 @@ signatures. A timer can only notify and speak; don't give one the ability to run
 chosen at set time — that would be a deferred action nobody is present to confirm. Timers
 are in-memory only, and count wall-clock time (macOS's monotonic clock stops during sleep).
 
-**`open_file` is an allowlist, not `open <path>`.** Opening a `.command`, a unix executable,
-a `.jar` or an app bundle *runs* it, which would be `run_command` without the prompt. The
-tool opens only content types (by UTI) whose handler isn't a terminal or launcher, and names
-that handler explicitly. Widen it by type, with a check in `skills_check_system.py`.
+**Nothing in the safe tier can launch code.** `open <x>` runs whatever `x` is, so no safe
+tool hands `open` anything it chose freely. `open_file` is an allowlist: content types (by
+UTI) that don't act when opened, no execute bit or binary header, whose handler isn't a
+terminal or launcher, named explicitly. `open_with` uses the same classifier
+(`open_file.classify`, one place to get right) plus allowances for source and undeclared
+text files into a named non-runner app. `open_url` takes only `http`/`https` URLs with a host
+(never a path, `file:` or a custom scheme). `open_app` takes a name, resolved to a bundle in
+the Applications folders, and passes that bundle and nothing else. `extract_archive` never
+creates an executable file and copies the archive's quarantine mark onto everything it
+writes. `git_status` neutralises every program a repository's config can name. Widen any of
+them by type, with a check in `scripts/security_tools_check.py`.
 
 TTS, skill learning and the voice session are additive: a failure in any of them is logged
 and skipped (voice goes to `off`), never blocking or delaying the text reply.

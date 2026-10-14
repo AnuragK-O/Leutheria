@@ -63,7 +63,11 @@ async def run(args: dict, websocket, pending: dict) -> dict:
     extras = []
     if dc.flag(args, "open_in_browser"):
         index = root / "index.html"
-        result = await steps.run("open_url", {"url": index.resolve().as_uri()})
+        # open_file, not open_url: open_url takes web addresses only (a file
+        # URL there would be `open <any path>` by another name -- BUGS.md,
+        # review C3). open_file checks that this is an HTML document and
+        # names the browser that will receive it.
+        result = await steps.run("open_file", {"path": str(index.resolve())})
         if not result.get("ok"):
             return steps.step_failed("opening the page in the browser", result, created=str(root))
         extras.append("opened in the browser")

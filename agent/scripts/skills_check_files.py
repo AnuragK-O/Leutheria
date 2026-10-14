@@ -58,6 +58,12 @@ from agent.tools.registry import TOOLS  # noqa: E402
 
 skills_registry.GENERATED_DIR = TMP / "generated"
 common.HOME_DIR = str(HOME)
+# The scratch folders beside the temp home are a user-content folder as far
+# as the path policy is concerned (they live under /private/var, which is a
+# system folder for everyone else).
+from agent.core import path_policy  # noqa: E402
+
+path_policy.EXTRA_FREE_ROOTS.append(str(TMP / "work"))
 
 
 async def _silent(*_args, **_kwargs):
@@ -417,7 +423,9 @@ async def check_extract_archive():
     out = work / "pack"
     check(tarred.get("ok") and (out / "pack" / "run.sh").is_file() and tarred["skipped"] == 2, "extract_archive: tar.gz; links never created")
     mode = (out / "pack" / "run.sh").stat().st_mode & 0o7777
-    check(mode == 0o755 and not os.path.lexists(out / "pack" / "escape"), f"extract_archive: executable bit kept, setuid dropped ({oct(mode)})")
+    # Review C3: an archive does not get to decide that a file is runnable.
+    check(mode & 0o7111 == 0 and tarred["executable_bits_dropped"] == 1 and not os.path.lexists(out / "pack" / "escape"),
+          f"extract_archive: executable and setuid bits dropped ({oct(mode)})")
 
     hostile = {
         "dotdot": {"ok.txt": "fine", "../../evil.txt": "pwned"},

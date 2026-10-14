@@ -14,10 +14,14 @@ every case where it could happen is refused:
           double-click, which launches it with whatever its default is.
   path    symlinks are resolved first, and the checks and the argv use the
           resolved path, so an innocent name can't point at something else.
-          It must exist and be either a folder that is not a bundle, or a
-          regular content file: not an executable suffix, not inside a
-          bundle, no execute permission bit, not a compiled binary, and not
-          an extensionless script.
+          Judged by open_file.classify -- the one classifier both tools
+          share -- with allow_source: a plain folder, or a file whose type
+          macOS calls content and that does not act when opened, or a
+          plain source file (.py, .js...) or an undeclared text file
+          (Makefile) for the named app to show. Never an app, a script
+          macOS runs, a package that is not a document, a location file,
+          a macro-enabled document, a playground, a .code-workspace, an
+          executable mode, a compiled binary, or anything inside a bundle.
   argv    fixed -- ["open", "-a", app, path] -- no shell.
 
 The app half is a denylist, so it is only as complete as the list. The path
@@ -25,11 +29,11 @@ half is what holds if the list misses one: nothing that passes it is
 something macOS itself would run.
 """
 
-import stat
 import subprocess
 from pathlib import Path
 
 from agent.core import ui_access
+from agent.tools import open_file as classifier
 
 TIMEOUT = 15  # seconds; `open` returns as soon as the app has been asked
 
@@ -60,24 +64,6 @@ EXECUTING_APPS = {
 }
 FOLDERS_ONLY_APPS = {"finder", "path finder", "forklift"}
 
-# File and bundle types macOS executes, installs, mounts or follows.
-EXECUTABLE_SUFFIXES = {
-    ".app", ".command", ".tool", ".terminal", ".sh", ".bash", ".zsh", ".csh", ".ksh",
-    ".fish", ".workflow", ".action", ".scpt", ".scptd", ".applescript", ".jxa", ".pkg",
-    ".mpkg", ".dmg", ".iso", ".sparseimage", ".sparsebundle", ".jar", ".shortcut",
-    ".mobileconfig", ".mobileprovision", ".webloc", ".inetloc", ".fileloc", ".url",
-    ".prefpane", ".osax", ".qlgenerator", ".saver", ".kext", ".plugin", ".bundle",
-    ".framework", ".xpc", ".appex", ".dylib", ".so", ".exe", ".bat", ".cmd", ".ps1",
-    ".service", ".alfredworkflow",
-}
-
-# Mach-O (thin, both byte orders, and fat) and ELF.
-_BINARY_MAGIC = (
-    b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf", b"\xce\xfa\xed\xfe", b"\xcf\xfa\xed\xfe",
-    b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca", b"\x7fELF",
-)
-
-
 def _app_key(app: str) -> str:
     key = " ".join(app.strip().lower().split())
     return key[:-4].strip() if key.endswith(".app") else key
@@ -85,32 +71,14 @@ def _app_key(app: str) -> str:
 
 def _refusal(target: Path, folders_only: bool):
     """Why this resolved path must not be opened, or None if it may be."""
-    blocked = next(
-        (p.suffix.lower() for p in (target, *target.parents) if p.suffix.lower() in EXECUTABLE_SUFFIXES), None
-    )
+    blocked = classifier.risky_suffix(target)
     if blocked:
         return f"{blocked} items are run, installed or mounted rather than opened, so this is refused"
-    try:
-        mode = target.stat().st_mode
-    except OSError as e:
-        return str(e)
-    if stat.S_ISDIR(mode):
-        return None
-    if folders_only:
+    if folders_only and not target.is_dir():
         return "that application opens folders only; name the application that should show the file"
-    if not stat.S_ISREG(mode):
-        return f"{target} is not a regular file or a folder"
-    if mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
-        return f"{target.name} is an executable file, so this is refused"
-    try:
-        with target.open("rb") as f:
-            head = f.read(4)
-    except OSError as e:
-        return str(e)
-    if head.startswith(_BINARY_MAGIC):
-        return f"{target.name} is a compiled program, so this is refused"
-    if head.startswith(b"#!") and not target.suffix:
-        return f"{target.name} is a script with no file extension, so this is refused"
+    verdict = classifier.classify(target, allow_source=True)
+    if not verdict["allowed"]:
+        return f"{target.name} is refused: {verdict['reason']}"
     return None
 
 

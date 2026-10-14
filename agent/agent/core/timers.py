@@ -177,9 +177,28 @@ async def _countdown(timer: dict) -> None:
     task.add_done_callback(_firing.discard)
 
 
+# A reminder's message is chosen by the model when the timer is set and spoken
+# much later with nobody watching the screen, so it must not be able to pass
+# for something else -- above all a confirmation prompt ("Should I go ahead?")
+# that a "yes" would answer (review L4). It is always introduced by this fixed
+# lead-in, cut short, and stripped of question marks.
+REMINDER_LEAD_IN = "Timer reminder:"
+SPOKEN_MESSAGE_MAX = 120
+
+
+def _clean_message(message: str) -> str:
+    text = "".join(ch if ch.isprintable() else " " for ch in message)
+    text = " ".join(text.replace("?", ".").split())
+    if len(text) > SPOKEN_MESSAGE_MAX:
+        text = text[:SPOKEN_MESSAGE_MAX].rsplit(" ", 1)[0] + "..."
+    return text
+
+
 def spoken_line(timer: dict) -> str:
     if timer["message"]:
-        return timer["message"]
+        cleaned = _clean_message(timer["message"])
+        if cleaned:
+            return f"{REMINDER_LEAD_IN} {cleaned}"
     if timer["label"]:
         return f"Your {timer['label']} timer is done."
     # "Your 10 minute timer", not "your 10 minutes timer".

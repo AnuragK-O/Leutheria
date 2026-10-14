@@ -177,24 +177,18 @@ def unique_name(name: str, taken: set) -> str:
 
 # --- guard rails ------------------------------------------------------------
 
-_SYSTEM_ROOTS = ("/System", "/Library", "/Applications", "/usr", "/bin", "/sbin", "/etc", "/private/etc", "/opt", "/dev")
-
-
 def refuse_to_reorganise(folder: Path):
     """Why a bulk skill won't rearrange this folder, or None if it may.
     These are places where moving files by type breaks things rather than
-    tidies them."""
-    text = str(folder)
-    if text == "/" or folder == home() or folder == Path.home():
-        return "that is the top of the home folder or disk, not a folder of loose files"
-    library = str(Path.home() / "Library")
-    if text == library or text.startswith(library + os.sep):
-        return "that is inside the Library folder, which apps manage themselves"
-    if any(text == root or text.startswith(root + os.sep) for root in _SYSTEM_ROOTS):
-        return "that is a system folder"
-    if any(part.lower().endswith(".app") for part in folder.parts):
-        return "that is inside an application"
-    return None
+    tidies them.
+
+    Decided by core/path_policy.py on the resolved path and file identity.
+    The old string-prefix list here was walked around by "/users/<me>",
+    "~/library/Preferences", a folder inside a .photoslibrary, /Volumes/X
+    and any subfolder of a repository (review M1)."""
+    from agent.core import path_policy
+
+    return path_policy.bulk_refusal(folder)
 
 
 async def check_reorganisable(log, folder: Path):
@@ -256,9 +250,17 @@ class StepLog:
         return exported
 
     def fail(self, tool: str, result: dict, doing: str = None, **extra) -> dict:
-        """The skill's result when a step failed: says which step and why."""
+        """The skill's result when a step failed: what it was doing and why,
+        in words for the user. The tool's name is internal, so it goes in
+        failed_step, not in the sentence that is spoken."""
         reason = (result or {}).get("error") or "no reason given"
-        what = f"{tool} failed while {doing}" if doing else f"the {tool} step failed"
+        # find_files and friends say "<path> is not a folder" for a path
+        # that isn't there at all; say what actually happened.
+        suffix = " is not a folder"
+        named = reason.strip()[: -len(suffix)] if reason.strip().endswith(suffix) else None
+        if named and not os.path.lexists(named):
+            reason = f"the folder {named} doesn't exist"
+        what = f"Couldn't finish {doing}" if doing else "A step failed"
         return {"ok": False, "error": f"{what}: {reason}", "failed_step": tool, **extra, **self.export()}
 
     def refuse(self, error: str) -> dict:

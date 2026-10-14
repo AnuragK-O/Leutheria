@@ -31,6 +31,7 @@ renderer/overlay/
 
         |
         |  ws://127.0.0.1:8765 -- JSON messages, both directions
+        |  (authenticated: a per-launch token, checked in the handshake)
         v
 
 Python Agent (agent/agent/)
@@ -116,6 +117,8 @@ skill pauses exactly the same way a directly-called destructive tool would.
 app/                  Electron shell
   main.js             Spawns the Python agent, connects to it over WebSocket, hosts the main
                        window, the voice overlay, the menu bar item and the global shortcut
+  agent-auth.js        The agent socket's per-launch token: generated here, handed to the
+                       sidecar and the Qt overlay in their environment, sent as a header
   preload.js           Bridges the agent event stream + the management request/response calls
                        into the renderer safely (contextBridge, no node access in the page)
   renderer/
@@ -138,6 +141,8 @@ app/                  Electron shell
     mock-agent.js      Scripted stand-in agent (port 8799) for testing the Electron side
     mock-fixtures.js   Its fixture catalog, history, approvals, devices (for the non-chat views)
     ui-capture.js      Drives the real app against the mock: screenshots + behaviour checks
+    auth-check.js      Checks agent-auth.js, what `ws` puts on the wire, and the mock's
+                       token enforcement (no Electron, no Python)
     make-mark.js       Regenerates renderer/img/mark-*.png from assets/1.png
                        and the Qt overlay (understands `hello` / the overlay role)
 
@@ -162,6 +167,9 @@ agent/                Python sidecar
     overlay_protocol_check.py  The overlay client role: real server on a side port,
                        a UI and an overlay client in both orders -- never primary,
                        mirrored messages, confirming from the overlay (no API key needed)
+    ws_auth_check.py   The socket's authentication, on the raw handshake of the real
+                       server on a side port: 401 without the token, 403 with an Origin,
+                       the token never logged, standalone token file (no API key needed)
     skills_check_dev.py  Dev / web / clipboard tools and skills through the real
                        dispatch(): temp HOME, stubbed browser/app/clipboard, fetch_url
                        against a local http.server, git in temp repos (no API key needed)
@@ -178,6 +186,9 @@ agent/                Python sidecar
   .venv/              Virtualenv (gitignored)
   agent/
     core/
+      ws_auth.py       Who may open the socket: the token (from LEUTHERIA_TOKEN, or
+                       generated into a 0600 file standalone) and the handshake check
+                       that refuses a missing/wrong token (401) or any Origin (403)
       server.py        WebSocket server, message routing, the primary-connection registry
                        voice commands run on, and the one transcript path shared by
                        push-to-talk and the voice session (max_size=20MB -- a long
@@ -708,6 +719,7 @@ trip. Two environment variables point the app at it:
 |---|---|
 | `LEUTHERIA_AGENT_URL` | Connect to this WebSocket URL instead of `ws://127.0.0.1:8765` |
 | `LEUTHERIA_NO_SPAWN=1` | Don't start (or pkill) the Python agent; keep retrying the connection instead |
+| `LEUTHERIA_TOKEN` | With `LEUTHERIA_NO_SPAWN=1`: the token of the agent being connected to (see "Authentication"). Unset, the app reads the token file a standalone agent wrote for that port. Ignored when the app spawns the agent itself — it always generates a fresh one |
 | `LEUTHERIA_CAPTURE_DIR` | Debug only: write a PNG of the overlay and main window on every voice-state change, into this folder (which also gets its own `userdata/`, so a debug run never shares storage with a real one) |
 | `LEUTHERIA_CAPTURE_THEME` | With the above: force the overlay to `light` or `dark` |
 | `LEUTHERIA_OVERLAY=qt` | Use the native Qt overlay instead of the Electron one (see above); falls back if it isn't built |
@@ -718,6 +730,20 @@ cd app
 node scripts/mock-agent.js &
 env -u ELECTRON_RUN_AS_NODE LEUTHERIA_AGENT_URL=ws://127.0.0.1:8799 LEUTHERIA_NO_SPAWN=1 npx electron .
 ```
+
+The mock refuses a handshake that carries an `Origin` header, like the real agent. It only
+checks a token if it is started with `LEUTHERIA_TOKEN` set — give the app the same value
+(`ui-capture.js` does this with a fresh token every run, so the app's real authentication
+path is exercised):
+
+```bash
+export LEUTHERIA_TOKEN=$(openssl rand -hex 32)
+node scripts/mock-agent.js &
+env -u ELECTRON_RUN_AS_NODE LEUTHERIA_AGENT_URL=ws://127.0.0.1:8799 LEUTHERIA_NO_SPAWN=1 npx electron .
+```
+
+`node scripts/auth-check.js` checks the token plumbing on its own (what the sidecar is
+handed, what goes on the wire, the mock's enforcement) without starting Electron.
 
 `MOCK_LOOP=1` replays the session after each one ends; `MOCK_AUTOSTART=0` waits for
 ⌥Space or the menu instead; `MOCK_CONFIRM_TIMEOUT_MS` sets how long it waits for a click.
@@ -739,41 +765,111 @@ cd agent
 ./.venv/bin/python -m agent
 ```
 
-This starts the WebSocket server at `ws://127.0.0.1:8765` and prints `AGENT_READY`
-once it's up (`LEUTHERIA_PORT=8781` picks another port, to run beside the app). With voice
-enabled it also opens the microphone; `LEUTHERIA_VOICE_SOURCE=/path/to.wav` feeds that WAV
-in instead (at real speed, then silence), so the voice session can be driven without one. Leave it running in one terminal, then in another terminal use a small
-Python client to send it commands:
+This starts the WebSocket server at `ws://127.0.0.1:8765` and prints one line once it's
+up (`LEUTHERIA_PORT=8781` picks another port, to run beside the app):
+
+```
+AGENT_READY ws://127.0.0.1:8765 auth=token-file:/Users/you/Library/Application Support/Leutheria/agent-8765.token
+```
+
+With voice enabled it also opens the microphone; `LEUTHERIA_VOICE_SOURCE=/path/to.wav`
+feeds that WAV in instead (at real speed, then silence), so the voice session can be driven
+without one.
+
+### Authentication
+
+Every connection is authenticated during the WebSocket opening handshake, before the
+upgrade — a client that fails never gets a connection, never becomes the primary and never
+sees a frame. Two rules (`core/ws_auth.py`), with no switch to turn either off:
+
+1. **A request with an `Origin` header is refused (403)**, whatever else it carries.
+   Browsers always send `Origin` on a WebSocket handshake and page script can't remove it;
+   none of the real clients send one (Node's `ws`, Qt's `QWebSocket` and Python's
+   `websockets` all leave it out unless asked). No value is allowed — not `null`, not
+   `file://`, not the agent's own address.
+2. **The request must carry `Authorization: Bearer <token>` (401 otherwise)**, compared in
+   constant time. A header rather than a query string, because URLs end up in logs and a
+   browser can't set this header on a WebSocket at all.
+
+Without both, loopback is not a boundary: any local process — or JavaScript on any web page
+open in a browser — could connect to `127.0.0.1:8765`, send a command, receive the
+`confirmation_required` and approve it itself.
+
+Where the token comes from:
+
+| how the agent was started | token | who knows it |
+|---|---|---|
+| by the app (`npm start`) | Electron generates 32 random bytes on every launch and passes them in the sidecar's environment (`LEUTHERIA_TOKEN`) | the Electron main process, the sidecar, and the Qt overlay if `LEUTHERIA_OVERLAY=qt` (also by environment). Never a renderer, a file, a log or a command line |
+| standalone (`python -m agent`, no `LEUTHERIA_TOKEN`) | the agent generates its own on every start and writes it to `~/Library/Application Support/Leutheria/agent-<port>.token` — mode 0600, in a 0700 directory | any process running as you can read the file; nothing else can. `LEUTHERIA_RUNTIME_DIR` moves the directory (the checks use it); the agent refuses to start if it's a symlink, not yours, or writable by others |
+| standalone with `LEUTHERIA_TOKEN` set (the check scripts) | that value; at least 32 characters or the agent refuses to start | whoever set it |
+
+The agent removes `LEUTHERIA_TOKEN` from its own environment as soon as it has read it, so
+a command it runs can't see it. The `AGENT_READY` line says which mode is active
+(`auth=token-env` or `auth=token-file:<path>`) and never the token; refused handshakes are
+logged as `ws_rejected` with a reason (`origin` / `no_token` / `bad_token`) and nothing
+else, at most one line per reason every 10 seconds.
+
+What this does and doesn't protect against: it stops web pages and other users' processes
+completely, and stops a same-user process that merely knows the port. It does not stop a
+process running as you that goes looking — it can read the token file, or the environment
+of the Electron/agent process — because macOS doesn't isolate one of your processes from
+another. That is the same position as any other file you own.
+
+**Connecting a debugging client.** Read the token and send the header:
 
 ```bash
 cd agent
 ./.venv/bin/python -c "
 import asyncio, json, websockets
+from agent.core import ws_auth
 
 async def main():
-    async with websockets.connect('ws://127.0.0.1:8765') as ws:
-        await ws.send(json.dumps({
-            'type': 'command',
-            'tool': 'list_files',
-            'args': {'path': '~/Desktop'},
-        }))
-        print(await ws.recv())
+    token = ws_auth.read_token_file(8765)          # the standalone agent's token file
+    async with websockets.connect('ws://127.0.0.1:8765', additional_headers=ws_auth.bearer(token)) as ws:
+        await ws.send(json.dumps({'type': 'inventory', 'request_id': '1'}))
+        print((await ws.recv())[:200])
 
 asyncio.run(main())
 "
+```
+
+To point the app or the Qt overlay at a standalone agent, give them the same token:
+`LEUTHERIA_TOKEN="$(cat ~/Library/Application\ Support/Leutheria/agent-8765.token)"` in
+their environment (the app with `LEUTHERIA_NO_SPAWN=1` finds that file by itself; the Qt
+overlay does not). A browser-based WebSocket tool can't connect at all: it sends `Origin`.
+
+`./.venv/bin/python scripts/ws_auth_check.py` proves all of the above against the real
+server on a side port.
+
+### Manual tool dispatch (debugging only)
+
+A message with a `tool` field runs that one tool directly, with no model in between. No
+real client sends it — the app sends text and audio — so it is **off unless the agent is
+started with `LEUTHERIA_MANUAL_DISPATCH=1`**; otherwise the reply is
+`{"type": "error", "text": "manual tool dispatch is disabled ..."}` and
+`manual_dispatch_refused` is logged. The snippets below that send `"tool"` assume it is on.
+It doesn't bypass anything when enabled (the same `dispatch()`, tiers, preferences and
+confirmation gate apply), but it is the shortest route from a connection to a tool, so it
+isn't left open for nobody.
+
+```bash
+cd agent
+LEUTHERIA_MANUAL_DISPATCH=1 ./.venv/bin/python -m agent
+# then, from the client above:
+#   await ws.send(json.dumps({'type': 'command', 'tool': 'list_files', 'args': {'path': '~/Desktop'}}))
 ```
 
 ### Available tools
 
 | tool | args | safety | notes |
 |---|---|---|---|
-| `open_app` | `{"name": "Calculator"}` | safe | shells out to `open -a` |
+| `open_app` | `{"name": "Calculator"}` | safe | an installed app by NAME: the name is matched (case-insensitive, `.app` optional, or the bundle's own display name) against bundles in `/Applications`, `/System/Applications`, their Utilities folders, CoreServices and `~/Applications`, and `open -a <resolved bundle path>` is run with nothing after it. Refuses paths, `..`, a leading `-`, control characters, a bundle whose real path is outside those folders, and any name that doesn't resolve |
 | `create_folder` | `{"path": "~/Desktop/test"}` | safe | `mkdir -p` equivalent |
 | `list_files` | `{"path": "~/Desktop"}` | safe | lists directory contents |
 | `run_command` | `{"cmd": "echo hi"}` | **destructive** | pauses for a live user confirmation before it runs — see "Confirmation flow" below. Optional `timeout_s` (default 300, max 1800); output is capped — see "Where tools run, and `run_command`'s limits" |
 | `get_clipboard` | `{}` | safe | reads clipboard text |
 | `set_clipboard` | `{"text": "..."}` | safe | copies text to clipboard |
-| `open_url` | `{"url": "https://..."}` | safe | opens in default browser |
+| `open_url` | `{"url": "https://..."}` | safe | web pages only: `http`/`https` with a host, run as `open -- <url rebuilt from its parsed parts>`. Refuses paths, `file:`, every other scheme (`shortcuts:`, `ssh:`, `smb:`, `vnc:`, `x-apple.*`, `vscode:`, `tel:`, `mailto:`, `javascript:`, `data:`, ...), `user:pass@`, whitespace/control/invisible characters, backslashes and a leading `-`. Local files go through `open_file` |
 | `show_notification` | `{"title": "...", "message": "..."}` | safe | macOS notification banner |
 | `take_screenshot` | `{"save_path": "..."}` (optional) | safe | defaults to a timestamped file on the Desktop; never overwrites — an existing `save_path` is refused |
 | `read_file` | `{"path": "..."}` | safe | text content, capped at 20,000 chars |
@@ -799,22 +895,22 @@ asyncio.run(main())
 | `set_timer` | `{"minutes": 10, "label": "pasta"}` | safe | in-process countdown; banner + spoken line when it ends; lost on restart; max 24 h, 20 at once |
 | `list_timers` | `{}` | safe | running timers, soonest first |
 | `cancel_timer` | `{"timer_id": "3"}` / `{"label": "pasta"}` / `{"all": true}` / `{}` | safe | `{}` works only when exactly one is running |
-| `open_file` | `{"path": "~/Documents/resume.pdf"}` | safe | default app, documents/media/folders only — refuses apps, scripts, programs, installers, unknown types |
+| `open_file` | `{"path": "~/Documents/resume.pdf"}` | safe | default app, documents/media/folders only — refuses apps, scripts, programs, installers, unknown types, anything with an execute bit or Mach-O/ELF header, packages that aren't documents, and types that act when opened (`.wflow`, `.webarchive`, `.playground`, macro-enabled Office files, `.crx`, `.jnlp`, location files, `.code-workspace`). Shares its classifier with `open_with` |
 | `reveal_in_finder` | `{"path": "..."}` | safe | `open -R`: selects in Finder, never opens |
 | `find_files` | `{"path": "~/Downloads", "extension": "pdf", "modified_within_days": 2}` | safe | read-only search by name / extension / min size / age; never follows symlinks; skips hidden files, `node_modules` and app bundles; at most 500 results, 10 s / 200,000 entries (then `incomplete: true`) |
 | `file_info` | `{"path": "..."}` | safe | read-only; kind, size, created/modified. A missing path is `exists: false`, not an error |
 | `folder_size` | `{"path": "~/Downloads", "limit": 10}` | safe | read-only total plus the largest immediate items; counts hidden files; a lower bound (`incomplete: true`) past 15 s / 500,000 entries |
 | `zip_folder` | `{"source": "...", "destination": "...", "exclude": ["node_modules"]}` | safe | source only read; archive created with an exclusive open, so an existing zip is never replaced; symlinks left out; capped at 20,000 files / 1 GB |
-| `extract_archive` | `{"archive": "...", "destination": "..."}` | safe | zip and tar(.gz/.bz2/.xz) into a folder it creates itself — refuses an existing destination; every entry name validated first (zip-slip refuses the whole archive); links never created; capped at 20,000 entries / 2 GB |
+| `extract_archive` | `{"archive": "...", "destination": "..."}` | safe | zip and tar(.gz/.bz2/.xz) into a folder it creates itself — refuses an existing destination; every entry name validated first (zip-slip refuses the whole archive); links never created; capped at 20,000 entries / 2 GB / 120 s (the deadline is checked inside a long tar member too). Nothing comes out executable (execute and setuid bits are never applied), and a downloaded archive's `com.apple.quarantine` value is copied onto every extracted file and folder |
 | `find_duplicates` | `{"path": "...", "min_size_kb": 1}` | safe | read-only, report only; same size, then first 64 KB, then full-content hash; largest waste first |
 | `write_new_file` | `{"path": "...", "content": "..."}` | safe | create-only (`open(..., "x")`): refuses if anything exists at the path, including a symlink. Returns `{"ok": true, "path": ...}` |
 | `search_file_contents` | `{"path": "...", "text": "wifi password"}` | safe | read-only literal, case-insensitive search of text files under 2 MB; binary files skipped |
 | `spotlight_search` | `{"query": "resume", "folder": "..."}` (folder optional) | safe | read-only `mdfind -name` with fixed argv and an 8 s timeout; names only, newest first |
-| `fetch_url` | `{"url": "https://...", "max_chars": 8000}` (`max_chars` optional) | safe | dev/web. One GET of a public http(s) page, returned as readable text (tags, scripts, menus and footers stripped). Read-only and bounded: public addresses only (loopback/private/link-local refused on every redirect hop), 5 redirects, 12 s overall, 1 MB read, 20,000 chars returned, text content types only. Reports `content_type`, `truncated`, final `url`. For reading a page, not showing one — that's `open_url` |
-| `git_status` | `{"path": "~/Projects/atlas", "log_count": 5}` (`log_count` optional) | safe | dev/web. Branch, ahead/behind, staged/modified/untracked files, recent commits, origin URL (credentials stripped). Fixed argv, 10 s timeout, never refreshes the index, and programs named by the repository's own config (`core.fsmonitor`, `gpg.program`) are switched off, so it stays a read on a repo someone else made |
-| `open_with` | `{"path": "~/Projects/atlas", "app": "Visual Studio Code"}` | safe | dev/web. `open -a App path` (fixed argv) for an existing folder or content file. Symlinks are resolved first. Refuses apps that execute, install or mount what they're handed (`ui_access.DENIED_APPS` plus terminals, script runners, launchers, installers, archive/disk-image apps); Finder gets folders only. Refuses paths macOS would run: `.command`, `.sh`, `.app` (and anything inside a bundle), `.jar`, `.pkg`, `.dmg`, `.mobileconfig`, `.shortcut`, `.webloc`, any file with an execute bit, compiled binaries, extensionless scripts |
+| `fetch_url` | `{"url": "https://...", "max_chars": 8000}` (`max_chars` optional) | safe | dev/web. One GET of a public http(s) page, returned as readable text (tags, scripts, menus and footers stripped). Read-only and bounded: public addresses only (loopback/private/link-local refused on every redirect hop), NAT64/6to4/IPv4-compatible addresses judged by the IPv4 address they carry, 5 redirects, 12 s overall as an absolute deadline over lookup, connect, TLS, headers and body (a watchdog closes the sockets), 1 MB read, 20,000 chars returned, text content types only. Reports `content_type`, `truncated`, final `url`. For reading a page, not showing one — that's `open_url` |
+| `git_status` | `{"path": "~/Projects/atlas", "log_count": 5}` (`log_count` optional) | safe | dev/web. Branch, ahead/behind, staged/modified/untracked files, recent commits, origin URL (credentials stripped). Fixed argv, 10 s timeout, never refreshes the index, and programs named by the repository's own config are switched off (every `filter.<name>` defined, includes followed, is overridden to nothing; `core.fsmonitor`; `gpg.program`; hooks; submodules ignored; pagers pinned to `cat`), so it stays a read on a repo someone else made |
+| `open_with` | `{"path": "~/Projects/atlas", "app": "Visual Studio Code"}` | safe | dev/web. `open -a App path` (fixed argv) for an existing folder or content file. Symlinks are resolved first. Refuses apps that execute, install or mount what they're handed (`ui_access.DENIED_APPS` plus terminals, script runners, launchers, installers, archive/disk-image apps); Finder gets folders only. The path is judged by `open_file`'s classifier (by UTI, plus a suffix backstop on every parent), with two allowances for the named app: plain source files (`.py`, `.js`, ...; never shell scripts) and undeclared text files (`Makefile`, `.gitignore`). So it refuses `.command`, `.sh`, `.app` (and anything inside a bundle), `.jar`, `.pkg`, `.dmg`, `.webloc`/`.afploc`/`.vncloc`, `.jnlp`, macro-enabled Office files, `.code-workspace`, `.wflow`, `.playground`, packages such as `.wdgt`/`.mdimporter`/`.download` even into Finder, any file with an execute bit, compiled binaries, extensionless scripts |
 
-Example calls for each (swap the `tool`/`args` fields in the snippet above):
+Example calls for each (manual dispatch — see above; needs `LEUTHERIA_MANUAL_DISPATCH=1`):
 
 ```python
 {"type": "command", "tool": "open_app", "args": {"name": "Calculator"}}
@@ -1200,6 +1296,54 @@ hand-written skills); the Library doesn't render them yet.
 `./.venv/bin/python scripts/skill_format_check.py` exercises all of this against temp
 directories.
 
+### Security model
+
+Leutheria acts on your real Mac on the say-so of a language model, and the model reads text
+other people wrote (web pages, files, your clipboard, repositories). So what it may do is
+decided by fixed rules in the agent (`core/dispatcher.py`, `core/path_policy.py`), not by the
+model. `scripts/security_policy_check.py` replays the attacks these rules were built against.
+
+**Without asking**, it may: read ordinary files, list and search folders, and create, add to,
+copy, move, zip, unzip and Trash files inside your user folders — Documents, Desktop,
+Downloads, Pictures, Movies, Music, and Notes, Projects, Scratch and Snapshots in your home
+folder (the places its skills save to). Nothing it does there overwrites: writes only create
+or append, moves and copies refuse an existing destination, deletes go to the Trash.
+
+**It asks first** (a card on screen, also spoken) before:
+- running any shell command;
+- writing, moving or trashing anything outside those folders — elsewhere in your home folder,
+  on another disk, in a temporary folder — or trashing a whole user folder. The card says why;
+- contacting or opening a web address after it has read a file, the clipboard, a web page,
+  a repository or command output in the same request, unless you named that site yourself.
+  The card shows the full address;
+- controlling another app (once per app, for 15 minutes);
+- anything you've marked "always ask" in the Library — and everything, if its settings file
+  is damaged.
+
+A spoken "yes" approves only what was read out in full. A shell command that is long, chains
+or redirects (`|`, `;`, `&&`, `$( )`, `>`…), uses quoting, or calls a downloader, interpreter
+or `rm`/`sudo` needs a click on the card; "no" always works by voice.
+
+**It will never**, whatever you approve or set: change its own program, settings, approvals,
+log or system prompt; write in `~/Library`, in hidden files and folders at the top of your home
+folder (`.zshrc`, `.ssh`, `.gitconfig`, `.config`…), in system folders (`/System`, `/Library`,
+`/usr`, `/etc`, `/Applications`…), inside an app or other package, or in a repository's `.git`
+folder; write through a symbolic link; move something into a temporary folder or straight into
+the Trash folder; read keys and credentials (`~/.ssh`, `~/.gnupg`, `~/.aws`, `.env` files,
+`*.pem`, `id_rsa`…), anything in `~/Library` (passwords, cookies, browser profiles), or its own
+API key. Text from files, pages and the clipboard never goes into its log, which keeps sizes,
+paths and outcomes only and rotates at 5 MB.
+
+**What this does not protect against**, honestly:
+- Prompt injection can still make it *ask* for something you shouldn't approve. Read the card;
+  the line at the end of a spoken prompt is the agent's, the sentence before it is the model's.
+- It can still write junk into your own folders, and it can still read your ordinary
+  documents and say what's in them, to you or (if you approve the address) a web site.
+- Spotlight results and folder listings can show names of files it isn't allowed to read.
+- Any program running as you on this Mac can already do everything Leutheria can; the agent
+  is not a sandbox against local software. (The WebSocket requires the per-launch token.)
+- A check-then-act race: a path that is swapped for a symlink between the check and the write.
+
 ### Confirmation flow
 
 Any tool tagged `"destructive"` in `agent/tools/registry.py` (currently just `run_command`)
@@ -1209,7 +1353,8 @@ matching `confirm` message arrives (or `CONFIRMATION_TIMEOUT` — 120s — elaps
 counts as a decline):
 
 ```python
-# 1. you send:
+# 1. you send (manual dispatch, so LEUTHERIA_MANUAL_DISPATCH=1; a text command that
+#    makes the model call run_command pauses the same way):
 {"type": "command", "tool": "run_command", "args": {"cmd": "echo hi"}}
 
 # 2. agent replies immediately with:
@@ -1425,7 +1570,8 @@ of every tool call made along the way (empty if it just answered directly):
 
 This requires `ANTHROPIC_API_KEY` to be resolvable (see API key section above) — without
 it, the agent will error when a text command comes in (the `{"tool": ...}` path above
-doesn't need a key at all, since it skips the LLM entirely).
+doesn't need a key at all, since it skips the LLM entirely — but it is off unless
+`LEUTHERIA_MANUAL_DISPATCH=1`, see "Manual tool dispatch").
 
 ### Voice input protocol
 
@@ -1604,6 +1750,9 @@ it (below), and `"by": "timeout"` (always `approved: false`) that nobody answere
 
 ### Overlay clients (`hello` and roles)
 
+(An overlay authenticates like any other client — the handshake rules under
+"Authentication" come first; `hello` only says what an already-accepted connection is.)
+
 A client may send one optional message first:
 
 ```python
@@ -1658,6 +1807,8 @@ side port (`LEUTHERIA_VOICE_SOURCE=<wav> ./.venv/bin/python scripts/overlay_prot
 Every message received, every LLM decision, and every tool call (regardless of whether
 it came from the LLM loop or a direct `{"tool": ...}` message) is appended as one JSON
 line to `agent/logs/events.jsonl` (gitignored). Event types: `message_in`, `message_out`,
+`ws_auth` (startup: where the socket's token came from — never the token), `ws_rejected`
+(a refused handshake, by reason, rate-limited), `manual_dispatch_refused`,
 `llm_turn` (what Claude decided that turn), `tool_call` (which tool ran, with what args
 and result), `stt_transcript` (what Whisper heard), `tts_error` (a synthesis failure --
 non-fatal; `backend` says which engine failed, and `fallback: "piper"` means the reply was
@@ -1707,6 +1858,16 @@ Microphone, for Electron or your terminal). `load_models` is openWakeWord: a
 `wake_models` entry that isn't a pretrained name or an existing `.onnx` path, or the
 first-run model download failed (it needs network once). Changing any voice setting
 retries.
+
+**The app says `error` and the log shows `Unexpected server response: 401`**
+
+The agent refused the app's token. When the app started the agent itself this means
+something else answered on the port — usually an agent left over from another run (or a
+standalone one), which has a different token; stop it (`pkill -if "python -m agent"`) and
+start the app again. With `LEUTHERIA_NO_SPAWN=1` it means `LEUTHERIA_TOKEN` in the app's
+environment isn't the one that agent was started with (see "Authentication"). A `403`
+means the client sent an `Origin` header, which no supported client does. The agent's side
+of it is a `ws_rejected` line in `agent/logs/events.jsonl`.
 
 **`OSError: ... address already in use` on port 8765 when running `npm start`**
 

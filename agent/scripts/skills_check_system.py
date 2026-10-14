@@ -676,9 +676,9 @@ async def timer_checks():
     await dispatch("set_timer", {"seconds": 0.1, "message": "Time to take the pizza out."})
     await dispatch("set_timer", {"minutes": 0.03})
     await wait_for(lambda: len(spoken) == 2)
-    check([s["text"] for s in spoken] == ["Time to take the pizza out.", "Your 2 second timer is done."],
-          "a custom message is what gets spoken (a reminder); an unlabelled timer is named by its length")
-    check(notifications[0] == {"title": "Timer done", "message": "Time to take the pizza out."}, "and what the banner says")
+    check([s["text"] for s in spoken] == ["Timer reminder: Time to take the pizza out.", "Your 2 second timer is done."],
+          f"a custom message is what gets spoken (a reminder); an unlabelled timer is named by its length {[s['text'] for s in spoken]}")
+    check(notifications[0] == {"title": "Timer done", "message": "Timer reminder: Time to take the pizza out."}, "and what the banner says")
 
     # hours + minutes + seconds add up
     result = await dispatch("set_timer", {"hours": 1, "minutes": 30, "seconds": 15, "label": "  long   one  "})
@@ -912,7 +912,7 @@ async def skill_checks():
           and [t["label"] for t in timers.active()] == ["pomodoro focus", "pomodoro break"], "sets a focus timer and a break timer after it")
     check(abs(result["steps"][1]["args"]["minutes"] - 0.005) < 1e-9, "the break timer runs for focus + break")
     await wait_for(lambda: len(spoken) == 2)
-    check([s["text"] for s in spoken] == ["Focus session done on the report. Take a 0.002 minute break.", "Break's over. Ready for the next one?"],
+    check([s["text"] for s in spoken] == ["Timer reminder: Focus session done on the report. Take a 0.002 minute break.", "Timer reminder: Break's over. Ready for the next one."],
           "both announce themselves, in order")
     reset()
     result = await skill("pomodoro")
@@ -955,7 +955,7 @@ async def skill_checks():
     check(fake_volume.level == 40 and not fake_volume.muted and opened_apps == ["Zoom"] and "Sound is on at 40 percent" in result["message"],
           "a muted, quiet Mac is unmuted and raised to 40 for a call")
     await wait_for(lambda: spoken)
-    check(spoken[0]["text"] == "Your meeting time is up.", "the meeting timer fires")
+    check(spoken[0]["text"] == "Timer reminder: Your meeting time is up.", "the meeting timer fires")
     reset(level=60, muted=False)
     result = await skill("meeting_prep")
     check(result["ok"] and step_tools(result) == ["get_network_status", "get_volume", "get_battery_status"] and fake_volume.level == 60
@@ -1001,7 +1001,7 @@ async def skill_checks():
     check(result["ok"] and step_tools(result) == ["get_volume", "set_volume", "set_timer", "show_notification"]
           and fake_volume.level == 20 and result["previous_level"] == 44, "lowers the volume to 20 and sets a nudge")
     await wait_for(lambda: spoken)
-    check(spoken[0]["text"] == "Time to call it a night.", "the nudge fires")
+    check(spoken[0]["text"] == "Timer reminder: Time to call it a night.", "the nudge fires")
     reset(level=10)
     result = await skill("wind_down", volume=30)
     check(result["ok"] and "set_volume" not in step_tools(result) and fake_volume.level == 10 and "already low" in result["message"],
@@ -1063,9 +1063,16 @@ for name, fn in REAL_FNS.items():
 # --- 11. the real server: a timer set over a websocket speaks on that connection --
 async def server_checks():
     print("\n# timers through the real server (ephemeral port, no voice session)")
+    import secrets
+
     import websockets
 
-    from agent.core import server
+    from agent.core import server, ws_auth
+
+    # Through server.serve(), so this connection is authenticated like any
+    # other; and manual dispatch ({"tool": ...}) is off unless enabled.
+    auth = ws_auth.Auth(secrets.token_hex(32), ws_auth.SOURCE_ENV)
+    server.MANUAL_DISPATCH = True
 
     probe = socket.socket()
     probe.bind(("127.0.0.1", 0))
@@ -1074,8 +1081,8 @@ async def server_checks():
     check(port != 8765, f"using port {port}, not 8765")
     notifications.clear(); spoken.clear()
 
-    async with websockets.serve(server.handler, "127.0.0.1", port):
-        async with websockets.connect(f"ws://127.0.0.1:{port}") as ui:
+    async with server.serve(auth, port):
+        async with websockets.connect(f"ws://127.0.0.1:{port}", additional_headers=ws_auth.bearer(auth.token)) as ui:
             await ui.send(json.dumps({"type": "inventory", "request_id": "1"}))
             inventory = json.loads(await asyncio.wait_for(ui.recv(), 10))
             names = {t["name"] for t in inventory["tools"]}
