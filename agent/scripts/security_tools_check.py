@@ -600,11 +600,114 @@ async def check_git_status():
                 os.environ[key] = value
 
 
+# --- fetch_url ----------------------------------------------------------------
+
+class SlowServer:
+    """A raw TCP server on 127.0.0.1 that misbehaves in one of several ways
+    and records when the client hung up."""
+
+    def __init__(self, behaviour):
+        self.behaviour = behaviour
+        self.listener = socket.socket()
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen(4)
+        self.port = self.listener.getsockname()[1]
+        self.client_gone_at = None
+        self.stop = threading.Event()
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def _serve(self):
+        conn, _ = self.listener.accept()
+        conn.settimeout(0.2)
+        try:
+            conn.recv(65536)  # the request (or a TLS ClientHello)
+        except OSError:
+            pass
+        lines = []
+        if self.behaviour == "drip":
+            lines = [b"HTTP/1.1 200 OK\r\n"] + [b"X-Drip-%d: x\r\n" % i for i in range(60)]
+        elif self.behaviour == "stall":
+            lines = [b"HTTP/1.1 200 OK\r\n"]
+        for line in lines:
+            try:
+                conn.sendall(line)
+            except OSError:
+                break
+            if self._wait_for_hangup(conn, 1.0 if self.behaviour == "drip" else 0.0):
+                break
+        while not self.stop.is_set() and self.client_gone_at is None:
+            self._wait_for_hangup(conn, 0.2)
+        conn.close()
+
+    def _wait_for_hangup(self, conn, seconds):
+        end = time.monotonic() + seconds
+        while True:
+            try:
+                if conn.recv(1) == b"":
+                    self.client_gone_at = time.monotonic()
+                    return True
+            except socket.timeout:
+                pass
+            except OSError:
+                self.client_gone_at = time.monotonic()
+                return True
+            if time.monotonic() >= end:
+                return False
+
+    def close(self):
+        self.stop.set()
+        self.listener.close()
+
+
+def check_fetch_url():
+    from agent.tools import fetch_url as fu
+
+    section("fetch_url: one absolute deadline over every phase (M2)")
+    real = (fu.TIMEOUT, fu.DEADLINE, fu._address_allowed)
+    fu._address_allowed = lambda address, port: address == "127.0.0.1"  # this script's servers only
+    try:
+        cases = [
+            # (behaviour, scheme, TIMEOUT, DEADLINE, what)
+            ("drip", "http", 2.0, 3.0, "headers dripped one line a second, each inside the per-read timeout"),
+            ("stall", "http", 60.0, 2.0, "a status line, then nothing"),
+            ("silent", "https", 60.0, 2.0, "a TLS handshake that never gets an answer"),
+            ("silent", "http", 60.0, 2.0, "no response at all"),
+        ]
+        for behaviour, scheme, timeout, deadline, what in cases:
+            fu.TIMEOUT, fu.DEADLINE = timeout, deadline
+            server = SlowServer(behaviour)
+            started = time.monotonic()
+            result = tool("fetch_url", url=f"{scheme}://127.0.0.1:{server.port}/")
+            took = time.monotonic() - started
+            time.sleep(0.5)
+            gone = server.client_gone_at is not None and server.client_gone_at - started < deadline + 0.6
+            server.close()
+            check(result["ok"] is False and "timed out" in result["error"] and took < deadline + 0.5,
+                  f"{what}: stopped at {took:.1f}s against a {deadline:g}s deadline ({result['error']})")
+            check(gone, f"and the connection was closed, not left open ({what})")
+        stray = [t.name for t in threading.enumerate() if t.name.startswith("Thread") and t.is_alive() and "Timer" in repr(t)]
+        check(stray == [], f"no watchdog timer is left running: {stray}")
+    finally:
+        fu.TIMEOUT, fu.DEADLINE, fu._address_allowed = real
+
+    section("fetch_url: addresses that embed a private IPv4 address (L5)")
+    allowed = fu._address_allowed
+    for address in [
+        "64:ff9b::7f00:1", "64:ff9b::a00:1", "64:ff9b::c0a8:101", "64:ff9b::a9fe:a9fe", "64:ff9b::6440:1",
+        "64:ff9b:1::808:808", "64:ff9b:1::7f00:1", "::ffff:127.0.0.1", "::127.0.0.1", "::a00:1",
+        "2002:7f00:1::1", "2002:a00:1::1", "127.0.0.1", "10.0.0.1", "169.254.169.254", "::1", "fe80::1",
+    ]:
+        check(not allowed(address, 443), f"refuses {address}")
+    for address in ["64:ff9b::808:808", "8.8.8.8", "2606:4700:4700::1111", "::ffff:8.8.8.8"]:
+        check(allowed(address, 443), f"allows {address}")
+
+
 SECTIONS = {
     "open_url": check_open_url,
     "open_app": check_open_app,
     "extract_archive": check_extract_archive,
     "git_status": check_git_status,
+    "fetch_url": check_fetch_url,
 }
 
 

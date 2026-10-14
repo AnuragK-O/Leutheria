@@ -13,11 +13,15 @@ The bounds are the point, since the URL is whatever the model was asked for
              there is no second lookup for a hostile DNS server to answer
              differently.
   redirects  followed by hand, MAX_REDIRECTS at most, each hop re-validated.
-  time       TIMEOUT per lookup / connect / read and DEADLINE for the whole
-             call. DEADLINE, plus at most one TIMEOUT of slack for an
-             operation already under way, is the longest this can hold a
-             request open (it runs on a worker thread -- dispatcher._run_tool
-             -- so the read loop itself is not held up).
+  time       DEADLINE is absolute and covers every phase: lookup, connect,
+             TLS, response headers, body, redirects. Socket timeouts are
+             per operation, so on their own a server sending one header
+             line every few seconds held a call 40 s against a 12 s
+             deadline (review M2). A watchdog therefore shuts down every
+             socket the call opened when DEADLINE passes, which makes
+             whatever read is blocked on it fail at once; nothing is left
+             behind holding a connection. The lookup has no socket and is
+             bounded by waiting on it (see _resolve).
   size       at most MAX_BYTES read off the wire (and at most that many after
              decompression), at most MAX_CHARS of text returned.
   type       text only; anything else is refused before the body is read.
@@ -62,13 +66,37 @@ class _FetchError(Exception):
     pass
 
 
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")  # RFC 6052 well-known prefix
+_NAT64_LOCAL = ipaddress.ip_network("64:ff9b:1::/48")  # RFC 8215 local-use
+_IPV4_COMPATIBLE = ipaddress.ip_network("::/96")  # deprecated ::a.b.c.d
+
+
+def _embedded_ipv4(ip):
+    """The IPv4 address an IPv6 address stands for, or None: mapped
+    (::ffff:a.b.c.d), NAT64 (64:ff9b::a.b.c.d -- a NAT64 gateway connects to
+    that IPv4 address, so 64:ff9b::7f00:1 is this machine's loopback as seen
+    from the gateway; review L5), IPv4-compatible, and 6to4."""
+    if ip.version != 6:
+        return None
+    if ip.ipv4_mapped:
+        return ip.ipv4_mapped
+    if ip in _NAT64 or ip in _NAT64_LOCAL or (ip in _IPV4_COMPATIBLE and int(ip) > 1):
+        return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    return ip.sixtofour
+
+
 def _address_allowed(address: str, port: int) -> bool:
     """Whether a resolved IP address may be connected to. The one policy
     hook: scripts/skills_check_dev.py replaces it to let its own server on
-    127.0.0.1 through, and nothing in the agent does."""
+    127.0.0.1 through, and nothing in the agent does. Both the address and
+    any IPv4 address embedded in it must be public."""
     ip = ipaddress.ip_address(address.split("%")[0])
-    mapped = getattr(ip, "ipv4_mapped", None)
-    return (mapped or ip).is_global
+    embedded = _embedded_ipv4(ip)
+    if embedded is not None and not embedded.is_global:
+        return False
+    if ip in _NAT64_LOCAL:
+        return False  # local-use: by definition a gateway on this network
+    return (embedded or ip).is_global
 
 
 # getaddrinfo has no timeout of its own, so it runs on a worker thread and
@@ -76,6 +104,47 @@ def _address_allowed(address: str, port: int) -> bool:
 # until the system resolver gives up; two is enough for redirects.
 _resolver = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="fetch-url-dns")
 _call = threading.local()  # .deadline for the fetch running on this thread
+
+
+def _track(sock) -> None:
+    """Register a socket with the running call's watchdog. If the deadline
+    has already passed (the watchdog fired while this one was being made),
+    shut it at once."""
+    watch = getattr(_call, "watch", None)
+    if watch is None:
+        return
+    with watch["lock"]:
+        watch["sockets"].append(sock)
+        expired = watch["expired"]
+    if expired:
+        _shut(sock)
+
+
+def _shut(sock) -> None:
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+    try:
+        sock.close()
+    except OSError:
+        pass
+
+
+def _start_watchdog(seconds: float) -> dict:
+    watch = {"lock": threading.Lock(), "sockets": [], "expired": False}
+
+    def fire():
+        with watch["lock"]:
+            watch["expired"] = True
+            sockets = list(watch["sockets"])
+        for sock in sockets:
+            _shut(sock)
+
+    watch["timer"] = threading.Timer(seconds, fire)
+    watch["timer"].daemon = True
+    watch["timer"].start()
+    return watch
 
 
 def _remaining() -> float:
@@ -109,6 +178,7 @@ def _connect_checked(address, timeout=None, source_address=None):
     error = None
     for family, kind, proto, _, sockaddr in infos[:3]:
         sock = socket.socket(family, kind, proto)
+        _track(sock)
         try:
             sock.settimeout(_remaining())
             sock.connect(sockaddr)
@@ -131,6 +201,16 @@ class _CheckedHTTPSConnection(http.client.HTTPSConnection):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._create_connection = _connect_checked
+
+    def connect(self):
+        # HTTPSConnection.connect, with the handshake split off: wrapping
+        # detaches the plain socket the watchdog knows about, so the TLS
+        # socket is registered before the handshake, which a server can
+        # drip just as it can drip headers.
+        http.client.HTTPConnection.connect(self)
+        self.sock = self._context.wrap_socket(self.sock, server_hostname=self.host, do_handshake_on_connect=False)
+        _track(self.sock)
+        self.sock.do_handshake()
 
 
 class _HTTP(urllib.request.HTTPHandler):
@@ -384,6 +464,27 @@ def _fetch(url: str, deadline: float) -> dict:
 
 
 def fetch_url(url: str, max_chars: int = DEFAULT_CHARS) -> dict:
+    """The tool. One watchdog per call: when DEADLINE passes it shuts every
+    socket the call opened, so whichever phase is blocked fails at once,
+    and whatever happens the sockets are closed before this returns."""
+    watch = _call.watch = _start_watchdog(DEADLINE)
+    try:
+        result = _fetch_url(url, max_chars)
+    finally:
+        watch["timer"].cancel()
+        _call.watch = None
+        for sock in watch["sockets"]:
+            _shut(sock)
+    if watch["expired"]:
+        # The read the watchdog cut short reports a reset, a bad status
+        # line -- or, part-way through a body, a clean end of file, which
+        # would pass a truncated page off as the whole one. What actually
+        # happened is the deadline, whatever the read said.
+        return {"ok": False, "error": f"timed out after {DEADLINE:.0f} seconds"}
+    return result
+
+
+def _fetch_url(url: str, max_chars: int) -> dict:
     if not isinstance(url, str) or not url.strip():
         return {"ok": False, "error": "no URL given"}
     if isinstance(max_chars, bool) or not isinstance(max_chars, int):
