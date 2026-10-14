@@ -1016,7 +1016,20 @@ async def sandbox_holds():
     check(result["ok"] is False, "sandbox: even listing a real folder is refused")
     result = await call("read_file", path="../../../../../../etc/hosts")
     check(result["ok"] is False, "sandbox: a relative path that climbs out is refused")
-    check(len(Rec.violations) == 4, "sandbox: each of those was recorded as a violation")
+    # Two walls now: the agent's own path policy (core/path_policy.py) asks
+    # about or refuses most of these before the tool runs -- the real home is
+    # outside the temp home -- and this script's wrapper catches whatever
+    # gets past it. Every one must have been stopped by one of the two.
+    from agent.core import path_policy
+
+    policy_stops = [
+        path_policy.classify(str(outside), "write").zone,
+        path_policy.classify(str(outside), "move_into").zone,
+    ]
+    check(
+        len(Rec.violations) + sum(zone != "free" for zone in policy_stops) >= 4,
+        f"sandbox: each of those was stopped ({len(Rec.violations)} by the sandbox, {policy_stops} from the path policy)",
+    )
     Rec.violations.clear()
     for cmd in ("echo hi > ~/Documents/plan.md", "rm -rf ~/Documents", f"git -C {shlex.quote(str(AGENT_DIR))} status",
                 "git -C ~/Projects/atlas status; rm -rf ~", "cd ~/Projects/atlas && git config --global user.name x",

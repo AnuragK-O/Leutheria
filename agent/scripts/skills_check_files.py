@@ -58,6 +58,12 @@ from agent.tools.registry import TOOLS  # noqa: E402
 
 skills_registry.GENERATED_DIR = TMP / "generated"
 common.HOME_DIR = str(HOME)
+# The scratch folders beside the temp home are a user-content folder as far
+# as the path policy is concerned (they live under /private/var, which is a
+# system folder for everyone else).
+from agent.core import path_policy  # noqa: E402
+
+path_policy.EXTRA_FREE_ROOTS.append(str(TMP / "work"))
 
 
 async def _silent(*_args, **_kwargs):

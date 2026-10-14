@@ -1,7 +1,4 @@
-import json
-
-from agent.core import preferences, session, trust
-from agent.core.logging_util import LOG_FILE
+from agent.core import logging_util, preferences, session, trust
 from agent.skills.registry import SKILLS
 from agent.tools.registry import TOOLS
 
@@ -27,39 +24,31 @@ def _scan_log() -> tuple:
     usage: dict = {}
     history: list = []
 
-    if not LOG_FILE.exists():
-        return usage, history
+    # Across rotated files (logging_util.iter_records), oldest first.
+    for record in logging_util.iter_records():
+        event = record.get("type")
 
-    with LOG_FILE.open() as f:
-        for line in f:
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
+        if event == "tool_call":
+            name = record.get("tool")
+            if not name:
                 continue
+            stats = usage.setdefault(name, {"runs": 0, "failures": 0, "last_used": None})
+            stats["runs"] += 1
+            result = record.get("result")
+            if isinstance(result, dict) and result.get("ok") is False:
+                stats["failures"] += 1
+            stats["last_used"] = record.get("ts")
 
-            event = record.get("type")
-
-            if event == "tool_call":
-                name = record.get("tool")
-                if not name:
-                    continue
-                stats = usage.setdefault(name, {"runs": 0, "failures": 0, "last_used": None})
-                stats["runs"] += 1
-                result = record.get("result")
-                if isinstance(result, dict) and result.get("ok") is False:
-                    stats["failures"] += 1
-                stats["last_used"] = record.get("ts")
-
-            elif event in HISTORY_EVENTS:
-                history.append(
-                    {
-                        "ts": record.get("ts"),
-                        "event": HISTORY_EVENTS[event],
-                        "name": record.get("name"),
-                        "confident": record.get("confident"),
-                        "uncertain_count": record.get("uncertain_count"),
-                    }
-                )
+        elif event in HISTORY_EVENTS:
+            history.append(
+                {
+                    "ts": record.get("ts"),
+                    "event": HISTORY_EVENTS[event],
+                    "name": record.get("name"),
+                    "confident": record.get("confident"),
+                    "uncertain_count": record.get("uncertain_count"),
+                }
+            )
 
     history.reverse()
     return usage, history[:HISTORY_LIMIT]
@@ -148,4 +137,9 @@ def snapshot() -> dict:
         "history": history,
         "trusted": trust.list_trusted(),
         "grants": session.active_grants(),
+        # Set when preferences.json / trusted_commands.json could not be used
+        # and the agent has fallen back to "ask about everything" / "trust
+        # nothing". Not rendered by the Library yet (NOTES).
+        "settings_errors": [e for e in (preferences.load_error, trust.load_error) if e]
+        + [f"the saved setting for {name} was unreadable, so it asks first" for name in sorted(preferences._bad_entries)],
     }

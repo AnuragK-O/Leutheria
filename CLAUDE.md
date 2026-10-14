@@ -77,6 +77,7 @@ pkill -if "python -m agent"; pkill -f "Electron.app"
 ./.venv/bin/python scripts/overlay_protocol_check.py    # overlay role, real server on a spare port
 ./.venv/bin/python scripts/ws_auth_check.py             # socket authentication, real server on a spare port
 ./.venv/bin/python scripts/skills_check_system.py       # system tools + skills; volume/media/banners/speech stubbed
+./.venv/bin/python scripts/security_policy_check.py     # path zones, taint, voice approval, fail-closed, log redaction
 ./.venv/bin/python scripts/dispatch_loop_check.py       # tools off the loop, run_command limits, confirmation timeout
 ./.venv/bin/python scripts/voice_server_check.py        # real server + real LLM; speaks aloud, needs API key
 ./.venv/bin/python scripts/skills_e2e_check.py --scripted   # agent_loop + dispatch in a sandbox home, written plans, no model
@@ -164,7 +165,46 @@ control, above), and `destructive`. `run_command` is the only `"destructive"` to
 because it's the only unbounded one; the rest of the non-GUI tools are `"safe"` *by construction* —
 `trash_file` uses the recoverable Trash, `move_file`/`copy_file` refuse to overwrite,
 `append_text` can't truncate. A new tool that can destroy data must either be redesigned to
-be structurally safe or tagged `"destructive"`. Where that safety is "check, then write",
+be structurally safe or tagged `"destructive"`.
+
+**"Safe" also means *where*, and that is decided in `dispatch()`, never in the tool.** Every
+path argument is declared in the tool's registry entry (`"paths": {"source": "remove",
+"destination": "move_into"}`; modes read / inspect / archive / copy_from / write / remove /
+move_into) and judged by `core/path_policy.py` on the realpath and file identity (case- and
+symlink-proof, never string prefixes) before the tool runs. A schema argument that looks like
+a path but isn't declared makes the tool refuse — a new tool can't forget. Write-side zones:
+FREE (no prompt) in `FREE_HOME_FOLDERS` — Documents, Desktop, Downloads, Pictures, Movies,
+Music, and the skills' defaults Notes, Projects, Scratch, Snapshots; ASK (a confirmation with
+a system-written reason line) anywhere else, including /Volumes and temp folders; DENY (no
+prompt, trust or preference reaches past it) for the agent's install tree and state files
+wherever they're configured, `~/Library`, any top-level dot entry in home, system roots,
+anything inside a bundle or a `.git`, temp folders and `.Trash` as a move target, and a
+symlinked destination. Reads are denied for credentials (`~/.ssh`, `~/.gnupg`, `~/.aws`,
+`.env*`, `*.pem`, `id_*`, `.netrc`…), `~/Library`, and the agent's own `.env`/state/log.
+Roots come from the effective home, so checks point HOME at a temp dir; a check's scratch
+folder outside it goes in `path_policy.EXTRA_FREE_ROOTS`, never anywhere else.
+
+**Taint is per request and declared, too.** `"untrusted_output": True` marks a tool whose
+result is text a stranger may have written (files, clipboard, pages, repos, command output,
+on-screen text); `"outbound": "<arg>"` marks a tool that contacts or opens that URL. Once a
+request (a `session.begin_request` ContextVar opened by `agent_loop.run()`, so skills' steps
+share it) has run an untrusted tool, an outbound call asks — full URL on the card — unless
+the URL or its host is in the user's own words. Never hard-code tool names for this.
+
+**Settings fail closed.** An unreadable `preferences.json` makes every capability ask
+until it's fixed and the agent restarts; an unreadable trust file trusts nothing; neither is
+overwritten in place (kept as `.corrupt-<time>`); the inventory carries `settings_errors`.
+
+**A spoken confirmation always ends with the agent's own line** naming the real action
+(`dispatcher._system_line`: the exact command, up to 200 characters, or tool + key argument),
+after the model's sentence. A spoken "yes" is refused for a command
+`voice_confirm.needs_click()` flags (too long to have been read out, shell metacharacters,
+quoting, non-ASCII, downloaders/interpreters/deleters) — the card stays open for a click. A
+spoken "no" always counts. Timer reminders are spoken after a fixed "Timer reminder:" lead-in.
+
+**The event log never holds content.** `log_event` scrubs values under content keys
+(`logging_util.CONTENT_KEYS`) to their size and caps every other string; it rotates at 5 MB.
+Read the log only through `logging_util.iter_records()` (spans rotated files). Where that safety is "check, then write",
 the tool's name also goes in `dispatcher._FS_WRITERS`: tools run on worker threads now, and
 that set shares one lock so two of them can never interleave. `run_command` is bounded even
 so (timeout with a process-group kill, capped output — README "Where tools run"), and every

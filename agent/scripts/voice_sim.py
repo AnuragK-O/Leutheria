@@ -153,7 +153,7 @@ def scenarios() -> dict:
         "confirm": {
             "about": "destructive step: spoken prompt, unclear reply ignored, 'yes' approves, then dismissal",
             "parts": [silence(1), say("Hey Jarvis."), silence(1), say("Run the shell command echo hello."),
-                      silence(6), say("What does that do?"), silence(3), say("Yes, go ahead."), silence(6),
+                      silence(9), say("What does that do?"), silence(3), say("Yes, go ahead."), silence(6),
                       say("That's all, thanks."), silence(2)],
             "expect_states": ["idle", "listening", "hearing", "transcribing", "thinking", "speaking",
                               "awaiting_confirmation", "hearing", "transcribing", "awaiting_confirmation",
@@ -165,7 +165,7 @@ def scenarios() -> dict:
         "dismiss_pending": {
             "about": "'thanks' over an open confirmation declines it and ends the session (BUGS.md #22)",
             "parts": [silence(1), say("Hey Jarvis."), silence(1), say("Run the shell command echo hello."),
-                      silence(6), say("Thanks."), silence(4)],
+                      silence(9), say("Thanks."), silence(4)],
             "expect_states": None,
             "expect_prefix": ["idle", "listening", "hearing", "transcribing", "thinking", "speaking",
                               "awaiting_confirmation", "hearing", "transcribing", "idle"],

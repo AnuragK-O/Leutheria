@@ -1296,6 +1296,54 @@ hand-written skills); the Library doesn't render them yet.
 `./.venv/bin/python scripts/skill_format_check.py` exercises all of this against temp
 directories.
 
+### Security model
+
+Leutheria acts on your real Mac on the say-so of a language model, and the model reads text
+other people wrote (web pages, files, your clipboard, repositories). So what it may do is
+decided by fixed rules in the agent (`core/dispatcher.py`, `core/path_policy.py`), not by the
+model. `scripts/security_policy_check.py` replays the attacks these rules were built against.
+
+**Without asking**, it may: read ordinary files, list and search folders, and create, add to,
+copy, move, zip, unzip and Trash files inside your user folders — Documents, Desktop,
+Downloads, Pictures, Movies, Music, and Notes, Projects, Scratch and Snapshots in your home
+folder (the places its skills save to). Nothing it does there overwrites: writes only create
+or append, moves and copies refuse an existing destination, deletes go to the Trash.
+
+**It asks first** (a card on screen, also spoken) before:
+- running any shell command;
+- writing, moving or trashing anything outside those folders — elsewhere in your home folder,
+  on another disk, in a temporary folder — or trashing a whole user folder. The card says why;
+- contacting or opening a web address after it has read a file, the clipboard, a web page,
+  a repository or command output in the same request, unless you named that site yourself.
+  The card shows the full address;
+- controlling another app (once per app, for 15 minutes);
+- anything you've marked "always ask" in the Library — and everything, if its settings file
+  is damaged.
+
+A spoken "yes" approves only what was read out in full. A shell command that is long, chains
+or redirects (`|`, `;`, `&&`, `$( )`, `>`…), uses quoting, or calls a downloader, interpreter
+or `rm`/`sudo` needs a click on the card; "no" always works by voice.
+
+**It will never**, whatever you approve or set: change its own program, settings, approvals,
+log or system prompt; write in `~/Library`, in hidden files and folders at the top of your home
+folder (`.zshrc`, `.ssh`, `.gitconfig`, `.config`…), in system folders (`/System`, `/Library`,
+`/usr`, `/etc`, `/Applications`…), inside an app or other package, or in a repository's `.git`
+folder; write through a symbolic link; move something into a temporary folder or straight into
+the Trash folder; read keys and credentials (`~/.ssh`, `~/.gnupg`, `~/.aws`, `.env` files,
+`*.pem`, `id_rsa`…), anything in `~/Library` (passwords, cookies, browser profiles), or its own
+API key. Text from files, pages and the clipboard never goes into its log, which keeps sizes,
+paths and outcomes only and rotates at 5 MB.
+
+**What this does not protect against**, honestly:
+- Prompt injection can still make it *ask* for something you shouldn't approve. Read the card;
+  the line at the end of a spoken prompt is the agent's, the sentence before it is the model's.
+- It can still write junk into your own folders, and it can still read your ordinary
+  documents and say what's in them, to you or (if you approve the address) a web site.
+- Spotlight results and folder listings can show names of files it isn't allowed to read.
+- Any program running as you on this Mac can already do everything Leutheria can; the agent
+  is not a sandbox against local software. (The WebSocket requires the per-launch token.)
+- A check-then-act race: a path that is swapped for a symlink between the check and the write.
+
 ### Confirmation flow
 
 Any tool tagged `"destructive"` in `agent/tools/registry.py` (currently just `run_command`)
