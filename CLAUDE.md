@@ -95,6 +95,8 @@ overlay-qt/build/tests/tst_overlaymodel endLingersThenHides   # one test functio
 
 # UI work without Python: a scripted agent on port 8799
 cd app && node scripts/mock-agent.js
+# UI regression pass: own mock + own Electron, every view/state, both themes, 1180 and 940 px
+cd app && node scripts/ui-capture.js --out <dir>     # then LOOK at the PNGs
 cd app && env -u ELECTRON_RUN_AS_NODE LEUTHERIA_AGENT_URL=ws://127.0.0.1:8799 LEUTHERIA_NO_SPAWN=1 npx electron .
 ```
 
@@ -266,6 +268,12 @@ and skipped (voice goes to `off`), never blocking or delaying the text reply.
 - A message type `main.js` doesn't recognise falls through to the `pendingIsChat` branch and
   can be shown in place of a real reply. Any new agent-to-UI message needs an explicit handler
   there, and a UI flow isn't verified until it's verified through `main.js` (BUGS.md #17).
+- UI design system: every token (colour, type, space, geometry, motion) lives in one place,
+  the first two blocks of `app/renderer/styles.css`, and `app/renderer/DESIGN.md` documents
+  them and the patterns built on them -- extend it rather than improvising, and update it
+  when you add a pattern. Colour means state, never decoration. No emoji in UI strings
+  (icons are `PATHS` in `js/util.js`). The two overlays share the design: a visual change
+  to the Electron overlay is a change to the Qt one too.
 - Animated overlay assets are **animated WebP** (decided 2026-10-08): the one format with
   real transparency that plays in both overlays. Homebrew's Qt has only the AVFoundation
   media backend, which can't decode WebM, so a transparent WebM works in Electron and falls

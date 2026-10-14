@@ -380,11 +380,11 @@ Six views in the left sidebar:
 | view | what it's for |
 |---|---|
 | **Assistant** | The conversation. Type or talk; confirmations and skill proposals appear inline as cards. |
-| **Library** | Every tool and skill in one master/detail list. Select one to read its description and parameters, see how often it's actually been used, turn it off, make it always ask first, or (for a learned skill) inspect its steps and delete it. |
+| **Library** | Every tool and skill (90-odd) in one master/detail list, grouped by what it's for (Files, Search and storage, Tidy and archive, Notes and clipboard, Web and weather, Development, System, Apps and GUI control, Timers and routines, Other). Groups fold away and stay folded; the filter matches name and description and highlights the hit; four state filters (asks first, disabled, learned, never used) narrow the list. Keyboard: `/` filter, arrows move and the detail follows, left/right fold a group, Esc clears. Select one to read what it does (first sentence) and when the model is told to use it (the rest, one sentence per line, other capabilities linked), see usage, turn it off, make it always ask first, or (for a learned skill) inspect its steps and delete it. Groups are assigned in `app/renderer/js/library-groups.js`; anything unlisted lands in Other rather than disappearing. |
 | **Activity** | How the skill set has grown: every skill proposed, saved, or turned down, plus a most-used breakdown. |
 | **Permissions** | Standing approvals (the `remember: session/always` ones) with a revoke button, and every capability whose settings differ from its default, with a reset. |
 | **Voice** | Settings for the always-listening session: wake word on/off, which wake words, sensitivity, the end-of-utterance pause, the silence timeout, dismiss phrases, and the microphone. See below. |
-| **Logs** | The raw bridge stream, out of the way of the conversation. Copy or clear it. |
+| **Logs** | The raw bridge stream, out of the way of the conversation, one row per line with its source tag tinted and stderr (`:err`) marked red. Copy or clear it. |
 
 Dark is the default theme; a light one ("paper terminal") ships too. Toggle at the bottom
 of the sidebar (the choice sticks, and the overlay follows it).
@@ -420,11 +420,22 @@ mock agent and its own Electron (isolated userData, never port 8765), drives eve
 and state in both themes at 1180 and 940 px wide, checks on the way that each control
 still does what it did (typed command, confirmation answered from the main window and
 from the overlay, skill proposal, Library toggle and Reset, Revoke, Voice settings save,
-refusal and Revert, theme toggle, the voice pill, toasts), and writes a PNG of each. One
+refusal and Revert, theme toggle, the voice pill, toasts, a confirmation that times out
+(`by: "timeout"`) and one that needs a click (`voice_approvable: false`), a settings file
+the agent couldn't read, the delete flow for a learned skill, a 200-entry transcript,
+non-Latin text, reduced motion, Logs Copy and Clear, and the agent going away), and
+writes a PNG of each. One
 line per check, non-zero exit on a failure. The PNGs are for looking at: a UI change isn't
 verified until someone has. `--real ws://127.0.0.1:<port>` runs a reduced pass against an
 agent that's already running, sending only management messages. The windows appear on
 screen while it runs.
+
+**Confirmation cards** show the agent's `reason` (why this one asks) when it sends one,
+and when `voice_approvable` is false they carry an amber NEEDS A CLICK line in place of
+"say yes or no": a spoken yes won't approve it. A confirmation the agent times out
+(`confirmation_resolved` with `by: "timeout"`) settles as "Timed out with no answer. It
+wasn't run." If the inventory carries `settings_errors` (a settings file the agent
+couldn't read), a red notice heads the Library and Permissions views.
 
 **Library controls, and what they actually do:**
 - **Available to Leutheria** — off means the capability isn't included in the tool schemas
