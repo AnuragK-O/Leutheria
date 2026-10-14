@@ -57,25 +57,23 @@ Item {
             Layout.fillWidth: true
             spacing: 2
 
-            Text {
+            CssText {
                 Layout.fillWidth: true
                 text: island.overlay.label.toUpperCase()
                 color: island.tone
                 font: Typeface.mono(500, island.theme.fsMicro, island.theme.trackLabel)
-                lineHeightMode: Text.FixedHeight
-                lineHeight: island.theme.fsMicro * 1.4
+                cssLineHeight: island.theme.fsMicro * 1.4
                 elide: Text.ElideRight
                 Behavior on color { ColorAnimation { duration: island.theme.tBase } }
             }
 
-            Text {
+            CssText {
                 Layout.fillWidth: true
                 text: island.overlay.line
                 color: island.overlay.lineMuted ? island.theme.text2 : island.theme.text
                 font: Typeface.ui(400, island.theme.fsMd)
                 // CSS line-height is px; Qt's default mode is proportional.
-                lineHeightMode: Text.FixedHeight
-                lineHeight: island.theme.fsMd * 1.4
+                cssLineHeight: island.theme.fsMd * 1.4
                 wrapMode: Text.Wrap
                 maximumLineCount: 2
                 elide: Text.ElideRight

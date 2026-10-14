@@ -51,6 +51,11 @@ class OverlayModel : public QObject
     Q_PROPERTY(QString confirmationId READ confirmationId NOTIFY confirmationChanged)
     Q_PROPERTY(QString confirmationTool READ confirmationTool NOTIFY confirmationChanged)
     Q_PROPERTY(QString confirmationCommand READ confirmationCommand NOTIFY confirmationChanged)
+    // Why this call asks (the agent's `reason`); empty when it didn't say.
+    Q_PROPERTY(QString confirmationReason READ confirmationReason NOTIFY confirmationChanged)
+    // False when a spoken yes won't approve it (`voice_approvable: false`):
+    // the card says it needs a click instead of "say yes or no".
+    Q_PROPERTY(bool confirmationVoiceApprovable READ confirmationVoiceApprovable NOTIFY confirmationChanged)
     Q_PROPERTY(bool confirmationApproved READ confirmationApproved NOTIFY confirmationChanged)
     Q_PROPERTY(QString confirmationOutcome READ confirmationOutcome NOTIFY confirmationChanged)
     Q_PROPERTY(bool interactive READ isInteractive NOTIFY interactiveChanged)
@@ -83,6 +88,8 @@ public:
     QString confirmationId() const { return m_card ? m_card->id : QString(); }
     QString confirmationTool() const { return m_card ? m_card->tool : QString(); }
     QString confirmationCommand() const { return m_card ? m_card->command : QString(); }
+    QString confirmationReason() const { return m_card ? m_card->reason : QString(); }
+    bool confirmationVoiceApprovable() const { return !m_card || m_card->voiceApprovable; }
     bool confirmationApproved() const { return m_card && m_card->approved; }
     QString confirmationOutcome() const { return m_card ? m_card->outcome : QString(); }
     bool isInteractive() const { return m_card && !m_card->answered; }
@@ -118,6 +125,8 @@ private:
         QString id;
         QString tool;
         QString command;
+        QString reason;
+        bool voiceApprovable = true;
         bool answered = false;
         bool approved = false;
         QString outcome;
@@ -130,7 +139,8 @@ private:
 
     void startSession();
     void endSession(const QString &reason);
-    void settleCard(bool approved, const QString &how);
+    // `outcome` is the whole settled line ("Approved by voice", "Timed out, not run").
+    void settleCard(bool approved, const QString &outcome);
     void hideCard();
     void setLevel(double level);
     void setVisible(bool visible);

@@ -176,7 +176,13 @@ void OverlayModel::onConfirmationRequired(const QJsonObject &message)
 
     m_settleTimer.stop();
     const QString args = formatArgs(message.value("args"_L1).toObject(), kArgsChars);
-    setCard(Card{.id = id, .tool = tool, .command = u"%1(%2)"_s.arg(tool, args)});
+    // Only an explicit false means "click only", as in overlay.js.
+    const bool voiceApprovable = message.value("voice_approvable"_L1).toBool(true);
+    setCard(Card{.id = id,
+                 .tool = tool,
+                 .command = u"%1(%2)"_s.arg(tool, args),
+                 .reason = message.value("reason"_L1).toString(),
+                 .voiceApprovable = voiceApprovable});
     refresh(); // the awaiting_confirmation line names the tool
 }
 
@@ -190,11 +196,18 @@ void OverlayModel::onConfirmationResolved(const QJsonObject &message)
     // Our own answer never gets here (the card settled in answer()), so
     // this was decided somewhere else; same wording as overlay.js.
     // by:"overlay" on a card still open here means a second overlay answered.
+    // "timeout": nobody answered in time and the agent refused it. Any other
+    // `by` still settles the card, without claiming who answered.
     const QString by = message.value("by"_L1).toString();
-    const QString how = by == "voice"_L1     ? u" by voice"_s
-                        : by == "overlay"_L1 ? u" on the other overlay"_s
-                                             : u" in the main window"_s;
-    settleCard(approved.toBool(), how);
+    if (by == "timeout"_L1) {
+        settleCard(false, u"Timed out, not run"_s);
+        return;
+    }
+    const QString how = by == "voice"_L1                                          ? u" by voice"_s
+                        : by == "overlay"_L1                                      ? u" on the other overlay"_s
+                        : by == "ui"_L1 || by == "user"_L1 || by.isEmpty() ? u" in the main window"_s
+                                                                                  : QString();
+    settleCard(approved.toBool(), (approved.toBool() ? u"Approved"_s : u"Declined"_s) + how);
 }
 
 void OverlayModel::handleDisconnected()
@@ -208,7 +221,7 @@ void OverlayModel::answer(bool approved)
     if (!isInteractive())
         return;
     const QString id = m_card->id;
-    settleCard(approved, QString());
+    settleCard(approved, approved ? u"Approved"_s : u"Declined"_s);
     emit confirmRequested(id, approved);
 }
 
@@ -243,12 +256,12 @@ void OverlayModel::endSession(const QString &reason)
         m_lingerTimer.start();
 }
 
-void OverlayModel::settleCard(bool approved, const QString &how)
+void OverlayModel::settleCard(bool approved, const QString &outcome)
 {
     Card card = *m_card;
     card.answered = true;
     card.approved = approved;
-    card.outcome = (approved ? u"Approved"_s : u"Declined"_s) + how;
+    card.outcome = outcome;
     setCard(std::move(card));
     m_settleTimer.start();
 }

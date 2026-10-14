@@ -426,6 +426,14 @@ private slots:
         QTest::newRow("main window") << u"ui"_s << false << u"Declined in the main window"_s;
         QTest::newRow("no by") << QString() << true << u"Approved in the main window"_s;
         QTest::newRow("another overlay") << u"overlay"_s << true << u"Approved on the other overlay"_s;
+        QTest::newRow("user") << u"user"_s << true << u"Approved in the main window"_s;
+        // The agent's confirmation timeout: refused, and said so -- never
+        // "Declined in the main window", which nobody did.
+        QTest::newRow("timeout") << u"timeout"_s << false << u"Timed out, not run"_s;
+        // A `by` this overlay doesn't know still settles the card, without
+        // naming who answered.
+        QTest::newRow("unknown by") << u"phone"_s << true << u"Approved"_s;
+        QTest::newRow("unknown by, declined") << u"phone"_s << false << u"Declined"_s;
     }
 
     void resolvedElsewhere()
@@ -448,6 +456,49 @@ private slots:
         QVERIFY(!model.isInteractive());
         QCOMPARE(model.confirmationOutcome(), outcome);
         QTRY_VERIFY_WITH_TIMEOUT(!model.confirmationVisible(), OverlayModel::kSettleMs * 3);
+    }
+
+    // A timed-out card shows the refusal (the cross), whatever `approved` says.
+    void timeoutSettlesAsNotRun()
+    {
+        OverlayModel model;
+        model.handleMessage(sessionStarted());
+        model.handleMessage(confirmationRequired(u"c1"_s));
+        model.handleMessage(confirmationResolved(u"c1"_s, true, u"timeout"_s));
+        QVERIFY(model.confirmationAnswered());
+        QVERIFY(!model.confirmationApproved());
+        QCOMPARE(model.confirmationOutcome(), u"Timed out, not run"_s);
+    }
+
+    void reasonAndVoiceApprovable()
+    {
+        OverlayModel model;
+        model.handleMessage(sessionStarted());
+
+        // Absent: no reason, and a spoken answer works.
+        model.handleMessage(confirmationRequired(u"c1"_s));
+        QCOMPARE(model.confirmationReason(), QString());
+        QVERIFY(model.confirmationVoiceApprovable());
+
+        QJsonObject message = confirmationRequired(u"c2"_s);
+        message.insert(u"reason"_s, u"It deletes files, and run_command always asks."_s);
+        message.insert(u"voice_approvable"_s, false);
+        model.handleMessage(message);
+        QCOMPARE(model.confirmationId(), u"c2"_s);
+        QCOMPARE(model.confirmationReason(), u"It deletes files, and run_command always asks."_s);
+        QVERIFY(!model.confirmationVoiceApprovable());
+
+        // Only an explicit false means click-only (overlay.js: === false).
+        message = confirmationRequired(u"c3"_s);
+        message.insert(u"voice_approvable"_s, u"no"_s);
+        model.handleMessage(message);
+        QVERIFY(model.confirmationVoiceApprovable());
+
+        // A wrong-typed reason is ignored, not shown.
+        message = confirmationRequired(u"c4"_s);
+        message.insert(u"reason"_s, 42);
+        model.handleMessage(message);
+        QCOMPARE(model.confirmationReason(), QString());
     }
 
     void resolvedForAnotherIdIsIgnored()

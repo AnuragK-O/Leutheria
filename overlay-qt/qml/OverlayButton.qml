@@ -1,32 +1,58 @@
 import QtQuick
+import Leutheria.Core
 
-// styles.css `.btn.btn-sm` (and `.btn-primary`). Hand-rolled rather than a
-// QtQuick.Controls Button: the look is fixed by the Electron app's CSS, and
-// restyling a Controls style to match costs more than these few lines.
-Rectangle {
+// styles.css `.btn.btn-sm` with `.btn-danger` (Decline) or `.btn-hot`
+// (Approve): 28 px tall, Chakra Petch 11 px / 600 / 0.06em upper, the
+// bottom-right corner cut 6 px, outline and fill swapped on hover and press
+// over --t-fast. Hand-rolled rather than a QtQuick.Controls Button: the look
+// is fixed by the Electron app's CSS.
+Item {
     id: button
+
+    enum Kind { Danger, Hot }
 
     required property string text
     required property Theme theme
-    property bool primary: false
+    property int kind: OverlayButton.Danger
     signal clicked()
 
-    implicitWidth: label.implicitWidth + 20
-    implicitHeight: 26
-    radius: 6
-    color: primary ? (mouse.containsMouse ? theme.violetHi : theme.violetLo)
-                   : (mouse.containsMouse ? theme.raised2 : theme.surface)
-    border.width: 1
-    border.color: primary ? color : (mouse.containsMouse ? theme.lineStrong : theme.line)
-    Behavior on color { ColorAnimation { duration: 120 } }
+    readonly property bool hot: kind === OverlayButton.Hot
+    readonly property bool hovered: mouse.containsMouse
+    readonly property bool pressed: mouse.pressed
+
+    // padding: 0 12px 0 10px
+    implicitWidth: label.implicitWidth + 22
+    implicitHeight: theme.hit
+
+    CutBox {
+        id: shape
+        anchors.fill: parent
+        corner: CutBox.BottomRight
+        cut: button.theme.cutSm
+        // .btn-hot: amber, mixed 82% with --text on hover and press.
+        // .btn-danger: red 55% into --line on --surface; red on hover,
+        // tinted 14% (24% pressed).
+        readonly property color hotFill: button.hovered || button.pressed
+                                         ? button.theme.mix(button.theme.amber, button.theme.text, 0.82)
+                                         : button.theme.amber
+        color: button.hot ? hotFill
+             : button.pressed ? button.theme.mix(button.theme.red, button.theme.surface, 0.24)
+             : button.hovered ? button.theme.mix(button.theme.red, button.theme.surface, 0.14)
+             : button.theme.surface
+        lineColor: button.hot ? hotFill
+                 : button.hovered || button.pressed ? button.theme.red
+                 : button.theme.mix(button.theme.red, button.theme.line, 0.55)
+        Behavior on color { ColorAnimation { duration: button.theme.tFast } }
+        Behavior on lineColor { ColorAnimation { duration: button.theme.tFast } }
+    }
 
     Text {
         id: label
-        anchors.centerIn: parent
-        text: button.text
-        color: button.primary ? "white" : button.theme.text
-        font.pointSize: 12
-        font.weight: Font.Medium
+        x: 10
+        anchors.verticalCenter: parent.verticalCenter
+        text: button.text.toUpperCase()
+        color: button.hot ? button.theme.textOnAccent : button.theme.red
+        font: Typeface.ui(600, button.theme.fsXs, button.theme.trackButton)
     }
 
     MouseArea {
