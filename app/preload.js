@@ -28,6 +28,16 @@ contextBridge.exposeInMainWorld("leutheria", {
   revokeTrust: (key) => ipcRenderer.invoke("revoke-trust", key),
   revokeGrant: (app) => ipcRenderer.invoke("revoke-grant", app),
 
+  // --- shared skills (the public registry) ---
+  registryList: (refresh) => ipcRenderer.invoke("registry-list", refresh),
+  registryPreview: (name, contentHash) => ipcRenderer.invoke("registry-preview", { name, contentHash }),
+  // Only from the install card's button, after every step has been shown.
+  registryInstall: (name, contentHash) => ipcRenderer.invoke("registry-install", { name, contentHash }),
+  registrySharePreview: (skill) => ipcRenderer.invoke("registry-share-preview", skill),
+  // main.js opens the GitHub page itself (https://github.com/ only); no URL
+  // crosses this bridge in either direction.
+  registryShare: (skill) => ipcRenderer.invoke("registry-share", skill),
+
   // --- voice session ---
   // action: "start" | "end" | "toggle"
   voiceSession: (action) => ipcRenderer.invoke("voice-session", action),
