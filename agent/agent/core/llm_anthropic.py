@@ -43,6 +43,12 @@ class AnthropicBackend(LLMBackend):
             "max_tokens": MAX_TOKENS,
             "tools": _with_cache_breakpoint(tools),
             "messages": messages,
+            # Effort is the cost/quality dial on current models (thinking is
+            # adaptive and on by default on Haiku 5.5; it can't be switched off
+            # with a budget). "low" = fewer, more consolidated tool calls and
+            # terse replies -- right for short spoken requests. Raise it if
+            # multi-step requests start missing steps.
+            "output_config": {"effort": "low"},
         }
         if system:
             kwargs["system"] = system
