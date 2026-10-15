@@ -74,6 +74,7 @@ pkill -if "python -m agent"; pkill -f "Electron.app"
 ./.venv/bin/python scripts/voice_sim.py dismiss confirm # just the named scenarios (--list shows them)
 ./.venv/bin/python scripts/skill_format_check.py        # generated-skill validation
 ./.venv/bin/python scripts/tts_check.py                 # TTS backends + fallbacks, fake ElevenLabs + stubbed say
+./.venv/bin/python scripts/licenses_report.py --write   # regenerate THIRD_PARTY_LICENSES.md's package tables
 ./.venv/bin/python scripts/overlay_protocol_check.py    # overlay role, real server on a spare port
 ./.venv/bin/python scripts/ws_auth_check.py             # socket authentication, real server on a spare port
 ./.venv/bin/python scripts/skills_check_system.py       # system tools + skills; volume/media/banners/speech stubbed
