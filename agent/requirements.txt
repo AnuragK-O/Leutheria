@@ -5,6 +5,7 @@ certifi==2026.7.22
 cffi==2.1.1
 charset-normalizer==3.5.1
 cloudpickle==3.1.2
+cryptography==50.0.2
 docstring_parser==0.18.0
 filelock==3.32.5
 flatbuffers==25.12.19
@@ -28,8 +29,6 @@ onnxruntime==1.29.0
 openai-whisper==20250625
 openwakeword==0.6.0
 packaging==26.3
-pathvalidate==3.3.1
-piper-tts==1.7.0
 protobuf==7.36.1
 pycparser==3.0
 pydantic==2.13.5

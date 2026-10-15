@@ -1,0 +1,1112 @@
+{
+  "builtin_skills": [
+    "archive_folder",
+    "archive_old_downloads",
+    "backup_folder",
+    "battery_check",
+    "clean_desktop",
+    "clipboard_to_file",
+    "clipboard_to_note",
+    "clone_repo",
+    "code_scratchpad",
+    "collect_screenshots",
+    "daily_journal",
+    "define_term",
+    "duplicate_report",
+    "end_of_day",
+    "extract_latest_download",
+    "find_large_files",
+    "find_recent_files",
+    "focus_mode",
+    "folder_summary",
+    "git_snapshot",
+    "git_sync",
+    "github_open",
+    "hide_panel",
+    "install_shared_skill",
+    "meeting_prep",
+    "morning_briefing",
+    "new_node_project",
+    "new_python_project",
+    "new_web_page",
+    "open_workspace",
+    "organize_by_date",
+    "organize_folder",
+    "pomodoro",
+    "project_snapshot",
+    "quick_note",
+    "quick_timer",
+    "read_later",
+    "repo_overview",
+    "research_topic",
+    "save_page_notes",
+    "screenshot_to_folder",
+    "setup_project",
+    "show_panel",
+    "storage_report",
+    "system_health_check",
+    "weather_report",
+    "web_search",
+    "wind_down"
+  ],
+  "catalog_version": "fdfd2a1736d731c84b03a47ac3d42f7234b048dabf714b61c72a2ec9fdf41d4d",
+  "format": 1,
+  "leutheria_ref": "ae6a10cf074897d2dbf628dd74cb6c39c82a289e",
+  "tools": [
+    {
+      "input_schema": {
+        "properties": {
+          "path": {
+            "description": "Path of the file to append to.",
+            "type": "string"
+          },
+          "text": {
+            "description": "The text to append as a new line.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "text"
+        ],
+        "type": "object"
+      },
+      "name": "append_text",
+      "outbound": null,
+      "paths": {
+        "path": "write"
+      },
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "all": {
+            "description": "True to cancel every running timer.",
+            "type": "boolean"
+          },
+          "label": {
+            "description": "The timer's label, or part of it.",
+            "type": "string"
+          },
+          "timer_id": {
+            "description": "The id from set_timer or list_timers.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "cancel_timer",
+      "outbound": null,
+      "paths": {},
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "destination": {
+            "description": "Where to copy it to.",
+            "type": "string"
+          },
+          "source": {
+            "description": "Path of the file or folder to copy.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "destination"
+        ],
+        "type": "object"
+      },
+      "name": "copy_file",
+      "outbound": null,
+      "paths": {
+        "destination": "write",
+        "source": "copy_from"
+      },
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "path": {
+            "description": "Filesystem path of the folder to create, e.g. '~/Desktop/notes'.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "create_folder",
+      "outbound": null,
+      "paths": {
+        "path": "write"
+      },
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "app": {
+            "description": "App to inspect. Defaults to the current working app, or whatever is frontmost.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "describe_ui",
+      "outbound": null,
+      "paths": {},
+      "safety": "safe",
+      "untrusted_output": true
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "archive": {
+            "description": "Path of the zip or tar file.",
+            "type": "string"
+          },
+          "destination": {
+            "description": "Folder to create and unpack into. It must not exist yet. Defaults to a folder named after the archive, next to it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "archive"
+        ],
+        "type": "object"
+      },
+      "name": "extract_archive",
+      "outbound": null,
+      "paths": {
+        "archive": "archive",
+        "destination": {
+          "default_beside": "archive",
+          "mode": "write"
+        }
+      },
+      "safety": "safe",
+      "untrusted_output": true
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "max_chars": {
+            "description": "Most characters of text to return. Defaults to 8000, at most 20000.",
+            "type": "integer"
+          },
+          "url": {
+            "description": "The full address, e.g. 'https://example.com/article'.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "name": "fetch_url",
+      "outbound": "url",
+      "paths": {},
+      "safety": "safe",
+      "untrusted_output": true
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "path": {
+            "description": "Path of the file or folder to look at.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "file_info",
+      "outbound": null,
+      "paths": {
+        "path": "inspect"
+      },
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "limit": {
+            "description": "Most sets to return, largest waste first. Defaults to 20, at most 50.",
+            "type": "integer"
+          },
+          "min_size_kb": {
+            "description": "Ignore files smaller than this many kilobytes. Defaults to 1.",
+            "type": "number"
+          },
+          "path": {
+            "description": "Folder to check, e.g. '~/Pictures'.",
+            "type": "string"
+          },
+          "recursive": {
+            "description": "Look inside subfolders too. Defaults to true.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "find_duplicates",
+      "outbound": null,
+      "paths": {
+        "path": "inspect"
+      },
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "extension": {
+            "description": "File type without the dot, e.g. 'pdf'. Several may be given separated by commas, e.g. 'jpg,png'.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Most results to return. Defaults to 50, at most 500.",
+            "type": "integer"
+          },
+          "min_size_mb": {
+            "description": "Only files at least this many megabytes.",
+            "type": "number"
+          },
+          "modified_within_days": {
+            "description": "Only files changed in the last this many days. Use 1 for today, 2 to include yesterday.",
+            "type": "number"
+          },
+          "name": {
+            "description": "Part of the file name, case-insensitive, e.g. 'invoice'. May use * and ? wildcards.",
+            "type": "string"
+          },
+          "older_than_days": {
+            "description": "Only files not changed for at least this many days.",
+            "type": "number"
+          },
+          "path": {
+            "description": "Folder to search, e.g. '~/Downloads'.",
+            "type": "string"
+          },
+          "recursive": {
+            "description": "Look inside subfolders too. Defaults to true.",
+            "type": "boolean"
+          },
+          "sort": {
+            "description": "Order of results: newest first (the default), oldest first, largest first, or by name.",
+            "enum": [
+              "modified",
+              "oldest",
+              "size",
+              "name"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "find_files",
+      "outbound": null,
+      "paths": {
+        "path": "inspect"
+      },
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "name": {
+            "description": "The application name, e.g. 'TextEdit'.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "focus_app",
+      "outbound": null,
+      "paths": {},
+      "safety": "scoped",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "limit": {
+            "description": "How many of the largest items to list. Defaults to 10, at most 50.",
+            "type": "integer"
+          },
+          "path": {
+            "description": "Folder to measure, e.g. '~/Downloads'.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "folder_size",
+      "outbound": null,
+      "paths": {
+        "path": "inspect"
+      },
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "get_battery_status",
+      "outbound": null,
+      "paths": {},
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "get_clipboard",
+      "outbound": null,
+      "paths": {},
+      "safety": "safe",
+      "untrusted_output": true
+    },
+    {
+      "input_schema": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "get_current_datetime",
+      "outbound": null,
+      "paths": {},
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "get_disk_space",
+      "outbound": null,
+      "paths": {},
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "get_network_status",
+      "outbound": null,
+      "paths": {},
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "get_system_info",
+      "outbound": null,
+      "paths": {},
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "get_volume",
+      "outbound": null,
+      "paths": {},
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "days": {
+            "description": "How many days of forecast, 1 to 7. Defaults to 1 (today).",
+            "type": "integer"
+          },
+          "place": {
+            "description": "City name, e.g. 'Paris' or 'Portland, Oregon'. Omit for home.",
+            "type": "string"
+          },
+          "units": {
+            "description": "Celsius and km/h, or Fahrenheit and mph. Omit to follow the Mac's region.",
+            "enum": [
+              "metric",
+              "imperial"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "get_weather",
+      "outbound": null,
+      "paths": {},
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "log_count": {
+            "description": "How many recent commits to include. Defaults to 5, at most 20.",
+            "type": "integer"
+          },
+          "path": {
+            "description": "A folder inside the repository, e.g. '~/Projects/atlas'.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "git_status",
+      "outbound": null,
+      "paths": {
+        "path": "read"
+      },
+      "safety": "safe",
+      "untrusted_output": true
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "path": {
+            "description": "Directory path to list, e.g. '~/Desktop'.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "list_files",
+      "outbound": null,
+      "paths": {
+        "path": "inspect"
+      },
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "list_running_apps",
+      "outbound": null,
+      "paths": {},
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "list_timers",
+      "outbound": null,
+      "paths": {},
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "action": {
+            "description": "Which media key to press.",
+            "enum": [
+              "play_pause",
+              "next",
+              "previous"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "media_control",
+      "outbound": null,
+      "paths": {},
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "destination": {
+            "description": "Where to move it to.",
+            "type": "string"
+          },
+          "source": {
+            "description": "Path of the file or folder to move.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "destination"
+        ],
+        "type": "object"
+      },
+      "name": "move_file",
+      "outbound": null,
+      "paths": {
+        "destination": "move_into",
+        "source": "remove"
+      },
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "name": {
+            "description": "The application name, e.g. 'Calculator' or 'Safari'.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "open_app",
+      "outbound": null,
+      "paths": {},
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "path": {
+            "description": "Path of the file or folder, e.g. '~/Documents/resume.pdf'.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "open_file",
+      "outbound": null,
+      "paths": {
+        "path": "inspect"
+      },
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "url": {
+            "description": "The full web address, e.g. 'https://u.gg'.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "name": "open_url",
+      "outbound": "url",
+      "paths": {},
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "app": {
+            "description": "The application's name, e.g. 'Visual Studio Code'.",
+            "type": "string"
+          },
+          "path": {
+            "description": "The file or folder to open, e.g. '~/Projects/atlas'.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "app"
+        ],
+        "type": "object"
+      },
+      "name": "open_with",
+      "outbound": null,
+      "paths": {
+        "path": "inspect"
+      },
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "keys": {
+            "description": "Shortcut in 'modifier+key' form, e.g. 'cmd+n' or 'cmd+shift+s'.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "keys"
+        ],
+        "type": "object"
+      },
+      "name": "press_keys",
+      "outbound": null,
+      "paths": {},
+      "safety": "scoped",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "path": {
+            "description": "Path of the file to read.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "read_file",
+      "outbound": null,
+      "paths": {
+        "path": "read"
+      },
+      "safety": "safe",
+      "untrusted_output": true
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "path": {
+            "description": "Path of the file or folder to show.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "reveal_in_finder",
+      "outbound": null,
+      "paths": {
+        "path": "inspect"
+      },
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "cmd": {
+            "description": "The shell command to run.",
+            "type": "string"
+          },
+          "timeout_s": {
+            "description": "Seconds to allow before the command is stopped. Defaults to 300, at most 1800.",
+            "type": "number"
+          }
+        },
+        "required": [
+          "cmd"
+        ],
+        "type": "object"
+      },
+      "name": "run_command",
+      "outbound": null,
+      "paths": {},
+      "safety": "destructive",
+      "untrusted_output": true
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "extension": {
+            "description": "Only search files of this type, without the dot, e.g. 'md'. Several may be given separated by commas.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Most files to return. Defaults to 20, at most 100.",
+            "type": "integer"
+          },
+          "path": {
+            "description": "Folder to search, or a single file.",
+            "type": "string"
+          },
+          "text": {
+            "description": "The word or phrase to look for.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "text"
+        ],
+        "type": "object"
+      },
+      "name": "search_file_contents",
+      "outbound": null,
+      "paths": {
+        "path": "read"
+      },
+      "safety": "safe",
+      "untrusted_output": true
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "limit": {
+            "description": "Most results to return. Defaults to 8, at most 20.",
+            "type": "integer"
+          },
+          "query": {
+            "description": "What the skill should do, e.g. 'tidy downloads'.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "search_shared_skills",
+      "outbound": null,
+      "paths": {},
+      "safety": "safe",
+      "untrusted_output": true
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "text": {
+            "description": "The text to copy to the clipboard.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      },
+      "name": "set_clipboard",
+      "outbound": null,
+      "paths": {},
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "place": {
+            "description": "City name, optionally 'City, Region' or 'City, Country'.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "place"
+        ],
+        "type": "object"
+      },
+      "name": "set_home_location",
+      "outbound": null,
+      "paths": {},
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "hours": {
+            "description": "Hours to count down.",
+            "type": "number"
+          },
+          "label": {
+            "description": "Short name for the timer, e.g. 'pasta'.",
+            "type": "string"
+          },
+          "message": {
+            "description": "Sentence to speak when it ends, instead of the default.",
+            "type": "string"
+          },
+          "minutes": {
+            "description": "Minutes to count down.",
+            "type": "number"
+          },
+          "seconds": {
+            "description": "Seconds to count down.",
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "set_timer",
+      "outbound": null,
+      "paths": {},
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "change": {
+            "description": "Amount to add to the current volume, negative to lower it. Not together with level.",
+            "type": "integer"
+          },
+          "level": {
+            "description": "Exact volume from 0 to 100.",
+            "type": "integer"
+          },
+          "muted": {
+            "description": "True to mute, false to unmute.",
+            "type": "boolean"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "set_volume",
+      "outbound": null,
+      "paths": {},
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "message": {
+            "description": "Notification body text.",
+            "type": "string"
+          },
+          "title": {
+            "description": "Notification title.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "message"
+        ],
+        "type": "object"
+      },
+      "name": "show_notification",
+      "outbound": null,
+      "paths": {},
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "folder": {
+            "description": "Only look inside this folder. Optional.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Most results to return. Defaults to 20, at most 50.",
+            "type": "integer"
+          },
+          "query": {
+            "description": "The file name or part of it, e.g. 'resume'.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "spotlight_search",
+      "outbound": null,
+      "paths": {
+        "folder": "inspect"
+      },
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "save_path": {
+            "description": "Where to save the screenshot. Defaults to a timestamped file on the Desktop if omitted.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "take_screenshot",
+      "outbound": null,
+      "paths": {
+        "save_path": "write"
+      },
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "path": {
+            "description": "Path of the file or folder to trash.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "trash_file",
+      "outbound": null,
+      "paths": {
+        "path": "remove"
+      },
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "text": {
+            "description": "The text to type.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      },
+      "name": "type_text",
+      "outbound": null,
+      "paths": {},
+      "safety": "scoped",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "content": {
+            "description": "The full text to put in the file.",
+            "type": "string"
+          },
+          "path": {
+            "description": "Path of the file to create, e.g. '~/Documents/plan.md'.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "content"
+        ],
+        "type": "object"
+      },
+      "name": "write_new_file",
+      "outbound": null,
+      "paths": {
+        "path": "write"
+      },
+      "safety": "safe",
+      "untrusted_output": false
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "destination": {
+            "description": "Path of the zip file to create, or a folder to put it in. Defaults to the source's name with .zip, next to the source.",
+            "type": "string"
+          },
+          "exclude": {
+            "description": "Names of files or subfolders to leave out wherever they appear, e.g. 'node_modules'.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "source": {
+            "description": "Folder or file to compress.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source"
+        ],
+        "type": "object"
+      },
+      "name": "zip_folder",
+      "outbound": null,
+      "paths": {
+        "destination": {
+          "default_beside": "source",
+          "mode": "write"
+        },
+        "source": "archive"
+      },
+      "safety": "safe",
+      "untrusted_output": false
+    }
+  ]
+}

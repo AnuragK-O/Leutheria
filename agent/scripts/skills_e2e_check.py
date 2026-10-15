@@ -377,6 +377,9 @@ STUBS = {
     "get_clipboard": _stub_get_clipboard, "set_clipboard": _stub_set_clipboard,
     "take_screenshot": _stub_screenshot, "trash_file": _stub_trash, "spotlight_search": _stub_spotlight,
     "fetch_url": _stub_fetch_url, "run_command": _guarded_run_command,
+    # The registry client has its own check (registry_client_check.py);
+    # here it must never reach the network.
+    "search_shared_skills": lambda **_: {"ok": True, "results": [], "count": 0},
     "focus_app": _stub_gui("focus_app"), "type_text": _stub_gui("type_text"), "press_keys": _stub_gui("press_keys"),
     **{name: (lambda n: lambda **_: dict(CANNED[n]))(name) for name in CANNED},
 }

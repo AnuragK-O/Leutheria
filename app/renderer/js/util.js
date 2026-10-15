@@ -74,6 +74,11 @@ window.LX = window.LX || {};
     opacity: "M4 4h16v16H4z|M4 20 20 4|M12 20l8-8|M16 20l4-4",
     pin: "M12 16v6|M8 3h8|M9 3v6l-3 4v3h12v-3l-3-4V3",
     timer: "M12 4a9 9 0 1 0 0 18 9 9 0 0 0 0-18z|M12 9v4l3 2|M9 1h6",
+    // Shared skills: a parcel (one from the registry), and a shield struck
+    // through (an index refused for failing its signature check).
+    package: "M3 7.5 12 3l9 4.5v9L12 21l-9-4.5z|M3 7.5l9 4.5 9-4.5|M12 12v9|m7.5 5.25 9 4.5",
+    "shield-x":
+      "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z|m9.5 9.5 5 5|m14.5 9.5-5 5",
   };
 
   function icon(name) {

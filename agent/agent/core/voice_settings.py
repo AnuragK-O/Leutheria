@@ -24,18 +24,23 @@ DEFAULTS = {
     "input_device": None,
     # Spoken replies. "elevenlabs" (the default, by user choice 2026-09-30) is
     # a cloud voice needing ELEVENLABS_API_KEY in the environment; without a
-    # key every reply falls back to "piper", which is local and free. The key
+    # key every reply falls back to "say" (macOS's built-in voices, local and
+    # free). "piper" is optional (GPL; requirements-piper.txt). The key
     # itself is never a setting, so it never lands in this file. tts_voice is
     # the selected backend's voice id; null means that backend's default.
     "tts_backend": "elevenlabs",
     "tts_voice": None,
 }
 
-TTS_BACKENDS = ("piper", "elevenlabs")
-# Mirrors tts_backends.VOICE_ID_PATTERN (not imported: that module pulls in
-# requests and numpy, and this one stays import-light). The id lands in a
-# file path or a URL path, so nothing that could escape either is accepted.
-_VOICE_ID = re.compile(r"^[A-Za-z0-9_-]{1,100}$")
+# "piper" stays a valid setting when Piper isn't installed: the reply then
+# falls back to "say" with a tts_error, rather than the file being rejected.
+TTS_BACKENDS = ("say", "piper", "elevenlabs")
+# The union of what the backends accept (not imported: tts_backends pulls in
+# requests and numpy, and this one stays import-light): Piper names and
+# ElevenLabs ids are [A-Za-z0-9_-], macOS voice names add spaces, parentheses
+# and accented letters ("Eddy (English (US))"). Never a slash or a dot, so
+# nothing can escape a path; each backend re-checks its own stricter form.
+_VOICE_ID = re.compile(r"^\w[\w() -]{0,99}\Z")
 
 
 def _is_number(value) -> bool:
@@ -69,7 +74,7 @@ def _validate(key: str, value):
         return None if value in TTS_BACKENDS else f"tts_backend must be one of: {', '.join(TTS_BACKENDS)}"
     if key == "tts_voice":
         ok = value is None or (isinstance(value, str) and _VOICE_ID.match(value))
-        return None if ok else "tts_voice must be null or a voice id (letters, digits, - and _)"
+        return None if ok else "tts_voice must be null or a voice name (letters, digits, spaces, (), - and _)"
     return f"unknown voice setting: {key}"
 
 

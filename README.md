@@ -91,7 +91,7 @@ server.py
   once agent_loop gets a final text reply (no more tool calls):
     |
     v
-  tts.py (Piper, or ElevenLabs if selected) -> played through the speakers by the agent itself,
+  tts.py (ElevenLabs, macOS say, or Piper if installed) -> played through the speakers by the agent itself,
                     bracketed by "speaking" started/ended messages
 
   meanwhile, if the trace had >= 2 tool calls and no skill covers it yet
@@ -163,7 +163,7 @@ agent/                Python sidecar
     skill_format_check.py  Generated-skill format: metadata, validation rules, load /
                        migrate / reject, placeholder substitution (temp dirs only)
     tts_check.py       TTS backends against a fake ElevenLabs server: request shape, PCM
-                       decoding, every fallback to Piper, settings validation (no key needed)
+                       decoding, every fallback to say, the say backend (stubbed + one file render), settings validation (no key needed)
     overlay_protocol_check.py  The overlay client role: real server on a side port,
                        a UI and an overlay client in both orders -- never primary,
                        mirrored messages, confirming from the overlay (no API key needed)
@@ -227,12 +227,13 @@ agent/                Python sidecar
       audio_input.py    Decodes a base64 audio payload to a temp file, hands off to stt.py
       stt.py            Local Whisper ("base" model) transcription
       tts.py            Speaks replies: picks the TTS backend from the voice settings
-                        (falling back to Piper if it fails) and plays the audio through
+                        (falling back to macOS `say` if it fails) and plays the audio through
                         the Mac's speakers from the sidecar itself; speak() is shared by
                         server.py (final replies) and dispatcher.py (spoken confirmation
                         prompts)
       tts_backends.py   TTSBackend interface -- swappable engine seam, like llm.py.
-                        PiperBackend (local, "en_US-amy-medium" by default) and
+                        MacSayBackend (macOS `say` rendered to a temp WAV; the fallback),
+                        PiperBackend (optional, GPL, imported lazily) and
                         ElevenLabsBackend (cloud REST API, needs ELEVENLABS_API_KEY)
       skill_learning.py Checks logs/events.jsonl for a matching past run, then asks
                         Claude to generalize into a skill definition -- confidently
@@ -287,7 +288,7 @@ agent/                Python sidecar
                         Dev / web / clipboard skills -- see "Skills" for the table
       generated/         Agent-proposed, user-approved skills as JSON (gitignored --
                         local learned state, not source code)
-    assets/voices/       Piper voice model (gitignored, auto-downloaded on first use)
+    assets/voices/       Piper voice model, if Piper is installed (gitignored, downloaded on first use)
   logs/                 events.jsonl (gitignored) -- see "Logs" section below
 ```
 
@@ -305,7 +306,8 @@ brew install ffmpeg
 # Python side
 cd agent
 /opt/homebrew/bin/python3.12 -m venv .venv
-./.venv/bin/pip install -r requirements.txt   # includes openai-whisper (~1GB w/ torch) and piper-tts
+./.venv/bin/pip install -r requirements.txt   # includes openai-whisper (~1GB w/ torch)
+./.venv/bin/pip install -r requirements-piper.txt   # optional: the Piper voice (GPL-3.0, not shipped)
 
 # Node side
 cd ../app
@@ -318,7 +320,8 @@ Privacy & Security > Accessibility) for whatever launched the agent — Electron
 
 Both STT and TTS auto-download their models on first use, no manual steps needed:
 - Whisper's `"base"` model (~140MB) goes to `~/.cache/whisper`.
-- Piper's `"en_US-amy-medium"` voice (~60MB) goes to `agent/agent/assets/voices/` (gitignored).
+- If Piper is installed, its `"en_US-amy-medium"` voice (~60MB) goes to `agent/agent/assets/voices/` (gitignored).
+  The default local voice, macOS `say`, needs no download.
 
 Expect a one-time delay the first time each is actually used (first voice command in,
 first spoken reply out).
@@ -444,7 +447,11 @@ pin and the layout file, persistence across a restart, a corrupt and a partly ba
 hot edge (the cursor and mouse button are injected through an env-gated test hook,
 `LEUTHERIA_TEST_HOOKS=1`, that exists only in that run), auto-hide, both alerts anchors,
 and accent/density in every window; and that no panel ever becomes the focused window or
-makes the app frontmost. `--panels-only` / `--no-panels` pick one pass. One
+makes the app frontmost. A third pass covers shared skills: Installed/Discover, the install
+card for a flagged high-risk entry, an install, an update, a withdrawn skill, the cap, the
+three index states, the share preview, Open on GitHub, the too-long copy-and-open path, a
+non-GitHub URL refused by main.js (the test hook records instead of opening a browser), and
+the skills panel. `--panels-only` / `--shared-only` / `--no-panels` / `--no-shared` pick passes. One
 line per check, non-zero exit on a failure. The PNGs are for looking at: a UI change isn't
 verified until someone has. `--real ws://127.0.0.1:<port>` runs a reduced pass against an
 agent that's already running, sending only management messages. The windows appear on
@@ -522,6 +529,60 @@ Both settings live in `agent/preferences.json` and survive restarts. Deleting a 
 skill also clears its overrides, so a later skill that happens to reuse the name doesn't
 silently inherit the dead one's settings.
 
+**Shared skills (the public registry).** The Library's kind filter has a fourth segment,
+**Shared** (the skills panel has it too). It lists skills other people published to the
+registry in two groups: **Installed** (version, author, and an `update` or `withdrawn` tag)
+and **Discover** (author, version, a `high` risk tag, and a `>_` mark on any skill with a
+`run_command` step); a withdrawn version is never offered. The search matches name,
+summary, author and the tools it uses; the state strip filters available, installed, with
+an update, and withdrawn. Selecting an entry shows its screening (AI screened or human
+reviewed, risk, whether it runs commands, every flag the screener raised, the tools it
+uses) and, for something not installed or with an update, the **install card**: it loads
+the full definition (`registry_preview`) and lists every step with every argument in
+full, never truncated, `run_command` steps marked amber with "asks every run", plus what
+the model will be told about it and the author's own text (labelled as never sent to the
+model). `registry_install` is sent only by that card's Install button. An update shows the
+new version's steps with the changed and new ones marked; the old version keeps working
+until it's approved. At the imported-skill cap the button is disabled and says why.
+An index that failed its signature check, or a registry with no key configured, is drawn
+as a security state (red, `role="alert"`, "Index refused"), not as a network error, and
+nothing from it is listed or installable; an unreachable registry is a neutral notice.
+Installed shared skills stay listed and usable either way.
+
+A learned skill's detail has **Share**: *Preview share* asks the agent for the sanitized
+definition (`registry_share_preview`) and shows the target file path, what changed (home
+paths turned into `~`, usage dropped), the values to check before publishing (a drive
+name, a shell command), and the JSON itself. Each flagged value has an "I checked this"
+box, and *Open on GitHub* stays disabled until every one is ticked; it sends
+`registry_share` with those flag ids as `acknowledged`;
+`main.js` opens the returned URL itself, and only if it is `https://github.com/...` (a
+renderer never sees or supplies a URL). If the agent says the file is too long for a link
+(`too_long: true` with `json`), main.js copies the JSON to the clipboard and opens the page
+without it: the button then reads *Copy and open GitHub*. The user submits the pull request
+from their own GitHub account.
+
+Control messages the UI sends are answered as `control_result` with the same
+`request_id`; their shapes are the agent's, listed under "Shared-skill registry
+(`registry_*`)" in the protocol reference below -- one shape per message, and the mock
+agent (`scripts/mock-registry.js`) returns exactly those. The UI keys on `error_code`,
+never on error text:
+
+| `error_code` | Where | The UI shows |
+|---|---|---|
+| `verification_failed` | any (signature, unknown key, malformed or older index, file sha256/size/content_hash, validate.py) | red "Index refused"; nothing installable |
+| `no_signing_key` | any | red "no registry key configured" |
+| `expired` | any (the index is at or past its signed `expires_at`) | red "Index refused: out of date"; nothing installable |
+| `unavailable` | list (ok:false = nothing cached; ok:true + `stale` = last verified index shown), preview, install | neutral notice |
+| `cap_reached` / `yanked` / `not_found` / `refused` / `author_changed` | install, preview | the card's "Not installed" callout |
+| `not_shareable` / `not_found` / `bad_request` | share_preview, share | "Can't share this one" |
+| `unacknowledged_flags` | share | the error under the preview (the button is disabled until every flag is ticked, so only a stale preview reaches it) |
+
+In the inventory an imported skill is `origin: "imported"` (agent-side it is a generated
+skill with a registry record), `deletable: true`, with `registry`: the record
+(`name, content_hash, version, author, summary, review, has_run_command, published_at,
+installed_at, first_run_done, withdrawn`) and `author_description`. A typed `registry offline` /
+`stale` / `tampered` / `nokey` / `full` / `badshare` / `ok` switches the mock's state.
+
 **The Voice view.** Edits collect in a draft; **Save changes** sends one
 `set_voice_settings` carrying only the keys you changed, and **Revert** drops the draft.
 The form only checks that values are well-formed (a number, at least one wake word); the
@@ -539,11 +600,12 @@ listening off closes the mic and the header pill goes to Off.
   outside a session, and is refused during one.
 - **Silence timeout** has a **Never** box: the session then ends only on a dismiss phrase
   or Stop listening.
-- **Voice output** picks the engine replies are spoken with (Piper or ElevenLabs) and an
+- **Voice output** picks the engine replies are spoken with (ElevenLabs, macOS voice, or
+  Piper — listed only when the agent reports it installed) and an
   optional voice id; switching engines clears the voice id, since one engine's id means
   nothing to the other. With ElevenLabs selected, it warns when the agent reports no
   `ELEVENLABS_API_KEY` (`tts_available` in `get_voice_settings`), since replies would
-  still come out in Piper's voice.
+  still come out in the macOS voice.
 
 ### Testing the agentic loop
 
@@ -581,7 +643,7 @@ feed the same transcript handling in `server.py`.
 ### Voice output (TTS)
 
 Every final text reply is also spoken out loud automatically — no toggle needed. The
-agent synthesizes it locally with Piper right after sending the text response and plays
+agent synthesizes it with the selected engine right after sending the text response and plays
 it through the Mac's speakers **itself** — the renderer never touches the audio. This
 applies to typed, spoken, and tool-triggered replies alike, since it's wired in at the
 point where the final response is sent, not per input method. If synthesis or playback
@@ -589,30 +651,45 @@ fails for any reason, it's logged (`tts_error` in `agent/logs/events.jsonl`) but
 blocks or delays the text reply itself — TTS is additive, not a dependency of the core
 loop.
 
-**Two voice engines** behind one `TTSBackend` interface (`agent/core/tts_backends.py`,
+**Three voice engines** behind one `TTSBackend` interface (`agent/core/tts_backends.py`,
 mirroring `llm.py`'s `LLMBackend`): each returns int16 samples plus a sample rate, so
 playback, the `speaking` messages and the half-duplex mic muting don't know which one ran.
 
-- **Piper** (the fallback): local, free, offline. Voice `en_US-amy-medium` unless `tts_voice`
-  names another Piper voice (e.g. `en_GB-alan-medium`), which downloads on first use.
+- **macOS voice** (`say`, the fallback): built into every Mac — local, free, offline, no
+  download and no GPL component. `MacSayBackend` runs `/usr/bin/say` with a fixed argv
+  (text on stdin, a 60 s timeout) to *render a WAV file* in a private temp directory, reads
+  it back and deletes it; `say` never plays anything itself, so playback stays in
+  `tts.speak()` and the half-duplex muting is unchanged. `tts_voice` is a `say -v` voice
+  name (e.g. `Samantha`, `Eddy (English (US))`), checked against the `say -v '?'` listing
+  (cached per process); empty means the system voice (System Settings > Accessibility >
+  Spoken Content).
+- **Piper** (optional): local, free, offline, but **GPL-3.0** (and its wheel bundles
+  espeak-ng, also GPL), so it is not in `requirements.txt` and not part of a distributed
+  build. Install it yourself with `./.venv/bin/pip install -r requirements-piper.txt`.
+  Nothing imports it at startup: without it the backend reports unavailable, the Voice view
+  hides it, and a stored `tts_backend: "piper"` falls back to `say` with a `tts_error`.
+  Voice `en_US-amy-medium` unless `tts_voice` names another Piper voice (e.g.
+  `en_GB-alan-medium`), which downloads on first use.
 - **ElevenLabs** (default): noticeably more natural, but it's a cloud call — the reply text
   leaves the Mac, it needs internet, and it's billed per character on your own ElevenLabs
   plan. It uses the `eleven_flash_v2_5` model (lowest latency, half the per-character price
   of the multilingual models; override with `ELEVENLABS_MODEL_ID`) and adds a network round
-  trip before speech starts (the whole reply is synthesized before playback, as with Piper).
+  trip before speech starts (the whole reply is synthesized before playback, as with the others).
   Needs `ELEVENLABS_API_KEY` in the repo-root `.env`; `tts_voice` is an ElevenLabs voice ID,
   default `JBFqnCBsd6RMkjVDRZzb` ("George", a premade voice). **Without a key, every reply
-  is spoken by Piper** (and logs a `tts_error` saying the key is missing) — pick Piper in
-  the Voice view to stay fully local and silence that.
+  is spoken by the macOS voice** (and logs a `tts_error` saying the key is missing) — pick
+  "macOS voice" in the Voice view to stay fully local and silence that.
 
 Pick one in the Voice view's **Voice output** card, or with `set_voice_settings`
 (`tts_backend`, `tts_voice`). The settings are read per utterance, so the next reply uses
 them — no restart. **Fallback:** if the selected backend fails — no key, network error,
 HTTP error (a bad key is a 401), a timeout (5 s connect, 20 s read) — that utterance is
-spoken by Piper's default voice instead and a `tts_error` is logged with the `backend`
-that failed and why. A reply is never silent because of the premium voice. The same goes
-for a Piper voice name that doesn't exist. (Piper's GPL licensing question is in
-`plans/NOTES.md` #1.)
+spoken by `say` in the system voice instead and a `tts_error` is logged with the `backend`
+that failed and why (`fallback: "say"`). A reply is never silent because of the chosen
+voice. The same goes for Piper not being installed, a Piper voice name that doesn't exist,
+or a `say` voice that isn't installed. Only if `say` itself fails in the system voice is the
+reply silent (logged as `tts_error`). Licences of everything shipped are in
+`THIRD_PARTY_LICENSES.md`.
 
 `agent/scripts/tts_check.py` checks all of this without a real key, against a fake
 ElevenLabs server on localhost: the request shape, PCM decoding, the `speak()` path, each
@@ -683,7 +760,7 @@ below, applied live):
 | `endpoint_silence_ms` | `800` | trailing silence that ends an utterance |
 | `dismiss_phrases` | thanks, thank you, that's all, that's it, we're done, goodbye | |
 | `input_device` | `null` | sounddevice index or name; `null` is the system default |
-| `tts_backend` | `"elevenlabs"` | `"piper"` or `"elevenlabs"` — the engine replies are spoken with (see "Voice output") |
+| `tts_backend` | `"elevenlabs"` | `"elevenlabs"`, `"say"` (macOS voice) or `"piper"` (optional) — the engine replies are spoken with (see "Voice output") |
 | `tts_voice` | `null` | the selected engine's voice id (letters, digits, `-`, `_`); `null` is its default |
 
 **Testing it without a microphone.** Two scripts in `agent/scripts/`, neither of which
@@ -696,7 +773,7 @@ cd agent
 ./.venv/bin/python scripts/voice_server_check.py   # the real server on port 8781
 ```
 
-`voice_sim.py` stitches Piper utterances ("Hey Jarvis." … "What time is it?" …
+`voice_sim.py` stitches Piper (or, without it, say) utterances ("Hey Jarvis." … "What time is it?" …
 "Thanks.") with silence and feeds them through the session's injectable frame source at
 real speed, wired to the real server hooks, and checks the exact `voice_state` sequence
 per scenario: dismissal, a long sentence containing "thanks" (not a dismissal), silence
@@ -709,8 +786,9 @@ exercises the control messages, a live session through the real agent loop (need
 API key; the reply *is* played aloud), push-to-talk, and settings surviving a restart.
 It backs up and restores `voice_settings.json`.
 
-Note: `piper-tts` is GPL-3.0-or-later licensed. Fine for local development; worth
-revisiting the licensing implications before any public release/distribution.
+Note: `piper-tts` is GPL-3.0-or-later licensed, which is why it is optional
+(`requirements-piper.txt`). `voice_sim.py` stitches its clips with Piper when it's
+installed and with `say` otherwise.
 
 ### Voice sessions: the overlay, menu bar and shortcut
 
@@ -1363,6 +1441,108 @@ hand-written skills); the Library doesn't render them yet.
 `./.venv/bin/python scripts/skill_format_check.py` exercises all of this against temp
 directories.
 
+### Shared skills (the public registry)
+
+Other users' skills come from one fixed place, `raw.githubusercontent.com/AnuragK-O/
+leutheria-skills/main/` (`core/registry_client.py`; the registry repo, CI and screener are
+separate — `plans/skill-registry-spec.md`). A shared skill is the generated-skill format above
+and runs through the same interpreter and `dispatch()`, so path policy, taint, needs-click
+and every tier apply to its steps unchanged. On top of that:
+
+**Trust chain** (any failure refuses the whole operation, nothing partial): `index.json` +
+`index.json.sig` are fetched (no redirects, 15 s deadline over the whole fetch enforced by a
+socket watchdog, 2 MB index / 4 KB sig / 256 KB skill caps); the Ed25519 signature over the
+exact downloaded bytes must verify with a key in `core/registry_keys.py`, matched by
+`key_id` = first 16 hex of sha256 of the raw public key; the index must be well-formed, with
+`generated_at` and `expires_at` exactly `YYYY-MM-DDTHH:MM:SSZ`, `expires_at` after
+`generated_at` and at most 8 days after it (else `verification_failed`) and still in the
+future (else `expired` -- also for the cached index when the registry is unreachable; the
+contract is skill-registry/README.md "Index format and expiry"); and not older than one
+already verified here (a replayed old index would un-yank a version). That rollback floor,
+the newest `generated_at` seen, lives in `registry_state.json` beside the trust file, so
+deleting the cache doesn't lower it; an unreadable state file refuses the registry until it
+is fixed or removed. A
+skill file must match the index's size and sha256, carry no `source`, recompute to the
+index's `content_hash`, and pass `validate.py` (`validate_shared` where present) against this
+machine's tools. The verified index is cached in `generated/imported/_index_cache.json` (it and the state file are written through a random `O_EXCL|O_NOFOLLOW` 0600 temp file in a 0700 `.registry-tmp/` beside them, refused if that is a symlink) and
+re-verified whenever it's read. **`registry_keys.PRODUCTION_KEYS` ships empty: with no key,
+nothing is listed, previewed or installed.** The production key is added at go-live.
+
+**Imported-skill rules**, enforced in the agent, not the UI:
+- Install only after an approval that showed every step and its args: the UI's card
+  (`registry_preview` then `registry_install`) or, by voice, `install_shared_skill(name)`,
+  whose `_confirm` card's args are the same preview. The approval is never remembered.
+  When the skill has `run_command` steps the voice card is `voice_approvable: false`: it
+  installs only with a click on the card, where the commands are written out (a spoken
+  "no" still cancels).
+- Stored as `generated/<name>.json` with `source: "imported:<content_hash>"` and the
+  publish metadata; author, version, review, `first_run_done` go in a **record** beside it,
+  `generated/imported/<name>.json`, never in the skill. The record is what makes a skill
+  imported: at load, a record without a matching imported file, an imported file without a
+  record, or an imported file whose content no longer matches its hash, is refused
+  (`skill_load_rejected`). `register_skill()` accepts an `imported:` definition only with a
+  record (only the registry client has one).
+- The model never sees the author's description or parameter descriptions. It sees
+  `Shared skill by <author>: <summary>. Runs: tool1, tool2.` (+ a note when it runs
+  commands), built by `core/registry_text.py`: the summary is NFKC-normalised, stripped of
+  control/format characters, URLs, domain names and markdown, any sentence with
+  instruction-like phrasing dropped ("ignore previous", "you must", "always call",
+  "system:", "do not tell", "instead of"...), capped at 200 characters; parameter
+  descriptions get the same at 150. A filter, not a proof — the screener and the run-time
+  rules are the other layers. The Library gets the author's text as `author_description`.
+- What the model reads as the author wrote it is held to plain values: `validate_shared`
+  (the registry's CI runs it too) refuses a string enum value or default longer than 64
+  characters, outside letters/digits/spaces and `. _ ~ / + @ % & : , ( ) -`, or with
+  punctuation followed by a space (a sentence), and more than 20 enum values; the client
+  refuses to preview or install (`refused`) a skill whose name, parameter names, enum
+  values or defaults trip the instruction filter (read with `_` as spaces). The model's
+  schema for an imported skill carries no string defaults at all (`run_template` applies
+  them locally) and drops an enum that fails the filter.
+- At run time (`dispatcher.dispatch`, from `session.current_imported()`, which
+  `registry.run_imported` sets from the record): until the skill has completed one clean
+  run, **every** step asks — trust entries and "don't ask" preferences don't skip it, and an
+  "always" answer is stored as "session". Its `run_command` steps ask **every** run, are
+  never trusted and never remembered (also refused inside `trust.py`). A GUI step asks per
+  step on the first run before its usual app grant.
+- Updates are offered (`update_available`), never applied: installing the newer version is
+  a new approval, and it starts a new first run; the old one keeps working until then.
+  Only a version by the installed one's author is an update: another author's file under
+  the same name is never offered (`update_available` false) and its preview, install and
+  voice install are refused with `author_changed` (delete the installed one first). A
+  yanked version stays installed and is listed `withdrawn: true`; it can't be previewed or
+  installed. When a verified index (on `registry_list`, `registry_preview`/`install` or a
+  voice install) marks the installed version yanked, its record gets `withdrawn: true` and
+  `first_run_done: false` (logged `shared_skill_withdrawn`): from then on **every step asks
+  on every run**, with a "withdrawn from the registry" reason, until it is deleted or an
+  approved update replaces it. Sticky: a later index can't clear it.
+- At most 20 imported skills (each one is on every request's tool list);
+  `LEUTHERIA_MAX_IMPORTED_SKILLS` changes it (0-50). Uninstall is `delete_skill`, which
+  also removes the record.
+- `search_shared_skills(query)` (safe, `untrusted_output`) matches the query against the
+  verified index locally — the query is never sent anywhere, so it declares no `outbound`.
+
+**Sharing** your own learned skill (`registry_share_preview` / `registry_share`): the copy
+gets fresh metadata and no `source`; your home folder becomes `~`; emails, URLs, IPs, phone
+numbers, long tokens, other users' home paths, your username and folders deeper than a
+standard one are flagged wherever they appear (the skill's name and description, each
+parameter's name, description, enum and default, every step argument). Sharing is refused
+(`unacknowledged_flags`) until every flag is ticked in the preview, and any step flag you
+pick becomes a parameter (the uncertain-params
+idea in reverse). The result is a github.com "new file" URL prefilled with path and JSON;
+you submit the PR with your own account — the app holds no GitHub credentials.
+
+**Test-only overrides**, honoured only while `LEUTHERIA_REGISTRY_TEST=1` is also set (else
+ignored, with a stderr warning and a `registry_test_override_ignored` event):
+`LEUTHERIA_REGISTRY_URL` replaces the host (https, or http to loopback only) and, only
+together with it, `LEUTHERIA_REGISTRY_TEST_KEY` (`<key_id>:<base64 raw public key>`) adds
+one accepted key. In force, the agent prints a warning to stderr and logs
+`registry_test_mode` at startup, and `registry_list` answers `test_registry: true`, shown
+as a "test registry" tag in the Library's Shared overview. They exist for
+`scripts/registry_client_check.py` (a local `http.server` registry signed with a throwaway
+key: good path, every tamper case, slow server, rollback, first-run gating, run_command
+never trusted, edited files, cap, update, yank, uninstall, share) — never set them for real
+use.
+
 ### Security model
 
 Leutheria acts on your real Mac on the say-so of a language model, and the model reads text
@@ -1667,13 +1847,13 @@ brackets the playback with `speaking` messages so the UI can animate while it ta
 
 ```python
 {"type": "response", "text": "12 × 7 = **84**", "trace": []}
-{"type": "speaking", "state": "started", "text": "12 × 7 = **84**", "duration_ms": 2140, "backend": "piper"}
+{"type": "speaking", "state": "started", "text": "12 × 7 = **84**", "duration_ms": 2140, "backend": "say"}
 {"type": "speaking", "state": "ended"}
 ```
 
 There's no request for this — it follows every non-empty text reply, for every input
-method. `backend` is the engine that actually produced the audio — `"piper"` when an
-ElevenLabs request failed or had no key and fell back to Piper, which runs fully locally. The old `{"type": "speech", "data":
+method. `backend` is the engine that actually produced the audio — `"say"` when the
+selected engine failed (an ElevenLabs request with no key, Piper not installed...) and fell back to macOS `say`, which runs fully locally. The old `{"type": "speech", "data":
 <base64 WAV>}` message is **gone** — nothing sends audio over the socket any more.
 
 ### Voice session protocol
@@ -1714,7 +1894,7 @@ Control messages, answered with `control_result` like the management ones below:
 
 {"type": "get_voice_settings", "request_id": "2"}
 # -> {..., "ok": true, "settings": {"enabled": true, "wake_models": ["hey_jarvis"], ...},
-#          "tts_available": {"piper": true, "elevenlabs": false}}
+#          "tts_available": {"say": true, "piper": false, "elevenlabs": false}}
 # tts_available says whether each TTS engine is configured (for ElevenLabs: whether
 # ELEVENLABS_API_KEY is set) -- a boolean, never the key.
 
@@ -1808,6 +1988,63 @@ and interleave freely with a command that's mid-confirmation. They're handled in
 #     "timers": [{timer_id, label, remaining, ...}, ...], "note": "...", "message": "..."}
 #    Read-only, for the timers panel: the same result as the list_timers tool, but not
 #    logged as a tool call (a panel refresh isn't usage).
+```
+
+#### Shared-skill registry (`registry_*`)
+
+These can wait on the network, so — like `list_input_devices` with `refresh` — `server.py`
+answers them from a background task (`registry_client.handle_control`, fetching and
+verifying on a worker thread), replying with the same `request_id`; the read loop never
+waits. `registry_install` and `registry_share` are refused from an overlay connection.
+Rules and trust chain: "Shared skills (the public registry)" above.
+
+```python
+{"type": "registry_list", "refresh": false, "request_id": "1"}
+# -> {..., "ok": true, "index_ok": true, "generated_at": "...", "imported_max": 20,
+#     "skills": [{<index entry, newest non-yanked version per name; summary sanitized>,
+#                 "installed_version": 1|null, "update_available": bool}, ...],
+#     "installed": [{name, content_hash, version, author, summary, review, has_run_command,
+#                    published_at, installed_at, first_run_done,
+#                    "withdrawn": bool, "in_index": bool, "update_available": bool}, ...],
+#     "key_id": "<signing key id>", "checked_at": "<iso of this verification>",
+#     "test_registry": false,   # true only under the test-only overrides (also on refusals)
+#     "stale": true, "error_code": "unavailable", "error": "..."}
+#       # stale/error_code/error only when the registry couldn't be REACHED and the last
+#       # verified index (re-verified from cache) was used instead
+# refused or nothing verified: {"ok": false, "index_ok": false, "error_code": "...",
+#   "error": "...", "skills": [], "installed": [...], "imported_max": 20}
+#   error_code: verification_failed | expired | no_signing_key | unavailable. A verification
+#   failure is never answered from the cache (BUGS.md #69).
+{"type": "registry_preview", "name": "tidy_downloads", "content_hash": "<sha256>", "request_id": "2"}
+# -> {..., "ok": true, name, version, content_hash, author, summary, review, has_run_command,
+#     "steps": [{tool, args, safety, "run_command": bool}, ...], input_schema,
+#     "author_description", "model_description", "installed_version", "replaces",
+#     "imported_count", "imported_max"}       # everything the install card shows
+{"type": "registry_install", "name": "tidy_downloads", "content_hash": "<sha256>", "request_id": "3"}
+# send only after the user approved the card for exactly this content_hash; an installed
+# older version of the same name is replaced (that card is the update's approval)
+# -> {..., "ok": true, "name", "id", "content_hash", "version", "replaced": bool}
+#    or {"ok": false, "error_code": cap_reached | yanked | not_found | refused (name taken) | author_changed
+#        | verification_failed | expired | no_signing_key | unavailable | bad_request, "error"}
+{"type": "registry_share_preview", "skill": "my_learned_skill", "parameterize": ["f2"], "request_id": "4"}
+# -> {..., "ok": true, "skill", "path": "skills/<name>/<hash>.json", "content_hash",
+#     "repo": "AnuragK-O/leutheria-skills", "too_long": bool (registry_share will use
+#     the clipboard), "definition": {...the file...}, "json": "<file text>", "has_run_command",
+#     "changes": [{where, before, after, why}], "diff": "<unified diff>",
+#     "flags": [{id, where, value, kind, arg, param?}]}
+#    kind: email | url | ip_address | phone_number | token_or_id | someone_elses_home |
+#    personal_path | your_username. `parameterize` (optional) lists flag ids to turn into
+#    string parameters (steps only; a flag in the description stays a warning).
+{"type": "registry_share", "skill": "my_learned_skill", "parameterize": ["f2"], "acknowledged": ["f1"], "request_id": "5"}
+# -> {..., "ok": true, "skill", "path", "content_hash",
+#     "url": "https://github.com/AnuragK-O/leutheria-skills/new/main?filename=...&value=...",
+#     "copy_to_clipboard": false}
+#    URL over 8000 chars: "url" has only the filename, "copy_to_clipboard": true and
+#    "clipboard_text" is the JSON. The agent opens and copies nothing; main.js does both
+#    (only https://github.com/AnuragK-O/leutheria-skills/new/main?...). Only learned
+#    skills can be shared (else error_code not_shareable). Every flag id must be in
+#    `acknowledged` or `parameterize`, else {"ok": false, "error_code":
+#    "unacknowledged_flags", "unacknowledged": [ids], "error"} and nothing is built.
 ```
 
 #### Overlay panels (`panel`)
@@ -1904,8 +2141,8 @@ line to `agent/logs/events.jsonl` (gitignored). Event types: `message_in`, `mess
 (a refused handshake, by reason, rate-limited), `manual_dispatch_refused`,
 `llm_turn` (what Claude decided that turn), `tool_call` (which tool ran, with what args
 and result), `stt_transcript` (what Whisper heard), `tts_error` (a synthesis failure --
-non-fatal; `backend` says which engine failed, and `fallback: "piper"` means the reply was
-still spoken by Piper), `confirmation_requested`/`tool_declined` (the destructive-tool
+non-fatal; `backend` says which engine failed, and `fallback: "say"` means the reply was
+still spoken by macOS `say`), `confirmation_requested`/`tool_declined` (the destructive-tool
 confirmation flow), `confirmation_answered_by_voice`, `confirmation_timed_out`,
 `tool_error` (a tool function raised; the traceback is in the record),
 `shutdown_killed_commands`, `preference_changed`/

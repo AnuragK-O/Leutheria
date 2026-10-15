@@ -111,7 +111,11 @@ def snapshot() -> dict:
             False,  # skills confirm per-step by default, not up front
             usage,
             {
-                "origin": skill.get("origin", "built-in"),
+                # "imported" for a shared skill from the registry: on the
+                # agent side it is a generated (data) skill with a registry
+                # record; the UI keeps it apart from what Leutheria learned
+                # here (no Share, its own badge).
+                "origin": "imported" if skill.get("registry") else skill.get("origin", "built-in"),
                 "steps": skill.get("steps", []),
                 "source_signature": skill.get("source_signature"),
                 "created_at": skill.get("created_at"),
@@ -123,6 +127,12 @@ def snapshot() -> dict:
                 "source": skill.get("source"),
                 "content_hash": skill.get("content_hash"),
                 "requires": skill.get("requires"),
+                # Imported (shared) skills only: the registry record (author,
+                # version, review, first_run_done) and the author's own
+                # description, which the model never sees -- "description"
+                # above is the one built locally (core/registry_text.py).
+                "registry": skill.get("registry"),
+                "author_description": skill.get("author_description"),
             },
         )
         for name, skill in SKILLS.items()

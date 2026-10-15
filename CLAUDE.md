@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Leutheria: a macOS voice-controlled assistant. An **Electron shell** (`app/`) spawns a
 **Python sidecar** (`agent/`) and talks to it over `ws://127.0.0.1:8765` with JSON messages.
 All agent work — wake word (openWakeWord), STT (Whisper), TTS (ElevenLabs by default,
-Piper as the local fallback), LLM tool-calling (Anthropic `claude-opus-5`), tool/skill
+macOS `say` as the local fallback, Piper optional), LLM tool-calling (Anthropic `claude-opus-5`), tool/skill
 execution — happens Python-side; Electron is UI + process supervision only.
 `overlay-qt/` is a third piece: a native C++/Qt Quick build of the activation overlay, a
 second client of the same WebSocket (off by default; `LEUTHERIA_OVERLAY=qt`). It has its
@@ -73,7 +73,8 @@ pkill -if "python -m agent"; pkill -f "Electron.app"
 ./.venv/bin/python scripts/voice_sim.py                 # voice session state machine, all scenarios
 ./.venv/bin/python scripts/voice_sim.py dismiss confirm # just the named scenarios (--list shows them)
 ./.venv/bin/python scripts/skill_format_check.py        # generated-skill validation
-./.venv/bin/python scripts/tts_check.py                 # TTS backends + fallbacks, fake ElevenLabs server
+./.venv/bin/python scripts/tts_check.py                 # TTS backends + fallbacks, fake ElevenLabs + stubbed say
+./.venv/bin/python scripts/licenses_report.py --write   # regenerate THIRD_PARTY_LICENSES.md's package tables
 ./.venv/bin/python scripts/overlay_protocol_check.py    # overlay role, real server on a spare port
 ./.venv/bin/python scripts/ws_auth_check.py             # socket authentication, real server on a spare port
 ./.venv/bin/python scripts/skills_check_system.py       # system tools + skills; volume/media/banners/speech stubbed
@@ -81,10 +82,14 @@ pkill -if "python -m agent"; pkill -f "Electron.app"
 ./.venv/bin/python scripts/security_tools_check.py      # safe tier launches nothing: openers, archives, repos, fetch deadline
 ./.venv/bin/python scripts/dispatch_loop_check.py       # tools off the loop, run_command limits, confirmation timeout
 ./.venv/bin/python scripts/panels_check.py              # show_panel/hide_panel messages, list_timers control
+./.venv/bin/python scripts/registry_client_check.py     # shared-skill client: local signed registry, tamper cases, imported-skill rules
 ./.venv/bin/python scripts/voice_server_check.py        # real server + real LLM; speaks aloud, needs API key
 ./.venv/bin/python scripts/skills_e2e_check.py --scripted   # agent_loop + dispatch in a sandbox home, written plans, no model
 ./.venv/bin/python scripts/llm_cache_check.py          # REAL MODEL, ~$0.15: is the tool list being read from the prompt cache?
 ./.venv/bin/python scripts/skills_routing_check.py --report # routing table from the committed cache, no model
+./.venv/bin/python scripts/export_tool_catalog.py --check  # is agent/tool_catalog.json current? (no flag: re-export)
+./.venv/bin/python scripts/registry_pipeline_check.py   # skill registry: catalog, submission checks, index sign/verify, yank
+./.venv/bin/python scripts/registry_e2e_check.py        # registry full loop: pipeline + signed index + real server; install/run/update/yank/tamper/share
 
 # These two call the REAL MODEL and cost money: every request carries the whole tool list (~22,700 input tokens)
 ./.venv/bin/python scripts/skills_routing_check.py      # phrase -> which capability; nothing dispatched; answers cached
@@ -104,6 +109,7 @@ cd app && node scripts/auth-check.js
 cd app && node scripts/mock-agent.js
 # UI regression pass: own mock + own Electron, every view/state, both themes, 1180 and 940 px
 cd app && node scripts/ui-capture.js --out <dir>     # then LOOK at the PNGs
+cd app && node scripts/ui-capture.js --out <dir> --registry   # Shared area against the REAL agent + a local signed registry
 cd app && env -u ELECTRON_RUN_AS_NODE LEUTHERIA_AGENT_URL=ws://127.0.0.1:8799 LEUTHERIA_NO_SPAWN=1 npx electron .
 ```
 
@@ -152,6 +158,22 @@ so it would shadow it — BUGS.md #23), and its file path comes only from the va
 `content_hash` covers steps + the behavioural part of `input_schema`, deliberately not prose;
 changing what it covers means bumping `HASH_DOMAIN`. Placeholders are `{param}` with `{{`/`}}`
 escapes, substituted in one pass — never go back to `str.format` (BUGS.md #24).
+
+**Imported (shared) skills are a stranger's procedure and a stranger's prose.**
+`core/registry_client.py` installs only from the one registry host, only an index whose
+Ed25519 signature verifies against `core/registry_keys.py` (empty until go-live: no key, no
+registry -- never add an unsigned path), only files matching the index's sha256 and their
+content_hash, only after an approval card that showed every step. What makes a skill
+imported is its **record** (`generated/imported/<name>.json`: author, version, review,
+`first_run_done`), not its JSON; a mismatched pair is refused at load. The model never sees
+the author's description or parameter descriptions -- `core/registry_text.py` builds them;
+never pass a stranger's prose to the model verbatim. At run time `registry.run_imported`
+sets `session.current_imported()` and `dispatch()` makes every step ask until one clean
+run, and every `run_command` step ask on every run, unskippable by trust or preference and
+never remembered (`trust.py` refuses too). Updates are new approvals, and only from the
+installed version's author; yanked means withdrawn, not removed -- but every step asks again,
+on every run; at most 20. The registry control messages answer from a background
+task because they wait on the network. README "Shared skills (the public registry)".
 
 **GUI control is the one thing that isn't safe by construction.** The `scoped` tier
 (`focus_app`, `type_text`, `press_keys`) is gated per *target app* for a time-boxed
@@ -242,9 +264,9 @@ BUGS.md #6).
 `revoke_trust` / `revoke_grant` and the voice ones (`voice_session`, `get_voice_settings`,
 `set_voice_settings`, `list_input_devices`, `list_wake_models`) are answered inline in the
 read loop by `core/control.py`, matched by `request_id`, so UI reads can't block or be
-blocked by a running command. The one exception is `list_input_devices` with `refresh: true`:
-it has to close and reopen the mic, so `server.py` answers it from a background task (same
-`request_id`).
+blocked by a running command. The exceptions are `list_input_devices` with `refresh: true`
+(it has to close and reopen the mic) and the `registry_*` messages (network): `server.py`
+answers those from a background task (same `request_id`).
 
 **The socket is authenticated, and refuses browsers.** Loopback is not a boundary: every
 local process and every web page can reach 127.0.0.1. `core/ws_auth.py` checks each
@@ -289,10 +311,17 @@ exist (Electron's `app/renderer/overlay/`, Qt's `overlay-qt/`) with the same sta
 and the same asset `manifest.json`; change a rule in one and change it in the other.
 
 **TTS engines sit behind `core/tts_backends.py:TTSBackend`**, mirroring `LLMBackend`. The
-selected backend and voice are read from voice settings per utterance; any failure of a
-non-Piper backend (no key, network, HTTP error, timeout) falls back to Piper for that
-utterance and logs `tts_error` — a reply is never silent because of the cloud voice. API
-keys are environment-only and never written to `voice_settings.json`.
+selected backend and voice are read from voice settings per utterance; any failure of the
+selected one (no key, network, HTTP error, timeout, Piper not installed, unknown voice)
+falls back to macOS `say` in the system voice for that utterance and logs `tts_error` — a
+reply is never silent because of the chosen voice. `say` only ever renders to a temp file
+(`-o`, fixed argv, text on stdin); playback stays in `speak()`. **Piper is optional because
+it is GPL-3.0**: it lives in `requirements-piper.txt`, is imported only inside
+`PiperBackend` (never at module level — a build without it must start), and the Voice view
+lists it only when `tts_available.piper` is true. Don't add a GPL dependency to
+`requirements.txt` or `app/package.json`; `THIRD_PARTY_LICENSES.md` is the inventory
+(regenerate its tables with `agent/scripts/licenses_report.py`). API keys are
+environment-only and never written to `voice_settings.json`.
 
 **Timers are the one thing that acts with no request in flight.** `core/timers.py` runs each
 as an asyncio task and, when it ends, goes through the same two doors as everything else:
@@ -330,6 +359,15 @@ unparseable: moved aside), never trusted raw. Appearance reaches every window th
 for contrast) but not the state colours: cyan/amber/red/green mean live/waiting/failed/
 succeeded, and an accent that reads as one of them is refused. The hot-edge test hook
 (`LEUTHERIA_TEST_HOOKS=1`) exists only under that variable; keep it out of the normal path.
+
+**The tool catalog is what the public skill registry knows about tools.** `agent/tool_catalog.json`
+(committed) is `tools/registry.py` reduced to name, safety, input_schema, paths, outbound and
+untrusted_output, plus the built-in skill names and a `catalog_version` digest; the registry's CI
+(`skill-registry/`, the future `leutheria-skills` repo) validates submissions against it, at the
+Leutheria commit pinned in `skill-registry/LEUTHERIA_REF`, by importing `skills/validate.py` on
+Linux. So: whenever a tool is added, removed or its schema/paths/safety/outbound/untrusted_output
+change, re-run `scripts/export_tool_catalog.py` and commit the result (`--check` fails until you
+do), and keep `validate.py` (and `template_skill.py`, which it imports) stdlib-only.
 
 TTS, skill learning and the voice session are additive: a failure in any of them is logged
 and skipped (voice goes to `off`), never blocking or delaying the text reply.
@@ -384,6 +422,6 @@ and skipped (voice goes to `off`), never blocking or delaying the text reply.
 - `main.js` forwards transcript events to the main window *and* chat panels (`sendToUi`),
   numbered (`_seq`) so a panel opened mid-session replays the session without duplicates.
   A new transcript event goes through `record()` there, or a chat panel never sees it.
-- Local state stays out of git: `preferences.json`, `trusted_commands.json`, `voice_settings.json`,
+- Local state stays out of git: `preferences.json`, `trusted_commands.json`, `registry_state.json`, `voice_settings.json`,
   `home_location.json`, `logs/`,
   `skills/generated/`, `assets/voices/`, `.env`, `plans/`.

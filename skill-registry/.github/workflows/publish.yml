@@ -1,0 +1,187 @@
+# Rebuilds, signs and verifies index.json from main, and commits it if it
+# changed. Runs on pushes to main, when called by submission/yank (their
+# GITHUB_TOKEN pushes don't trigger it), daily (re-sign, see below), and by
+# hand. Never edit index.json or index.json.sig by hand: this job overwrites
+# them.
+#
+# Three jobs, so the signing key meets as little code as possible:
+#   build  -- builds index.json; no secrets, installs nothing (stdlib only).
+#   sign   -- the only job that can read REGISTRY_SIGNING_KEY: an environment
+#             secret of the protected `registry-signing` environment
+#             (deployment branches: main only). It checks out two scripts,
+#             installs only `cryptography` by hash, signs the built bytes.
+#   commit -- verifies the signed index as the client will, commits, pushes.
+# Every action is pinned to a full commit SHA (the tag is in the comment).
+name: publish
+
+on:
+  push:
+    branches: [main]
+    paths: ["skills/**", "reviews/**", "yanked.json", "LEUTHERIA_REF", "tools/**"]
+  workflow_call:
+  workflow_dispatch:
+  # Daily re-sign: the index's signed expires_at is 7 days out, and clients
+  # refuse an expired index, so a frozen copy can hide a yank for at most
+  # that long. A missed day or two is slack, not an outage.
+  schedule:
+    - cron: "17 4 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: registry-main-writes
+      cancel-in-progress: false
+    outputs:
+      sha: ${{ steps.head.outputs.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Record the commit being published
+        id: head
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Read pinned Leutheria ref
+        id: pin
+        run: echo "ref=$(tr -cd '0-9a-f' < LEUTHERIA_REF)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          repository: AnuragK-O/Leutheria
+          ref: ${{ steps.pin.outputs.ref }}
+          path: .leutheria
+          persist-credentials: false
+          sparse-checkout: |
+            agent/agent/__init__.py
+            agent/agent/skills/__init__.py
+            agent/agent/skills/validate.py
+            agent/agent/skills/template_skill.py
+            agent/tool_catalog.json
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Build index
+        env:
+          REFRESH: ${{ github.event_name == 'schedule' && '--refresh' || '' }}
+        run: python tools/build_index.py --repo . --leutheria .leutheria --out index.json $REFRESH
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: index
+          path: index.json
+          if-no-files-found: error
+          retention-days: 1
+
+  sign:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: registry-signing
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          ref: ${{ needs.build.outputs.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            tools/sign_index.py
+            tools/common.py
+            requirements-sign.txt
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Install cryptography only, by hash
+        run: |
+          pip install --require-hashes --no-deps --only-binary :all: -r requirements-sign.txt
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: index
+          path: built
+
+      - name: Sign index
+        env:
+          REGISTRY_SIGNING_KEY: ${{ secrets.REGISTRY_SIGNING_KEY }}
+        run: python tools/sign_index.py --index built/index.json --out built/index.json.sig
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: signature
+          path: built/index.json.sig
+          if-no-files-found: error
+          retention-days: 1
+
+  commit:
+    needs: [build, sign]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: registry-main-writes
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          ref: ${{ needs.build.outputs.sha }}
+
+      - name: Read pinned Leutheria ref
+        id: pin
+        run: echo "ref=$(tr -cd '0-9a-f' < LEUTHERIA_REF)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          repository: AnuragK-O/Leutheria
+          ref: ${{ steps.pin.outputs.ref }}
+          path: .leutheria
+          persist-credentials: false
+          sparse-checkout: |
+            agent/agent/__init__.py
+            agent/agent/skills/__init__.py
+            agent/agent/skills/validate.py
+            agent/agent/skills/template_skill.py
+            agent/tool_catalog.json
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Install cryptography only, by hash
+        run: |
+          pip install --require-hashes --no-deps --only-binary :all: -r requirements-sign.txt
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: index
+          path: built
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: signature
+          path: built
+
+      - name: Verify as the client will
+        run: |
+          cp built/index.json built/index.json.sig .
+          python tools/verify_index.py --repo . --keys keys/public_keys.json --leutheria .leutheria
+
+      - name: Commit index
+        run: |
+          git config user.name "leutheria-registry[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.json index.json.sig
+          if git diff --cached --quiet; then echo "index unchanged"; exit 0; fi
+          git commit --quiet -m "Publish index"
+          git push --quiet origin HEAD:main

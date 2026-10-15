@@ -11,6 +11,12 @@ machine wrote -- a future shared skill -- so it rejects rather than repairs.
 Metadata (id / content_hash / version / source / requires / created_at) is
 what a shared copy will be compared by; see content_hash() for why the
 hash covers what it does.
+
+Stdlib-only on purpose (plus template_skill, which is too): the public skill
+registry's CI imports this file on Linux from a pinned Leutheria checkout,
+with tools described by agent/tool_catalog.json instead of the live
+registry -- see catalog_validation_kwargs() and validate_shared(). Never
+import anything macOS-only or agent-runtime here.
 """
 
 import hashlib
@@ -330,3 +336,106 @@ def validate_metadata(definition: dict) -> None:
 def validate(definition, **kwargs) -> None:
     validate_content(definition, **kwargs)
     validate_metadata(definition)
+
+
+# --- shared (registry) skills and the tool catalog ------------------------
+#
+# agent/tool_catalog.json is the live tool registry reduced to what
+# validation and screening need (scripts/export_tool_catalog.py writes it).
+# Everything below works from that file alone, so the registry's CI can
+# validate a submission exactly as the app will, without macOS.
+
+CATALOG_FORMAT = 1
+CATALOG_TOOL_KEYS = ("name", "safety", "input_schema", "paths", "outbound", "untrusted_output")
+
+
+def catalog_digest(catalog: dict) -> str:
+    """catalog_version: sha256 of the canonical JSON of what the catalog says
+    (format, tools, built-in skill names). The git ref it was exported from
+    is deliberately left out, so the version changes only when a tool does."""
+    body = {
+        "format": catalog["format"],
+        "tools": catalog["tools"],
+        "builtin_skills": catalog["builtin_skills"],
+    }
+    canonical = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def check_catalog(catalog) -> None:
+    if not isinstance(catalog, dict) or catalog.get("format") != CATALOG_FORMAT:
+        _fail(f"tool catalog must be a format-{CATALOG_FORMAT} object")
+    tools = catalog.get("tools")
+    if not isinstance(tools, list) or not all(isinstance(t, dict) and isinstance(t.get("name"), str) for t in tools):
+        _fail("tool catalog: tools must be a list of objects with a name")
+    if not isinstance(catalog.get("builtin_skills"), list):
+        _fail("tool catalog: builtin_skills must be a list")
+    if catalog.get("catalog_version") != catalog_digest(catalog):
+        _fail("tool catalog: catalog_version does not match its content")
+
+
+def catalog_validation_kwargs(catalog: dict) -> dict:
+    """The validate_content()/validate() keyword arguments the agent builds
+    from its live registries (skills.registry.validation_kwargs), built from
+    the catalog instead. The catalog is checked first: a corrupt one would
+    otherwise make every tool look unknown, or none."""
+    check_catalog(catalog)
+    tools = {t["name"]: t for t in catalog["tools"]}
+    builtin = set(catalog["builtin_skills"])
+    return {"tools": tools, "reserved_names": set(tools) | builtin, "skill_names": builtin}
+
+
+# Keys a registry file must not carry: `source` is set by the installing
+# client ("imported:<content_hash>"), and source_signature is the learning
+# machine's own provenance note.
+SHARED_FORBIDDEN_KEYS = {"source", "source_signature"}
+
+# A shared skill's enum values and string defaults go into the schema the
+# model reads on every request, and unlike descriptions they are behaviour
+# (covered by content_hash), so the client can't rewrite them: they have to
+# be short, plain values, never prose (review H3). At most SHARED_VALUE_MAX
+# characters of letters, digits, spaces and . _ ~ / + @ % & : , ( ) -, no
+# control characters, and no punctuation followed by a space (". ", ": ",
+# ", " reads as a sentence, not a value). Enums are also capped in count.
+SHARED_VALUE_MAX = 64
+SHARED_ENUM_MAX = 20
+_SHARED_VALUE_RE = re.compile(r"[\w ./~+@%&:,()-]{0,64}")
+_SENTENCE_PUNCT_RE = re.compile(r"[.,:)]\s|\s\s")
+
+
+def check_shared_value(value, where: str) -> None:
+    """A string enum value or default from a shared skill. Raises
+    SkillValidationError when it isn't a short plain value."""
+    if not isinstance(value, str):
+        return
+    if not _SHARED_VALUE_RE.fullmatch(value) or _SENTENCE_PUNCT_RE.search(value):
+        _fail(f"{where} must be a plain value of at most {SHARED_VALUE_MAX} characters "
+              "(letters, digits, spaces and . _ ~ / + @ % & : , ( ) -; no sentences)")
+
+
+def _check_shared_schema(schema: dict) -> None:
+    for name, spec in (schema.get("properties") or {}).items():
+        if "enum" in spec:
+            if len(spec["enum"]) > SHARED_ENUM_MAX:
+                _fail(f"parameter {name!r} enum has more than {SHARED_ENUM_MAX} values")
+            for i, value in enumerate(spec["enum"]):
+                check_shared_value(value, f"parameter {name!r} enum[{i}]")
+        if "default" in spec:
+            check_shared_value(spec["default"], f"parameter {name!r} default")
+
+
+def validate_shared(definition, **kwargs) -> None:
+    """A skill file as published in the registry: the generated-skill format
+    minus `source`, with every metadata field present and consistent (the
+    content_hash must recompute). Raises SkillValidationError."""
+    if not isinstance(definition, dict):
+        _fail("definition must be a JSON object")
+    forbidden = SHARED_FORBIDDEN_KEYS & set(definition)
+    if forbidden:
+        _fail(f"a shared skill must not carry {sorted(forbidden)}")
+    validate_content(definition, **kwargs)
+    _check_shared_schema(definition["input_schema"])
+    missing = (METADATA_KEYS - {"source"}) - set(definition)
+    if missing:
+        _fail(f"missing metadata: {sorted(missing)}")
+    validate_metadata({**definition, "source": f"imported:{content_hash(definition)}"})

@@ -7,6 +7,8 @@
 (function (LX) {
   const { el, clear, icon, relativeTime, formatTemplateArgs, toast, plural } = LX;
   const { GROUPS, groupOf } = LX.libraryGroups;
+  const shared = LX.libraryShared;
+  const inShared = () => kind === "shared";
 
   const listEl = document.getElementById("library-list");
   const detailEl = document.getElementById("library-detail");
@@ -30,7 +32,7 @@
 
   const COLLAPSED_KEY = "leutheria-library-collapsed";
 
-  let kind = "all"; // all | tool | skill
+  let kind = "all"; // all | tool | skill | shared (library-shared.js draws that one)
   let stateFilter = null; // one of STATE_FILTERS' ids
   let query = "";
   let selected = null;
@@ -90,13 +92,14 @@
   const searchEl = el("div.search", {}, icon("search"), searchInput, el("kbd", { text: "/", "aria-hidden": "true" }));
 
   const segmentedEl = el("div.segmented", { role: "group", "aria-label": "Filter by kind" });
-  for (const [value, label] of [["all", "All"], ["tool", "Tools"], ["skill", "Skills"]]) {
+  for (const [value, label] of [["all", "All"], ["tool", "Tools"], ["skill", "Skills"], ["shared", "Shared"]]) {
     segmentedEl.appendChild(
       el("button", {
         text: label,
         "data-kind": value,
         onclick: () => {
           kind = value;
+          if (value === "shared") shared.ensureLoaded();
           render();
         },
       })
@@ -109,8 +112,15 @@
       button.classList.toggle("active", on);
       button.setAttribute("aria-pressed", String(on));
     }
-    return [segmentedEl, searchEl];
+    return inShared() ? [segmentedEl, searchEl, refreshEl] : [segmentedEl, searchEl];
   }
+
+  // Shared only: fetch and verify the index again.
+  const refreshEl = el(
+    "button.icon-button.shared-refresh",
+    { title: "Check the registry again", "aria-label": "Check the registry again", onclick: () => shared.load(true) },
+    icon("refresh")
+  );
 
   // --- data --------------------------------------------------------------
 
@@ -249,6 +259,22 @@
     const hadFocus = rowsEl.contains(document.activeElement) ? document.activeElement.dataset.nav : null;
     const scrollTop = rowsEl.scrollTop;
 
+    if (inShared()) {
+      filtersEl.classList.add("library-filters-shared");
+      shared.renderList(filtersEl, rowsEl, {
+        terms: terms(),
+        selected,
+        highlighted,
+        select,
+        clearFilters,
+        isOpen: (id) => !collapsed.has(id),
+        toggleGroup: (id) => toggleGroup(id),
+      });
+      finishList(hadFocus, scrollTop);
+      return;
+    }
+    filtersEl.setAttribute("aria-label", "Filter by state");
+    filtersEl.classList.remove("library-filters-shared");
     renderFilters();
     clear(rowsEl);
 
@@ -306,6 +332,10 @@
       );
     }
 
+    finishList(hadFocus, scrollTop);
+  }
+
+  function finishList(hadFocus, scrollTop) {
     rowsEl.scrollTop = scrollTop;
     setTabStop();
     if (hadFocus) {
@@ -319,6 +349,12 @@
     const flags = el("span.list-row-flags");
     // Only what's out of the ordinary gets a tag, so the column scans.
     if (entry.origin === "generated") flags.appendChild(el("span.badge.badge-accent", { text: "learned" }));
+    if (entry.origin === "imported") {
+      const status = shared.statusOf(entry.name);
+      if (status && status.withdrawn) flags.appendChild(el("span.badge.badge-danger", { text: "withdrawn", title: "Withdrawn from the registry" }));
+      else if (status && status.update) flags.appendChild(el("span.badge.badge-warning", { text: "update", title: "A newer version is in the registry" }));
+      else flags.appendChild(el("span.badge", { text: "shared", title: "Installed from the registry" }));
+    }
     if (!entry.enabled) flags.appendChild(el("span.badge.badge-off", { text: "off", title: "Disabled" }));
     else if (entry.requires_confirmation)
       flags.appendChild(el("span.badge.badge-warning", { text: "ask", title: "Asks before running" }));
@@ -359,6 +395,14 @@
   }
 
   function clearFilters() {
+    if (inShared()) {
+      shared.clearFilter();
+      query = "";
+      searchInput.value = "";
+      render();
+      focusNav(tabStop());
+      return;
+    }
     kind = "all";
     stateFilter = null;
     query = "";
@@ -368,7 +412,7 @@
   }
 
   function toggleGroup(id, open) {
-    if (narrowed()) return; // every group is held open while narrowed
+    if (narrowed() || (inShared() && shared.hasFilter())) return; // every group is held open while narrowed
     const makeOpen = open === undefined ? collapsed.has(id) : open;
     if (makeOpen) collapsed.delete(id);
     else collapsed.add(id);
@@ -419,6 +463,16 @@
 
   /** Select `name` even if a filter or a collapsed group is hiding it. */
   function reveal(name) {
+    // "shared:<name>": a registry entry, from the skills panel.
+    if (String(name).startsWith("shared:")) {
+      kind = "shared";
+      query = "";
+      searchInput.value = "";
+      selected = String(name).slice(7);
+      shared.ensureLoaded();
+      render();
+      return;
+    }
     const entry = find(name);
     if (!entry) return;
     if (!visibleEntries().includes(entry)) {
@@ -497,7 +551,7 @@
       list.push(
         el("span.badge", {
           class: entry.origin === "generated" ? "badge-accent" : "",
-          text: entry.origin === "generated" ? "learned" : "built-in",
+          text: entry.origin === "generated" ? "learned" : entry.origin === "imported" ? "shared" : "built-in",
         })
       );
     } else if (entry.safety === "destructive") {
@@ -599,6 +653,10 @@
     // back on the control that had it.
     const focusKey = detailEl.contains(document.activeElement) ? document.activeElement.dataset.focus : null;
 
+    if (inShared()) {
+      shared.renderDetail(detailEl, selected, compact);
+      return;
+    }
     clear(detailEl);
     const entry = selected ? find(selected) : null;
 
@@ -797,6 +855,12 @@
       )
     );
 
+    // --- where a shared skill came from ---
+    if (entry.origin === "imported") detail.appendChild(provenance(entry));
+
+    // --- share (a skill learned here) ---
+    if (entry.origin === "generated") detail.appendChild(shared.shareSection(entry, renderDetail));
+
     // --- delete ---
     if (entry.deletable) {
       detail.appendChild(
@@ -827,6 +891,40 @@
       const again = detailEl.querySelector(`[data-focus="${focusKey}"]`) || detailEl.querySelector(".switch");
       if (again) again.focus();
     }
+  }
+
+  function provenance(entry) {
+    const info = entry.registry || {};
+    const status = shared.statusOf(entry.name);
+    return el(
+      "section",
+      {},
+      el("div.section-label", { text: "From the registry" }),
+      el(
+        "div.stat-grid.stat-grid-3",
+        {},
+        el("div.stat", {}, el("div.stat-value", { text: info.author || "--" }), el("div.stat-label", { text: "shared by" })),
+        el("div.stat", {}, el("div.stat-value", { text: info.version != null ? `v${info.version}` : "--" }), el("div.stat-label", { text: "version" })),
+        el(
+          "div.stat",
+          {},
+          el("div.stat-value", { text: info.review && info.review.risk ? info.review.risk : "--" }),
+          el("div.stat-label", { text: "screened risk" })
+        )
+      ),
+      el(
+        "p.section-note",
+        {},
+        status && status.withdrawn
+          ? "Withdrawn from the registry. It still works here until you delete it, and every step asks first on every run. "
+          : status && status.update
+            ? `Version ${status.latest.version} is available; updating is a new approval. `
+            : "",
+        info.first_run_done === false && !(status && status.withdrawn) && !info.withdrawn ? "Every step asks first until it has run once. " : "",
+        info.has_run_command ? "Its run_command steps ask on every run. " : "",
+        el("button.link-button", { text: "Show in Shared", "data-focus": "show-shared", onclick: () => reveal(`shared:${entry.name}`) })
+      )
+    );
   }
 
   function confirmDelete(entry) {
@@ -867,7 +965,9 @@
   function render() {
     // Drop a selection that no longer exists (a deleted skill) or that the
     // current filter hides, rather than leaving a stale detail pane up.
-    if (selected && !visibleEntries().some((entry) => entry.name === selected)) selected = null;
+    // Imported skills' rows say "update" or "withdrawn" from the index.
+    if (allEntries().some((entry) => entry.origin === "imported")) shared.ensureLoaded();
+    if (selected && !inShared() && !visibleEntries().some((entry) => entry.name === selected)) selected = null;
     renderList();
     renderDetail();
     LX.app.renderActions();
@@ -879,6 +979,7 @@
   }
 
   function subtitle() {
+    if (inShared()) return shared.subtitle(terms());
     const entries = allEntries();
     if (!entries.length) return "Everything Leutheria can do";
     const label = entries.length === 1 ? "capability" : "capabilities";
@@ -895,6 +996,18 @@
     kind = "all";
     render();
   }
+
+  // The registry answers asynchronously; redraw when it does (and only when
+  // what it changed is on screen).
+  shared.bind(() => {
+    if (!LX.app || LX.app.currentView() !== "library") return;
+    if (inShared()) render();
+    else {
+      // imported rows' "update" / "withdrawn" tags come from the index
+      renderList();
+      if (selected) renderDetail();
+    }
+  });
 
   LX.library = { render, actions, count, subtitle, setQuery, reveal };
 })(window.LX);

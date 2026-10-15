@@ -161,7 +161,7 @@ _STATE_ATTRS = (
     ("agent.core.logging_util", "LOG_DIR"),
     ("agent.skills.registry", "GENERATED_DIR"),
 )
-_STATE_NAMES = ("preferences.json", "trusted_commands.json", "voice_settings.json", "home_location.json", "logs")
+_STATE_NAMES = ("preferences.json", "trusted_commands.json", "voice_settings.json", "home_location.json", "registry_state.json", "logs")
 
 
 # --- path identity --------------------------------------------------------------
