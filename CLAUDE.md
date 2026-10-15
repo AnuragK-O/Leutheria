@@ -170,8 +170,9 @@ the author's description or parameter descriptions -- `core/registry_text.py` bu
 never pass a stranger's prose to the model verbatim. At run time `registry.run_imported`
 sets `session.current_imported()` and `dispatch()` makes every step ask until one clean
 run, and every `run_command` step ask on every run, unskippable by trust or preference and
-never remembered (`trust.py` refuses too). Updates are new approvals; yanked means
-withdrawn, not removed; at most 20. The registry control messages answer from a background
+never remembered (`trust.py` refuses too). Updates are new approvals, and only from the
+installed version's author; yanked means withdrawn, not removed -- but every step asks again,
+on every run; at most 20. The registry control messages answer from a background
 task because they wait on the network. README "Shared skills (the public registry)".
 
 **GUI control is the one thing that isn't safe by construction.** The `scoped` tier
@@ -421,6 +422,6 @@ and skipped (voice goes to `off`), never blocking or delaying the text reply.
 - `main.js` forwards transcript events to the main window *and* chat panels (`sendToUi`),
   numbered (`_seq`) so a panel opened mid-session replays the session without duplicates.
   A new transcript event goes through `record()` there, or a chat panel never sees it.
-- Local state stays out of git: `preferences.json`, `trusted_commands.json`, `voice_settings.json`,
+- Local state stays out of git: `preferences.json`, `trusted_commands.json`, `registry_state.json`, `voice_settings.json`,
   `home_location.json`, `logs/`,
   `skills/generated/`, `assets/voices/`, `.env`, `plans/`.

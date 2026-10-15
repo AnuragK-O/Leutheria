@@ -552,7 +552,9 @@ Installed shared skills stay listed and usable either way.
 A learned skill's detail has **Share**: *Preview share* asks the agent for the sanitized
 definition (`registry_share_preview`) and shows the target file path, what changed (home
 paths turned into `~`, usage dropped), the values to check before publishing (a drive
-name, a shell command), and the JSON itself. *Open on GitHub* sends `registry_share`;
+name, a shell command), and the JSON itself. Each flagged value has an "I checked this"
+box, and *Open on GitHub* stays disabled until every one is ticked; it sends
+`registry_share` with those flag ids as `acknowledged`;
 `main.js` opens the returned URL itself, and only if it is `https://github.com/...` (a
 renderer never sees or supplies a URL). If the agent says the file is too long for a link
 (`too_long: true` with `json`), main.js copies the JSON to the clipboard and opens the page
@@ -569,14 +571,16 @@ never on error text:
 |---|---|---|
 | `verification_failed` | any (signature, unknown key, malformed or older index, file sha256/size/content_hash, validate.py) | red "Index refused"; nothing installable |
 | `no_signing_key` | any | red "no registry key configured" |
+| `expired` | any (the index is at or past its signed `expires_at`) | red "Index refused: out of date"; nothing installable |
 | `unavailable` | list (ok:false = nothing cached; ok:true + `stale` = last verified index shown), preview, install | neutral notice |
-| `cap_reached` / `yanked` / `not_found` / `refused` | install, preview | the card's "Not installed" callout |
+| `cap_reached` / `yanked` / `not_found` / `refused` / `author_changed` | install, preview | the card's "Not installed" callout |
 | `not_shareable` / `not_found` / `bad_request` | share_preview, share | "Can't share this one" |
+| `unacknowledged_flags` | share | the error under the preview (the button is disabled until every flag is ticked, so only a stale preview reaches it) |
 
 In the inventory an imported skill is `origin: "imported"` (agent-side it is a generated
 skill with a registry record), `deletable: true`, with `registry`: the record
 (`name, content_hash, version, author, summary, review, has_run_command, published_at,
-installed_at, first_run_done`) and `author_description`. A typed `registry offline` /
+installed_at, first_run_done, withdrawn`) and `author_description`. A typed `registry offline` /
 `stale` / `tampered` / `nokey` / `full` / `badshare` / `ok` switches the mock's state.
 
 **The Voice view.** Edits collect in a draft; **Save changes** sends one
@@ -1449,11 +1453,18 @@ and every tier apply to its steps unchanged. On top of that:
 `index.json.sig` are fetched (no redirects, 15 s deadline over the whole fetch enforced by a
 socket watchdog, 2 MB index / 4 KB sig / 256 KB skill caps); the Ed25519 signature over the
 exact downloaded bytes must verify with a key in `core/registry_keys.py`, matched by
-`key_id` = first 16 hex of sha256 of the raw public key; the index must be well-formed and
-not older than one already verified here (a replayed old index would un-yank a version); a
+`key_id` = first 16 hex of sha256 of the raw public key; the index must be well-formed, with
+`generated_at` and `expires_at` exactly `YYYY-MM-DDTHH:MM:SSZ`, `expires_at` after
+`generated_at` and at most 8 days after it (else `verification_failed`) and still in the
+future (else `expired` -- also for the cached index when the registry is unreachable; the
+contract is skill-registry/README.md "Index format and expiry"); and not older than one
+already verified here (a replayed old index would un-yank a version). That rollback floor,
+the newest `generated_at` seen, lives in `registry_state.json` beside the trust file, so
+deleting the cache doesn't lower it; an unreadable state file refuses the registry until it
+is fixed or removed. A
 skill file must match the index's size and sha256, carry no `source`, recompute to the
 index's `content_hash`, and pass `validate.py` (`validate_shared` where present) against this
-machine's tools. The verified index is cached in `generated/imported/_index_cache.json` and
+machine's tools. The verified index is cached in `generated/imported/_index_cache.json` (it and the state file are written through a random `O_EXCL|O_NOFOLLOW` 0600 temp file in a 0700 `.registry-tmp/` beside them, refused if that is a symlink) and
 re-verified whenever it's read. **`registry_keys.PRODUCTION_KEYS` ships empty: with no key,
 nothing is listed, previewed or installed.** The production key is added at go-live.
 
@@ -1461,6 +1472,9 @@ nothing is listed, previewed or installed.** The production key is added at go-l
 - Install only after an approval that showed every step and its args: the UI's card
   (`registry_preview` then `registry_install`) or, by voice, `install_shared_skill(name)`,
   whose `_confirm` card's args are the same preview. The approval is never remembered.
+  When the skill has `run_command` steps the voice card is `voice_approvable: false`: it
+  installs only with a click on the card, where the commands are written out (a spoken
+  "no" still cancels).
 - Stored as `generated/<name>.json` with `source: "imported:<content_hash>"` and the
   publish metadata; author, version, review, `first_run_done` go in a **record** beside it,
   `generated/imported/<name>.json`, never in the skill. The record is what makes a skill
@@ -1476,6 +1490,14 @@ nothing is listed, previewed or installed.** The production key is added at go-l
   "system:", "do not tell", "instead of"...), capped at 200 characters; parameter
   descriptions get the same at 150. A filter, not a proof — the screener and the run-time
   rules are the other layers. The Library gets the author's text as `author_description`.
+- What the model reads as the author wrote it is held to plain values: `validate_shared`
+  (the registry's CI runs it too) refuses a string enum value or default longer than 64
+  characters, outside letters/digits/spaces and `. _ ~ / + @ % & : , ( ) -`, or with
+  punctuation followed by a space (a sentence), and more than 20 enum values; the client
+  refuses to preview or install (`refused`) a skill whose name, parameter names, enum
+  values or defaults trip the instruction filter (read with `_` as spaces). The model's
+  schema for an imported skill carries no string defaults at all (`run_template` applies
+  them locally) and drops an enum that fails the filter.
 - At run time (`dispatcher.dispatch`, from `session.current_imported()`, which
   `registry.run_imported` sets from the record): until the skill has completed one clean
   run, **every** step asks — trust entries and "don't ask" preferences don't skip it, and an
@@ -1483,9 +1505,16 @@ nothing is listed, previewed or installed.** The production key is added at go-l
   never trusted and never remembered (also refused inside `trust.py`). A GUI step asks per
   step on the first run before its usual app grant.
 - Updates are offered (`update_available`), never applied: installing the newer version is
-  a new approval, and it starts a new first run; the old one keeps working until then. A
+  a new approval, and it starts a new first run; the old one keeps working until then.
+  Only a version by the installed one's author is an update: another author's file under
+  the same name is never offered (`update_available` false) and its preview, install and
+  voice install are refused with `author_changed` (delete the installed one first). A
   yanked version stays installed and is listed `withdrawn: true`; it can't be previewed or
-  installed.
+  installed. When a verified index (on `registry_list`, `registry_preview`/`install` or a
+  voice install) marks the installed version yanked, its record gets `withdrawn: true` and
+  `first_run_done: false` (logged `shared_skill_withdrawn`): from then on **every step asks
+  on every run**, with a "withdrawn from the registry" reason, until it is deleted or an
+  approved update replaces it. Sticky: a later index can't clear it.
 - At most 20 imported skills (each one is on every request's tool list);
   `LEUTHERIA_MAX_IMPORTED_SKILLS` changes it (0-50). Uninstall is `delete_skill`, which
   also removes the record.
@@ -1495,13 +1524,20 @@ nothing is listed, previewed or installed.** The production key is added at go-l
 **Sharing** your own learned skill (`registry_share_preview` / `registry_share`): the copy
 gets fresh metadata and no `source`; your home folder becomes `~`; emails, URLs, IPs, phone
 numbers, long tokens, other users' home paths, your username and folders deeper than a
-standard one are flagged, and any flag you pick becomes a parameter (the uncertain-params
+standard one are flagged wherever they appear (the skill's name and description, each
+parameter's name, description, enum and default, every step argument). Sharing is refused
+(`unacknowledged_flags`) until every flag is ticked in the preview, and any step flag you
+pick becomes a parameter (the uncertain-params
 idea in reverse). The result is a github.com "new file" URL prefilled with path and JSON;
 you submit the PR with your own account — the app holds no GitHub credentials.
 
-**Test-only overrides**: `LEUTHERIA_REGISTRY_URL` replaces the host (https, or http to
-loopback only) and, only together with it, `LEUTHERIA_REGISTRY_TEST_KEY`
-(`<key_id>:<base64 raw public key>`) adds one accepted key. They exist for
+**Test-only overrides**, honoured only while `LEUTHERIA_REGISTRY_TEST=1` is also set (else
+ignored, with a stderr warning and a `registry_test_override_ignored` event):
+`LEUTHERIA_REGISTRY_URL` replaces the host (https, or http to loopback only) and, only
+together with it, `LEUTHERIA_REGISTRY_TEST_KEY` (`<key_id>:<base64 raw public key>`) adds
+one accepted key. In force, the agent prints a warning to stderr and logs
+`registry_test_mode` at startup, and `registry_list` answers `test_registry: true`, shown
+as a "test registry" tag in the Library's Shared overview. They exist for
 `scripts/registry_client_check.py` (a local `http.server` registry signed with a throwaway
 key: good path, every tamper case, slow server, rollback, first-run gating, run_command
 never trusted, edited files, cap, update, yank, uninstall, share) — never set them for real
@@ -1971,12 +2007,13 @@ Rules and trust chain: "Shared skills (the public registry)" above.
 #                    published_at, installed_at, first_run_done,
 #                    "withdrawn": bool, "in_index": bool, "update_available": bool}, ...],
 #     "key_id": "<signing key id>", "checked_at": "<iso of this verification>",
+#     "test_registry": false,   # true only under the test-only overrides (also on refusals)
 #     "stale": true, "error_code": "unavailable", "error": "..."}
 #       # stale/error_code/error only when the registry couldn't be REACHED and the last
 #       # verified index (re-verified from cache) was used instead
 # refused or nothing verified: {"ok": false, "index_ok": false, "error_code": "...",
 #   "error": "...", "skills": [], "installed": [...], "imported_max": 20}
-#   error_code: verification_failed | no_signing_key | unavailable. A verification
+#   error_code: verification_failed | expired | no_signing_key | unavailable. A verification
 #   failure is never answered from the cache (BUGS.md #69).
 {"type": "registry_preview", "name": "tidy_downloads", "content_hash": "<sha256>", "request_id": "2"}
 # -> {..., "ok": true, name, version, content_hash, author, summary, review, has_run_command,
@@ -1987,8 +2024,8 @@ Rules and trust chain: "Shared skills (the public registry)" above.
 # send only after the user approved the card for exactly this content_hash; an installed
 # older version of the same name is replaced (that card is the update's approval)
 # -> {..., "ok": true, "name", "id", "content_hash", "version", "replaced": bool}
-#    or {"ok": false, "error_code": cap_reached | yanked | not_found | refused (name taken)
-#        | verification_failed | no_signing_key | unavailable | bad_request, "error"}
+#    or {"ok": false, "error_code": cap_reached | yanked | not_found | refused (name taken) | author_changed
+#        | verification_failed | expired | no_signing_key | unavailable | bad_request, "error"}
 {"type": "registry_share_preview", "skill": "my_learned_skill", "parameterize": ["f2"], "request_id": "4"}
 # -> {..., "ok": true, "skill", "path": "skills/<name>/<hash>.json", "content_hash",
 #     "repo": "AnuragK-O/leutheria-skills", "too_long": bool (registry_share will use
@@ -1998,14 +2035,16 @@ Rules and trust chain: "Shared skills (the public registry)" above.
 #    kind: email | url | ip_address | phone_number | token_or_id | someone_elses_home |
 #    personal_path | your_username. `parameterize` (optional) lists flag ids to turn into
 #    string parameters (steps only; a flag in the description stays a warning).
-{"type": "registry_share", "skill": "my_learned_skill", "parameterize": ["f2"], "request_id": "5"}
+{"type": "registry_share", "skill": "my_learned_skill", "parameterize": ["f2"], "acknowledged": ["f1"], "request_id": "5"}
 # -> {..., "ok": true, "skill", "path", "content_hash",
 #     "url": "https://github.com/AnuragK-O/leutheria-skills/new/main?filename=...&value=...",
 #     "copy_to_clipboard": false}
 #    URL over 8000 chars: "url" has only the filename, "copy_to_clipboard": true and
 #    "clipboard_text" is the JSON. The agent opens and copies nothing; main.js does both
 #    (only https://github.com/AnuragK-O/leutheria-skills/new/main?...). Only learned
-#    skills can be shared (else error_code not_shareable).
+#    skills can be shared (else error_code not_shareable). Every flag id must be in
+#    `acknowledged` or `parameterize`, else {"ok": false, "error_code":
+#    "unacknowledged_flags", "unacknowledged": [ids], "error"} and nothing is built.
 ```
 
 #### Overlay panels (`panel`)

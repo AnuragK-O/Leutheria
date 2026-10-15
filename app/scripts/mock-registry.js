@@ -316,7 +316,7 @@ function installedRecords(withIndex) {
 
 function list() {
   if (mode !== "ok" && mode !== "stale") {
-    return { ok: false, index_ok: false, error_code: mode, error: ERRORS[mode], skills: [], installed: installedRecords(false), imported_max: cap };
+    return { ok: false, index_ok: false, error_code: mode, error: ERRORS[mode], skills: [], installed: installedRecords(false), imported_max: cap, test_registry: false };
   }
   const mine = new Map(installed().map((skill) => [skill.name, skill.registry]));
   const result = {
@@ -335,6 +335,7 @@ function list() {
     imported_max: cap,
     generated_at: iso(0.2),
     key_id: "4f1c2a9e7d3b6a50",
+    test_registry: false,
     checked_at: new Date().toISOString(),
   };
   if (mode === "stale") Object.assign(result, { stale: true, error_code: "unavailable", error: ERRORS.unavailable, checked_at: null, key_id: null });
@@ -479,6 +480,11 @@ function sharePreview(message) {
 function share(message) {
   const preview = sharePreview(message);
   if (!preview.ok) return preview;
+  const acked = new Set([...(message.acknowledged || []), ...(message.parameterize || [])]);
+  const missing = preview.flags.map((item) => item.id).filter((id) => !acked.has(id));
+  if (missing.length) {
+    return { ok: false, error_code: "unacknowledged_flags", unacknowledged: missing, error: `${missing.length} flagged value${missing.length === 1 ? "" : "s"} not checked yet; tick each one in the preview before sharing` };
+  }
   const base = `https://github.com/AnuragK-O/leutheria-skills/new/main?filename=${encodeURIComponent(preview.path)}`;
   const common = { ok: true, skill: preview.skill, path: preview.path, content_hash: preview.content_hash };
   if (badShare) return { ...common, url: `https://github.com/someone-else/leutheria-skills/new/main?filename=${preview.path}`, copy_to_clipboard: false };

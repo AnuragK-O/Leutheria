@@ -916,11 +916,11 @@
         "p.section-note",
         {},
         status && status.withdrawn
-          ? "Withdrawn from the registry. It still works here until you delete it. "
+          ? "Withdrawn from the registry. It still works here until you delete it, and every step asks first on every run. "
           : status && status.update
             ? `Version ${status.latest.version} is available; updating is a new approval. `
             : "",
-        info.first_run_done === false ? "Every step asks first until it has run once. " : "",
+        info.first_run_done === false && !(status && status.withdrawn) && !info.withdrawn ? "Every step asks first until it has run once. " : "",
         info.has_run_command ? "Its run_command steps ask on every run. " : "",
         el("button.link-button", { text: "Show in Shared", "data-focus": "show-shared", onclick: () => reveal(`shared:${entry.name}`) })
       )

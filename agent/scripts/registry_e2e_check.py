@@ -16,7 +16,8 @@ by `python -m http.server` on a spare loopback port.
 The agent side is the real server (core/server.py main(), as __main__.py runs
 it) in a child process, on a spare port, with its own random LEUTHERIA_TOKEN,
 LEUTHERIA_MANUAL_DISPATCH=1, LEUTHERIA_VOICE_SOURCE=<a silent WAV made here>,
-the test-only LEUTHERIA_REGISTRY_URL / LEUTHERIA_REGISTRY_TEST_KEY, and HOME
+the test-only LEUTHERIA_REGISTRY_URL / LEUTHERIA_REGISTRY_TEST_KEY (with
+LEUTHERIA_REGISTRY_TEST=1), and HOME
 plus every state file (generated/, preferences, trust, voice settings, the
 event log) redirected into the temp dir before the server starts -- the
 agent's state paths are module constants with no env override, so a
@@ -283,6 +284,7 @@ class Setup:
             ws_auth.TOKEN_ENV: self.token,
             "LEUTHERIA_MANUAL_DISPATCH": "1",
             "LEUTHERIA_VOICE_SOURCE": str(self.wav),
+            "LEUTHERIA_REGISTRY_TEST": "1",
             "LEUTHERIA_REGISTRY_URL": self.registry_url,
             "LEUTHERIA_REGISTRY_TEST_KEY": f"{self.key_entry['key_id']}:{self.key_entry['public_key']}",
         })
@@ -474,7 +476,9 @@ async def _full_loop(s: Setup):
         check(str(s.home) not in prev["json"] and prev["definition"]["steps"][0]["args"]["path"] == "~/Documents/Clients"
               and any(ch["where"].endswith("steps[0].args.path") for ch in prev["changes"]), f"home path became ~, listed as a change: {prev['definition']['steps'][0]} {prev['changes']}")
         check(any(f["kind"] == "email" and f["value"] == "bob@example.com" for f in prev["flags"]), "the email is flagged")
-        link = await c.control({"type": "registry_share", "skill": "client_notes"})
+        refused = await c.control({"type": "registry_share", "skill": "client_notes"})
+        check(not refused["ok"] and refused["error_code"] == "unacknowledged_flags", "registry_share refused until every flag is acknowledged")
+        link = await c.control({"type": "registry_share", "skill": "client_notes", "acknowledged": [f["id"] for f in prev["flags"]]})
         check(link["ok"] and link["url"].startswith("https://github.com/AnuragK-O/leutheria-skills/new/main?filename=skills%2Fclient_notes%2F")
               and link["copy_to_clipboard"] is False and "value=" in link["url"], "registry_share: the registry repo's new-file URL, prefilled")
         bad = await c.control({"type": "registry_share_preview", "skill": "repo_status"})

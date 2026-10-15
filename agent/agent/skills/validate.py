@@ -390,6 +390,39 @@ def catalog_validation_kwargs(catalog: dict) -> dict:
 # machine's own provenance note.
 SHARED_FORBIDDEN_KEYS = {"source", "source_signature"}
 
+# A shared skill's enum values and string defaults go into the schema the
+# model reads on every request, and unlike descriptions they are behaviour
+# (covered by content_hash), so the client can't rewrite them: they have to
+# be short, plain values, never prose (review H3). At most SHARED_VALUE_MAX
+# characters of letters, digits, spaces and . _ ~ / + @ % & : , ( ) -, no
+# control characters, and no punctuation followed by a space (". ", ": ",
+# ", " reads as a sentence, not a value). Enums are also capped in count.
+SHARED_VALUE_MAX = 64
+SHARED_ENUM_MAX = 20
+_SHARED_VALUE_RE = re.compile(r"[\w ./~+@%&:,()-]{0,64}")
+_SENTENCE_PUNCT_RE = re.compile(r"[.,:)]\s|\s\s")
+
+
+def check_shared_value(value, where: str) -> None:
+    """A string enum value or default from a shared skill. Raises
+    SkillValidationError when it isn't a short plain value."""
+    if not isinstance(value, str):
+        return
+    if not _SHARED_VALUE_RE.fullmatch(value) or _SENTENCE_PUNCT_RE.search(value):
+        _fail(f"{where} must be a plain value of at most {SHARED_VALUE_MAX} characters "
+              "(letters, digits, spaces and . _ ~ / + @ % & : , ( ) -; no sentences)")
+
+
+def _check_shared_schema(schema: dict) -> None:
+    for name, spec in (schema.get("properties") or {}).items():
+        if "enum" in spec:
+            if len(spec["enum"]) > SHARED_ENUM_MAX:
+                _fail(f"parameter {name!r} enum has more than {SHARED_ENUM_MAX} values")
+            for i, value in enumerate(spec["enum"]):
+                check_shared_value(value, f"parameter {name!r} enum[{i}]")
+        if "default" in spec:
+            check_shared_value(spec["default"], f"parameter {name!r} default")
+
 
 def validate_shared(definition, **kwargs) -> None:
     """A skill file as published in the registry: the generated-skill format
@@ -401,6 +434,7 @@ def validate_shared(definition, **kwargs) -> None:
     if forbidden:
         _fail(f"a shared skill must not carry {sorted(forbidden)}")
     validate_content(definition, **kwargs)
+    _check_shared_schema(definition["input_schema"])
     missing = (METADATA_KEYS - {"source"}) - set(definition)
     if missing:
         _fail(f"missing metadata: {sorted(missing)}")

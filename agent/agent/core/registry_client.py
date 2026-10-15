@@ -9,8 +9,11 @@ Trust chain (any failure refuses the whole operation, never a partial one):
   2. the signature is Ed25519 over the exact index bytes, by a key listed
      in core/registry_keys.py (matched by key_id). No key configured = no
      registry: nothing is listed, previewed or installed;
-  3. the index is structurally checked, and refused if it is older than
-     one already verified here (a replayed old index would un-yank);
+  3. the index is structurally checked, refused at or past its signed
+     expires_at (code "expired"), and refused if it is older than one
+     already verified here (a replayed old index would un-yank) -- that
+     floor is kept in registry_state.json beside the trust file, not only
+     in the disposable cache;
   4. a skill file's bytes must match the index's size and sha256, it must
      carry no `source`, its content_hash must recompute and equal the
      index's, and skills/validate.py must pass with this machine's tools.
@@ -22,11 +25,13 @@ registry record beside it (skills/registry.py); the model sees a description
 built here, never the author's. Updates are new approvals; a yanked version
 stays installed and is shown as withdrawn. At most MAX_IMPORTED installed.
 
-Test-only: LEUTHERIA_REGISTRY_URL replaces the host (http only to loopback)
-and, only together with it, LEUTHERIA_REGISTRY_TEST_KEY ("<key_id>:<base64
-raw public key>") adds one accepted key. Both exist for
-scripts/registry_client_check.py and a local registry; neither is for use
-by a real install.
+Test-only, and only with LEUTHERIA_REGISTRY_TEST=1 also set (review L1):
+LEUTHERIA_REGISTRY_URL replaces the host (http only to loopback) and, only
+together with it, LEUTHERIA_REGISTRY_TEST_KEY ("<key_id>:<base64 raw public
+key>") adds one accepted key. Without the flag both are ignored (and that is
+logged). In force, it is printed to stderr and logged at startup, and
+registry_list says test_registry: true, which the Library shows. Both exist
+for the check scripts and a local registry; neither is for a real install.
 
 Threads: fetching and verifying (get_index, fetch_verified_skill) run on a
 worker thread (control messages via run_in_executor, search_shared_skills as
@@ -45,11 +50,13 @@ import os
 import re
 import socket
 import ssl
+import stat
+import sys
 import threading
 import time
 import urllib.parse
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from agent.core import path_policy, registry_keys, registry_text
@@ -62,6 +69,7 @@ SHARE_REPO = "https://github.com/AnuragK-O/leutheria-skills"
 SHARE_BRANCH = "main"
 TEST_URL_ENV = "LEUTHERIA_REGISTRY_URL"
 TEST_KEY_ENV = "LEUTHERIA_REGISTRY_TEST_KEY"
+TEST_FLAG_ENV = "LEUTHERIA_REGISTRY_TEST"
 MAX_IMPORTED_ENV = "LEUTHERIA_MAX_IMPORTED_SKILLS"
 
 TIMEOUT = 6.0  # seconds, per socket operation
@@ -79,7 +87,18 @@ CONTROL_TYPES = {"registry_list", "registry_preview", "registry_install", "regis
 UI_ONLY_TYPES = {"registry_install", "registry_share"}
 
 _PATH_RE = re.compile(r"index\.json|index\.json\.sig|skills/[a-z][a-z0-9_]{0,63}/[0-9a-f]{64}\.json")
-_ISO_RE = re.compile(r"\d{4}-\d\d-\d\dT[0-9:.]+(Z|[+-]\d\d:\d\d)?")
+# skill-registry/README.md "Index format and expiry": both stamps UTC, exactly
+# this form, both signed. expires_at must be after generated_at, at most
+# INDEX_MAX_VALIDITY_DAYS after it, and in the future.
+_ISO_RE = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ")
+INDEX_MAX_VALIDITY_DAYS = 8
+
+# The rollback floor: the newest generated_at verified on this machine. Kept
+# in a state file beside the trust file (not only in the index cache, which
+# is a disposable copy in generated/), so deleting the cache doesn't let an
+# older signed index back in (review M3). None = beside trust.TRUST_FILE.
+STATE_FILE = None
+STATE_NAME = "registry_state.json"
 _tls = ssl.create_default_context()
 _lock = threading.Lock()
 _memory = {"index": None, "verified_at": 0.0, "key_id": None, "checked_at": None}
@@ -91,7 +110,10 @@ class RegistryError(Exception):
     a cached verified index may still be shown), verification_failed (a
     signature, hash, content_hash, structure or rollback check failed: a
     security state, never papered over with the cache), no_signing_key,
-    not_found, yanked, cap_reached, bad_request, not_shareable, refused."""
+    expired (the index is at or past its signed expires_at: refused like a
+    verification failure, never answered from the cache), author_changed,
+    not_found, yanked, cap_reached, bad_request, not_shareable, refused,
+    unacknowledged_flags (registry_share before every flag was ticked)."""
 
     def __init__(self, message: str, code: str = "unavailable"):
         super().__init__(message)
@@ -101,9 +123,30 @@ class RegistryError(Exception):
 # --- configuration ------------------------------------------------------------
 
 
+_test_warned = set()
+
+
+def test_registry() -> bool:
+    """True when the test-only overrides are in force: the URL override AND
+    the explicit test flag (review L1). Either alone does nothing."""
+    url_set = bool(os.environ.get(TEST_URL_ENV))
+    flag_set = os.environ.get(TEST_FLAG_ENV) == "1"
+    if url_set and not flag_set and "ignored" not in _test_warned:
+        _test_warned.add("ignored")
+        print(f"WARNING: {TEST_URL_ENV} is set but {TEST_FLAG_ENV}=1 is not; ignoring it (public registry)", file=sys.stderr, flush=True)
+        log_event("registry_test_override_ignored")
+    if url_set and flag_set and "active" not in _test_warned:
+        _test_warned.add("active")
+        print(f"WARNING: TEST REGISTRY in use ({os.environ.get(TEST_URL_ENV)[:120]}"
+              f"{', test key' if os.environ.get(TEST_KEY_ENV) else ''}); this is not the public registry",
+              file=sys.stderr, flush=True)
+        log_event("registry_test_mode", test_key=bool(os.environ.get(TEST_KEY_ENV)))
+    return url_set and flag_set
+
+
 def registry_base() -> str:
     override = os.environ.get(TEST_URL_ENV)
-    if not override:
+    if not override or not test_registry():
         return REGISTRY_URL
     parts = urllib.parse.urlsplit(override)
     if parts.scheme == "https" and parts.hostname:
@@ -122,7 +165,7 @@ def accepted_keys() -> dict:
 
     entries = list(registry_keys.PRODUCTION_KEYS)
     test = os.environ.get(TEST_KEY_ENV)
-    if test and os.environ.get(TEST_URL_ENV):
+    if test and test_registry():
         key_id, _, b64 = test.partition(":")
         entries.append({"key_id": key_id, "public_key": b64})
     keys = {}
@@ -255,7 +298,22 @@ def _verify(index_bytes: bytes, sig_bytes: bytes):
     except (ValueError, UnicodeDecodeError):
         raise RegistryError("index is not valid JSON", bad) from None
     _check_index(index)
+    _check_expiry(index)
     return index, str(key_id)
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _check_expiry(index: dict) -> None:
+    """Refuse an index at or past its signed expires_at: a mirror, proxy or
+    attacker replaying an old, validly signed index can hide a yank for at
+    most that long (contract: skill-registry/README.md)."""
+    if _when(index["expires_at"]) <= _now():
+        raise RegistryError(
+            f"the registry index expired at {index['expires_at']} (generated {index['generated_at']}); "
+            "it has to be re-signed before shared skills can be listed or installed", "expired")
 
 
 def _check_index(index) -> None:
@@ -266,6 +324,17 @@ def _check_index(index) -> None:
         bad("not a format 1 index")
     if not isinstance(index.get("generated_at"), str) or not _ISO_RE.fullmatch(index["generated_at"]):
         bad("generated_at")
+    expires = index.get("expires_at")
+    if not isinstance(expires, str) or not _ISO_RE.fullmatch(expires):
+        bad("expires_at missing or not YYYY-MM-DDTHH:MM:SSZ")
+    try:
+        generated_when, expires_when = _when(index["generated_at"]), _when(expires)
+    except ValueError:
+        bad("generated_at/expires_at is not a real time")
+    if expires_when <= generated_when:
+        bad("expires_at is not after generated_at")
+    if expires_when - generated_when > timedelta(days=INDEX_MAX_VALIDITY_DAYS):
+        bad(f"expires_at is more than {INDEX_MAX_VALIDITY_DAYS} days after generated_at")
     seen = set()
     for i, e in enumerate(index["skills"]):
         if not isinstance(e, dict):
@@ -303,6 +372,77 @@ def _cache_path() -> Path:
     return registry.imported_dir() / "_index_cache.json"
 
 
+def _state_path() -> Path:
+    if STATE_FILE:
+        return Path(STATE_FILE)
+    from agent.core import trust
+
+    return Path(trust.TRUST_FILE).with_name(STATE_NAME)
+
+
+def _read_floor():
+    """The newest generated_at verified on this machine, or None if no index
+    ever was. A file that exists but can't be used fails closed: the
+    registry stays refused (verification_failed) until it is fixed or
+    removed, rather than silently losing the rollback floor."""
+    path = _state_path()
+    if not path.exists() and not path.is_symlink():
+        return None
+    try:
+        if path.is_symlink() or path.stat().st_size > 4096:
+            raise ValueError("it is a symlink or too large")
+        stamp = json.loads(path.read_text(encoding="utf-8"))["generated_at"]
+        if not isinstance(stamp, str) or not _ISO_RE.fullmatch(stamp):
+            raise ValueError("generated_at is malformed")
+        _when(stamp)
+        return stamp
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        raise RegistryError(
+            f"the registry state file {path.name} can't be read ({e}); shared skills stay unavailable "
+            "until it is fixed or removed", "verification_failed") from None
+
+
+def _write_floor(stamp: str) -> None:
+    _write_private(_state_path(), json.dumps({"generated_at": stamp}).encode())
+
+
+TMP_DIR_NAME = ".registry-tmp"
+
+
+def _write_private(path: Path, data: bytes) -> None:
+    """Atomic replace of `path` with `data` (review L6). The temp file is a
+    fresh random name, created O_EXCL|O_NOFOLLOW with mode 0600, inside a
+    0700 directory of ours next to `path` -- refused if that directory is a
+    symlink or someone else's -- so nothing planted at a predictable name
+    can redirect the write. os.replace renames over `path` itself (a symlink
+    there is replaced, not followed). Raises OSError."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_dir = path.parent / TMP_DIR_NAME
+    try:
+        os.mkdir(tmp_dir, 0o700)
+    except FileExistsError:
+        pass
+    info = os.lstat(tmp_dir)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        raise OSError(f"{tmp_dir} is not a private directory of this user")
+    if info.st_mode & 0o077:
+        os.chmod(tmp_dir, 0o700)
+    tmp = tmp_dir / f"{path.name}.{uuid.uuid4().hex}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def _read_cache():
     """The cached index, re-verified (the cache file is a copy of what the
     registry served, not something trusted because it is on disk)."""
@@ -331,25 +471,36 @@ def get_index(refresh: bool = False):
             return _memory["index"], None
         previous = _memory["index"] or _read_cache()
         try:
+            if not accepted_keys():  # nothing could verify it: don't even fetch
+                raise RegistryError("no registry signing key is configured, so shared skills are unavailable", "no_signing_key")
+            floor = _read_floor()
             index_bytes = _fetch("index.json", MAX_INDEX_BYTES)
             sig_bytes = _fetch("index.json.sig", MAX_SIG_BYTES)
             index, key_id = _verify(index_bytes, sig_bytes)
-            if previous is not None and _when(index["generated_at"]) < _when(previous["generated_at"]):
+            seen = [s for s in (floor, previous and previous["generated_at"]) if s]
+            if seen and _when(index["generated_at"]) < max(_when(s) for s in seen):
                 raise RegistryError("the registry served an index older than one already seen here", "verification_failed")
         except RegistryError as e:
             log_event("registry_index_failed", error=str(e), code=e.code)
             if previous is None or e.code != "unavailable" or not accepted_keys():
                 _memory.update(index=previous, verified_at=0.0, key_id=None, checked_at=None)
                 raise
+            try:
+                _check_expiry(previous)  # the last verified one may have expired since
+            except RegistryError:
+                _memory.update(index=None, verified_at=0.0, key_id=None, checked_at=None)
+                raise
             return previous, str(e)
         _memory.update(index=index, verified_at=time.monotonic(), key_id=key_id,
                        checked_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        if floor is None or _when(index["generated_at"]) > _when(floor):
+            try:
+                _write_floor(index["generated_at"])
+            except OSError as e:
+                log_event("registry_state_write_failed", error=str(e))
         try:
-            path = _cache_path()
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_name(path.name + ".tmp")
-            tmp.write_text(json.dumps({"index": base64.b64encode(index_bytes).decode(), "sig": base64.b64encode(sig_bytes).decode()}))
-            os.replace(tmp, path)
+            _write_private(_cache_path(), json.dumps(
+                {"index": base64.b64encode(index_bytes).decode(), "sig": base64.b64encode(sig_bytes).decode()}).encode())
         except OSError as e:
             log_event("registry_cache_write_failed", error=str(e))
         log_event("registry_index_verified", skills=len(index["skills"]))
@@ -401,6 +552,12 @@ def fetch_verified_skill(entry: dict) -> dict:
         validate.validate(definition, **registry.validation_kwargs())
     except (SkillValidationError, KeyError, TypeError, AttributeError) as e:
         raise RegistryError(f"{entry['name']}: not a valid skill here: {e}", "verification_failed") from None
+    # Names, enum values and defaults reach the model as the author wrote
+    # them (only descriptions are rewritten), so they go through the
+    # instruction filter too (review H3).
+    problems = registry_text.model_facing_problems(definition)
+    if problems:
+        raise RegistryError(f"{entry['name']}: instruction-like text where the model would read it: {', '.join(problems[:5])}", "refused")
     if sorted(set(entry["requires"])) != definition["requires"]:
         raise RegistryError(f"{entry['name']}: index requires does not match the steps", "verification_failed")
     has_rc = any(s["tool"] == "run_command" for s in definition["steps"])
@@ -466,10 +623,32 @@ def approval_card(entry: dict, definition: dict) -> dict:
     }
 
 
+def author_conflict(entry: dict):
+    """The refusal for a version of an installed shared skill published by
+    someone other than the installed version's author, else None (review
+    M1). The registry's CI refuses a second author for a name, but the
+    client doesn't rely on that: under one name, another author's file is a
+    different skill, never an update. Loop thread (reads SKILLS)."""
+    rec = installed().get(entry["name"])
+    if rec is None:
+        return None
+    new_author = registry_text.safe_author(entry.get("author"))
+    if new_author == rec.get("author"):
+        return None
+    return {"ok": False, "error_code": "author_changed",
+            "error": f"{entry['name']} version {entry['version']} is published by {new_author}, but the one installed here "
+                     f"is by {rec.get('author')}: it's a different skill, not an update. Delete the installed one to install it."}
+
+
 def commit_install(entry: dict, definition: dict) -> dict:
     """Write and register an approved, verified skill. Loop thread only.
-    An installed older version of the same name is replaced (an update the
-    user just approved); anything else of that name is refused."""
+    An installed older version of the same name by the same author is
+    replaced (an update the user just approved); anything else of that
+    name is refused."""
+    conflict = author_conflict(entry)
+    if conflict:
+        log_event("shared_skill_author_changed", name=entry["name"], content_hash=entry["content_hash"])
+        return conflict
     current = installed()
     if entry["name"] not in current and len(current) >= max_imported():
         return {"ok": False, "error_code": "cap_reached", "error": f"at most {max_imported()} shared skills can be installed; remove one first"}
@@ -484,6 +663,7 @@ def commit_install(entry: dict, definition: dict) -> dict:
         "published_at": entry.get("published_at"),
         "installed_at": time.time(),
         "first_run_done": False,
+        "withdrawn": False,
     }
     result = registry.register_skill(definition, record=record, replace=entry["name"] in current)
     if not result.get("ok"):
@@ -495,6 +675,35 @@ def commit_install(entry: dict, definition: dict) -> dict:
 
 
 # --- control messages -----------------------------------------------------------
+
+
+def apply_withdrawals(index) -> list:
+    """Loop thread. For every installed imported skill whose exact version a
+    verified index marks yanked: set the record's `withdrawn` and reset
+    `first_run_done`, so from now on every step of it asks on every run
+    (review M2: before, a yank after its first run changed nothing). Sticky
+    until the skill is deleted or an approved update replaces it. Returns
+    the names newly marked."""
+    if not index:
+        return []
+    yanked = {(e["name"], e["content_hash"]) for e in index["skills"] if e.get("yanked")}
+    marked = []
+    for name, rec in list(registry.IMPORTED.items()):
+        if (name, rec.get("content_hash")) in yanked and not rec.get("withdrawn"):
+            rec["withdrawn"] = True
+            rec["first_run_done"] = False
+            try:
+                registry.write_record(rec)
+            except OSError as e:
+                log_event("imported_record_write_failed", name=name, error=str(e))
+            log_event("shared_skill_withdrawn", name=name, content_hash=rec.get("content_hash"), version=rec.get("version"))
+            marked.append(name)
+    return marked
+
+
+def _current_index():
+    with _lock:
+        return _memory["index"]
 
 
 def _list_result(index, stale_error) -> dict:
@@ -511,21 +720,22 @@ def _list_result(index, stale_error) -> dict:
         e["author"] = registry_text.safe_author(e.get("author"))
         rec = mine.get(name)
         e["installed_version"] = rec.get("version") if rec else None
-        e["update_available"] = bool(rec) and rec.get("content_hash") != e["content_hash"] and e["version"] > (rec.get("version") or 0)
+        e["update_available"] = (bool(rec) and rec.get("content_hash") != e["content_hash"] and e["version"] > (rec.get("version") or 0)
+                                 and author_conflict(e) is None)
         skills.append(e)
     installed_list = []
     for name, rec in sorted(mine.items()):
         entry = by_key.get((name, rec.get("content_hash")))
         installed_list.append({
             **rec,
-            "withdrawn": bool(entry and entry.get("yanked")),
+            "withdrawn": bool(entry and entry.get("yanked")) or bool(rec.get("withdrawn")),
             "in_index": entry is not None,
             "update_available": bool(newest.get(name)) and newest[name]["content_hash"] != rec.get("content_hash")
-            and newest[name]["version"] > (rec.get("version") or 0),
+            and newest[name]["version"] > (rec.get("version") or 0) and author_conflict(newest[name]) is None,
         })
     result = {"ok": True, "index_ok": True, "skills": skills, "installed": installed_list,
               "imported_max": max_imported(), "generated_at": index.get("generated_at"),
-              "key_id": _memory["key_id"], "checked_at": _memory["checked_at"]}
+              "key_id": _memory["key_id"], "checked_at": _memory["checked_at"], "test_registry": test_registry()}
     if stale_error:
         result.update(stale=True, error_code="unavailable", error=stale_error)
     return result
@@ -543,25 +753,44 @@ async def handle_control(payload: dict) -> dict:
                 index, stale = await loop.run_in_executor(None, get_index, bool(payload.get("refresh")))
             except RegistryError as e:
                 return {"ok": False, "index_ok": False, "error_code": e.code, "error": str(e), "skills": [],
-                        "installed": [{**rec, "withdrawn": False, "in_index": False, "update_available": False}
+                        "installed": [{**rec, "withdrawn": bool(rec.get("withdrawn")), "in_index": False, "update_available": False}
                                       for _, rec in sorted(installed().items())],
-                        "imported_max": max_imported()}
+                        "imported_max": max_imported(), "test_registry": test_registry()}
+            apply_withdrawals(index)
             return _list_result(index, stale)
 
         if kind in ("registry_preview", "registry_install"):
             name, content_hash = payload.get("name"), payload.get("content_hash")
             if not isinstance(name, str) or not isinstance(content_hash, str) or not HASH_RE.fullmatch(content_hash):
                 return {"ok": False, "error_code": "bad_request", "error": "name and content_hash are required"}
-            entry, definition = await loop.run_in_executor(None, resolve, name, content_hash)
+            try:
+                entry, definition = await loop.run_in_executor(None, resolve, name, content_hash)
+            finally:
+                apply_withdrawals(_current_index())
+            conflict = author_conflict(entry)
+            if conflict:
+                return conflict
             if kind == "registry_preview":
                 return {"ok": True, **approval_card(entry, definition)}
             result = commit_install(entry, definition)
             return {**result, "version": entry["version"]} if result.get("ok") else result
 
         if kind in ("registry_share_preview", "registry_share"):
-            preview = share_preview(payload.get("skill"), payload.get("parameterize") or [])
+            parameterize = payload.get("parameterize") or []
+            preview = share_preview(payload.get("skill"), parameterize)
             if not preview.get("ok") or kind == "registry_share_preview":
                 return preview
+            # Flags are not advisory (review H2): a share opens only once the
+            # user has ticked every flagged constant (or made it a parameter).
+            acknowledged = payload.get("acknowledged") or []
+            if not isinstance(acknowledged, list) or not all(isinstance(a, str) for a in acknowledged):
+                return {"ok": False, "error_code": "bad_request", "error": "acknowledged must be a list of flag ids"}
+            missing = [f["id"] for f in preview["flags"] if f["id"] not in set(acknowledged) | set(parameterize)]
+            if missing:
+                log_event("skill_share_unacknowledged", skill=preview["skill"], flags=len(missing))
+                return {"ok": False, "error_code": "unacknowledged_flags", "unacknowledged": missing,
+                        "error": f"{len(missing)} flagged value{'s' if len(missing) != 1 else ''} not checked yet; "
+                                 "tick each one in the preview before sharing"}
             return share_link(preview)
     except RegistryError as e:
         log_event("registry_refused", type=kind, name=str(payload.get("name") or payload.get("skill")), error=str(e), code=e.code)

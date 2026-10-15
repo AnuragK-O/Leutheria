@@ -50,6 +50,11 @@
       title: "Index refused: no registry key configured",
       short: "There's no key to check the registry's signature with, so nothing from it is shown or installed.",
     },
+    expired: {
+      security: true,
+      title: "Index refused: out of date",
+      short: "The registry index is past its signed expiry date, so a withdrawn skill could be hidden in it. Nothing from it is shown or installed.",
+    },
     unavailable: {
       security: false,
       title: "Couldn't reach the registry",
@@ -458,7 +463,7 @@
         {},
         el("strong", { text: "Withdrawn from the registry" }),
         el("span", {
-          text: `Version ${item.installedVersion ?? ""} was pulled after it was published. Your copy still works and still asks before its steps; nothing removes it for you.`,
+          text: `Version ${item.installedVersion ?? ""} was pulled after it was published. Your copy still works, but every step now asks first on every run; nothing removes it for you.`,
         }),
         item.skill &&
           item.skill.deletable &&
@@ -780,7 +785,16 @@
       el(
         "section",
         {},
-        el("div.section-label", { text: "Registry" }),
+        el(
+          "div.section-label",
+          {},
+          "Registry",
+          // registry_list's test_registry: the test-only URL/key overrides are
+          // in force (LEUTHERIA_REGISTRY_TEST=1). Never true in a real install.
+          data &&
+            data.test_registry &&
+            el("span.badge.badge-warning.shared-test-registry", { text: "test registry", title: "A local test registry and key replace the public one" })
+        ),
         el(
           "div.stat-grid.stat-grid-3",
           {},
@@ -929,7 +943,12 @@
       )
     );
 
+    // Every flag has to be ticked before the share opens (the agent refuses
+    // it otherwise: unacknowledged_flags). Ticks live in the share state, so
+    // they survive a re-render but not a new preview.
     const flagged = preview.flags || [];
+    const acked = state.acked || [];
+    const allAcked = flagged.every((item) => acked.includes(item.id));
     if (flagged.length) {
       rows.appendChild(
         el(
@@ -945,7 +964,19 @@
                 {},
                 el("code.share-field", { text: item.where }),
                 el("code.share-value", { text: String(item.value) }),
-                el("span", { text: FLAG_REASONS[item.kind] || FLAG_REASONS.other })
+                el("span", { text: FLAG_REASONS[item.kind] || FLAG_REASONS.other }),
+                el(
+                  "label.inline-check.share-ack",
+                  {},
+                  el("input", {
+                    type: "checkbox",
+                    checked: acked.includes(item.id),
+                    "data-flag": item.id,
+                    onchange: (event) =>
+                      set({ ...state, phase: state.phase === "error" ? "preview" : state.phase, acked: event.target.checked ? [...new Set([...acked, item.id])] : acked.filter((id) => id !== item.id) }),
+                  }),
+                  el("span", { text: "I checked this" })
+                )
               )
             )
           )
@@ -995,12 +1026,13 @@
           "button.btn.btn-primary",
           {
             "data-focus": "open-github",
-            disabled: state.phase === "opening",
+            disabled: state.phase === "opening" || !allAcked,
+            title: allAcked ? null : "Tick each flagged value first",
             onclick: async () => {
               set({ ...state, phase: "opening" });
-              const result = await api.registryShare(entry.name);
+              const result = await api.registryShare(entry.name, acked);
               if (result && result.ok) set({ phase: "opened", preview, copied: result.copied });
-              else set({ phase: "error", preview, error: (result && result.error) || "GitHub couldn't be opened." });
+              else set({ phase: "error", preview, acked, error: (result && result.error) || "GitHub couldn't be opened." });
             },
           },
           state.phase === "opening" ? "Opening…" : tooLong ? "Copy and open GitHub" : "Open on GitHub"

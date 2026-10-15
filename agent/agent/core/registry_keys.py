@@ -17,8 +17,9 @@ here at go-live (the private half never leaves the registry's CI).
 
 The only other key the client ever accepts is a test key, given in the
 environment (LEUTHERIA_REGISTRY_TEST_KEY) and honoured only together with
-the test registry URL override (LEUTHERIA_REGISTRY_URL). Both are for the
-check scripts and a local registry; see registry_client.py.
+the test registry URL override (LEUTHERIA_REGISTRY_URL) and the explicit
+test flag (LEUTHERIA_REGISTRY_TEST=1). All are for the check scripts and a
+local registry; see registry_client.py.
 """
 
 PRODUCTION_KEYS: list = []
