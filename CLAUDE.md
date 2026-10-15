@@ -81,6 +81,7 @@ pkill -if "python -m agent"; pkill -f "Electron.app"
 ./.venv/bin/python scripts/security_tools_check.py      # safe tier launches nothing: openers, archives, repos, fetch deadline
 ./.venv/bin/python scripts/dispatch_loop_check.py       # tools off the loop, run_command limits, confirmation timeout
 ./.venv/bin/python scripts/panels_check.py              # show_panel/hide_panel messages, list_timers control
+./.venv/bin/python scripts/registry_client_check.py     # shared-skill client: local signed registry, tamper cases, imported-skill rules
 ./.venv/bin/python scripts/voice_server_check.py        # real server + real LLM; speaks aloud, needs API key
 ./.venv/bin/python scripts/skills_e2e_check.py --scripted   # agent_loop + dispatch in a sandbox home, written plans, no model
 ./.venv/bin/python scripts/llm_cache_check.py          # REAL MODEL, ~$0.15: is the tool list being read from the prompt cache?
@@ -152,6 +153,21 @@ so it would shadow it — BUGS.md #23), and its file path comes only from the va
 `content_hash` covers steps + the behavioural part of `input_schema`, deliberately not prose;
 changing what it covers means bumping `HASH_DOMAIN`. Placeholders are `{param}` with `{{`/`}}`
 escapes, substituted in one pass — never go back to `str.format` (BUGS.md #24).
+
+**Imported (shared) skills are a stranger's procedure and a stranger's prose.**
+`core/registry_client.py` installs only from the one registry host, only an index whose
+Ed25519 signature verifies against `core/registry_keys.py` (empty until go-live: no key, no
+registry -- never add an unsigned path), only files matching the index's sha256 and their
+content_hash, only after an approval card that showed every step. What makes a skill
+imported is its **record** (`generated/imported/<name>.json`: author, version, review,
+`first_run_done`), not its JSON; a mismatched pair is refused at load. The model never sees
+the author's description or parameter descriptions -- `core/registry_text.py` builds them;
+never pass a stranger's prose to the model verbatim. At run time `registry.run_imported`
+sets `session.current_imported()` and `dispatch()` makes every step ask until one clean
+run, and every `run_command` step ask on every run, unskippable by trust or preference and
+never remembered (`trust.py` refuses too). Updates are new approvals; yanked means
+withdrawn, not removed; at most 20. The registry control messages answer from a background
+task because they wait on the network. README "Shared skills (the public registry)".
 
 **GUI control is the one thing that isn't safe by construction.** The `scoped` tier
 (`focus_app`, `type_text`, `press_keys`) is gated per *target app* for a time-boxed
@@ -242,9 +258,9 @@ BUGS.md #6).
 `revoke_trust` / `revoke_grant` and the voice ones (`voice_session`, `get_voice_settings`,
 `set_voice_settings`, `list_input_devices`, `list_wake_models`) are answered inline in the
 read loop by `core/control.py`, matched by `request_id`, so UI reads can't block or be
-blocked by a running command. The one exception is `list_input_devices` with `refresh: true`:
-it has to close and reopen the mic, so `server.py` answers it from a background task (same
-`request_id`).
+blocked by a running command. The exceptions are `list_input_devices` with `refresh: true`
+(it has to close and reopen the mic) and the `registry_*` messages (network): `server.py`
+answers those from a background task (same `request_id`).
 
 **The socket is authenticated, and refuses browsers.** Loopback is not a boundary: every
 local process and every web page can reach 127.0.0.1. `core/ws_auth.py` checks each

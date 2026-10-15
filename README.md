@@ -1363,6 +1363,76 @@ hand-written skills); the Library doesn't render them yet.
 `./.venv/bin/python scripts/skill_format_check.py` exercises all of this against temp
 directories.
 
+### Shared skills (the public registry)
+
+Other users' skills come from one fixed place, `raw.githubusercontent.com/AnuragK-O/
+leutheria-skills/main/` (`core/registry_client.py`; the registry repo, CI and screener are
+separate — `plans/skill-registry-spec.md`). A shared skill is the generated-skill format above
+and runs through the same interpreter and `dispatch()`, so path policy, taint, needs-click
+and every tier apply to its steps unchanged. On top of that:
+
+**Trust chain** (any failure refuses the whole operation, nothing partial): `index.json` +
+`index.json.sig` are fetched (no redirects, 15 s deadline over the whole fetch enforced by a
+socket watchdog, 2 MB index / 4 KB sig / 256 KB skill caps); the Ed25519 signature over the
+exact downloaded bytes must verify with a key in `core/registry_keys.py`, matched by
+`key_id` = first 16 hex of sha256 of the raw public key; the index must be well-formed and
+not older than one already verified here (a replayed old index would un-yank a version); a
+skill file must match the index's size and sha256, carry no `source`, recompute to the
+index's `content_hash`, and pass `validate.py` (`validate_shared` where present) against this
+machine's tools. The verified index is cached in `generated/imported/_index_cache.json` and
+re-verified whenever it's read. **`registry_keys.PRODUCTION_KEYS` ships empty: with no key,
+nothing is listed, previewed or installed.** The production key is added at go-live.
+
+**Imported-skill rules**, enforced in the agent, not the UI:
+- Install only after an approval that showed every step and its args: the UI's card
+  (`registry_preview` then `registry_install`) or, by voice, `install_shared_skill(name)`,
+  whose `_confirm` card's args are the same preview. The approval is never remembered.
+- Stored as `generated/<name>.json` with `source: "imported:<content_hash>"` and the
+  publish metadata; author, version, review, `first_run_done` go in a **record** beside it,
+  `generated/imported/<name>.json`, never in the skill. The record is what makes a skill
+  imported: at load, a record without a matching imported file, an imported file without a
+  record, or an imported file whose content no longer matches its hash, is refused
+  (`skill_load_rejected`). `register_skill()` accepts an `imported:` definition only with a
+  record (only the registry client has one).
+- The model never sees the author's description or parameter descriptions. It sees
+  `Shared skill by <author>: <summary>. Runs: tool1, tool2.` (+ a note when it runs
+  commands), built by `core/registry_text.py`: the summary is NFKC-normalised, stripped of
+  control/format characters, URLs, domain names and markdown, any sentence with
+  instruction-like phrasing dropped ("ignore previous", "you must", "always call",
+  "system:", "do not tell", "instead of"...), capped at 200 characters; parameter
+  descriptions get the same at 150. A filter, not a proof — the screener and the run-time
+  rules are the other layers. The Library gets the author's text as `author_description`.
+- At run time (`dispatcher.dispatch`, from `session.current_imported()`, which
+  `registry.run_imported` sets from the record): until the skill has completed one clean
+  run, **every** step asks — trust entries and "don't ask" preferences don't skip it, and an
+  "always" answer is stored as "session". Its `run_command` steps ask **every** run, are
+  never trusted and never remembered (also refused inside `trust.py`). A GUI step asks per
+  step on the first run before its usual app grant.
+- Updates are offered (`update_available`), never applied: installing the newer version is
+  a new approval, and it starts a new first run; the old one keeps working until then. A
+  yanked version stays installed and is listed `withdrawn: true`; it can't be previewed or
+  installed.
+- At most 20 imported skills (each one is on every request's tool list);
+  `LEUTHERIA_MAX_IMPORTED_SKILLS` changes it (0-50). Uninstall is `delete_skill`, which
+  also removes the record.
+- `search_shared_skills(query)` (safe, `untrusted_output`) matches the query against the
+  verified index locally — the query is never sent anywhere, so it declares no `outbound`.
+
+**Sharing** your own learned skill (`registry_share_preview` / `registry_share`): the copy
+gets fresh metadata and no `source`; your home folder becomes `~`; emails, URLs, IPs, phone
+numbers, long tokens, other users' home paths, your username and folders deeper than a
+standard one are flagged, and any flag you pick becomes a parameter (the uncertain-params
+idea in reverse). The result is a github.com "new file" URL prefilled with path and JSON;
+you submit the PR with your own account — the app holds no GitHub credentials.
+
+**Test-only overrides**: `LEUTHERIA_REGISTRY_URL` replaces the host (https, or http to
+loopback only) and, only together with it, `LEUTHERIA_REGISTRY_TEST_KEY`
+(`<key_id>:<base64 raw public key>`) adds one accepted key. They exist for
+`scripts/registry_client_check.py` (a local `http.server` registry signed with a throwaway
+key: good path, every tamper case, slow server, rollback, first-run gating, run_command
+never trusted, edited files, cap, update, yank, uninstall, share) — never set them for real
+use.
+
 ### Security model
 
 Leutheria acts on your real Mac on the say-so of a language model, and the model reads text
@@ -1808,6 +1878,53 @@ and interleave freely with a command that's mid-confirmation. They're handled in
 #     "timers": [{timer_id, label, remaining, ...}, ...], "note": "...", "message": "..."}
 #    Read-only, for the timers panel: the same result as the list_timers tool, but not
 #    logged as a tool call (a panel refresh isn't usage).
+```
+
+#### Shared-skill registry (`registry_*`)
+
+These can wait on the network, so — like `list_input_devices` with `refresh` — `server.py`
+answers them from a background task (`registry_client.handle_control`, fetching and
+verifying on a worker thread), replying with the same `request_id`; the read loop never
+waits. `registry_install` and `registry_share` are refused from an overlay connection.
+Rules and trust chain: "Shared skills (the public registry)" above.
+
+```python
+{"type": "registry_list", "refresh": false, "request_id": "1"}
+# -> {..., "ok": true, "index_ok": true, "generated_at": "...", "imported_max": 20,
+#     "skills": [{<index entry, newest non-yanked version per name; summary sanitized>,
+#                 "installed_version": 1|null, "update_available": bool}, ...],
+#     "installed": [{name, content_hash, version, author, summary, review, has_run_command,
+#                    published_at, installed_at, first_run_done,
+#                    "withdrawn": bool, "in_index": bool, "update_available": bool}, ...],
+#     "stale": true, "error": "..."}   # only when the fetch failed and the last verified
+#                                      # index (re-verified from cache) was used instead
+# no verified index at all: {"ok": false, "index_ok": false, "error": "...", "skills": [],
+#                            "installed": [...]}  -- e.g. no signing key configured
+{"type": "registry_preview", "name": "tidy_downloads", "content_hash": "<sha256>", "request_id": "2"}
+# -> {..., "ok": true, name, version, content_hash, author, summary, review, has_run_command,
+#     "steps": [{tool, args, safety, "run_command": bool}, ...], input_schema,
+#     "author_description", "model_description", "installed_version", "replaces",
+#     "imported_count", "imported_max"}       # everything the install card shows
+{"type": "registry_install", "name": "tidy_downloads", "content_hash": "<sha256>", "request_id": "3"}
+# send only after the user approved the card for exactly this content_hash; an installed
+# older version of the same name is replaced (that card is the update's approval)
+# -> {..., "ok": true, "name", "id", "content_hash", "version", "replaced": bool}
+#    or ok:false: cap reached, yanked, name taken, any verification failure
+{"type": "registry_share_preview", "skill": "my_learned_skill", "parameterize": ["f2"], "request_id": "4"}
+# -> {..., "ok": true, "skill", "path": "skills/<name>/<hash>.json", "content_hash",
+#     "definition": {...the file...}, "json": "<file text>", "has_run_command",
+#     "changes": [{where, before, after, why}], "diff": "<unified diff>",
+#     "flags": [{id, where, value, kind, arg, param?}]}
+#    kind: email | url | ip_address | phone_number | token_or_id | someone_elses_home |
+#    personal_path | your_username. `parameterize` (optional) lists flag ids to turn into
+#    string parameters (steps only; a flag in the description stays a warning).
+{"type": "registry_share", "skill": "my_learned_skill", "parameterize": ["f2"], "request_id": "5"}
+# -> {..., "ok": true, "skill", "path", "content_hash",
+#     "url": "https://github.com/AnuragK-O/leutheria-skills/new/main?filename=...&value=...",
+#     "copy_to_clipboard": false}
+#    URL over 8000 chars: "url" has only the filename, "copy_to_clipboard": true and
+#    "clipboard_text" is the JSON. The agent opens and copies nothing; main.js does both
+#    (https://github.com/ only). Only learned skills can be shared.
 ```
 
 #### Overlay panels (`panel`)
