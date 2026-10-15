@@ -39,6 +39,12 @@
      toggles, Reset, Revoke and Delete can be exercised. set_voice_settings
      applies the real agent's range checks to the numeric settings.
      MOCK_FIXTURES=0 goes back to an empty catalog.
+   - The shared-skill registry: registry_list / registry_preview /
+     registry_install / registry_share_preview / registry_share, with a
+     fixture index (scripts/mock-registry.js: a high-risk flagged entry, a
+     withdrawn one that's installed, one with an update). Typed "registry
+     offline" / "tampered" / "nokey" / "full" / "badshare" / "ok" switch its
+     state.
    - MOCK_CONFIRM_TIMEOUT_MS (default 20000): how long the scripted session
      waits for a click before "answering by voice".
    - MOCK_LOOP=1: run the scripted session again after each one ends.
@@ -103,6 +109,7 @@ let settings = {
 };
 
 const fixtures = require("./mock-fixtures");
+const registry = require("./mock-registry");
 const FIXTURES = process.env.MOCK_FIXTURES !== "0";
 const proposals = new Map(); // proposal id -> the skill saving it would add
 
@@ -421,6 +428,23 @@ async function handleMessage(client, message) {
         pretrained: fixtures.WAKE_MODELS,
         paths: (message.paths || []).map((path) => ({ path, exists: !/missing/.test(path) })),
       });
+    // The shared-skill registry (scripts/mock-registry.js). A short delay, as
+    // the real agent fetches and verifies over the network.
+    case "registry_list":
+      await sleep(250);
+      return send(client, { type: "control_result", request_id: message.request_id, ...registry.list() });
+    case "registry_preview":
+      await sleep(200);
+      return send(client, { type: "control_result", request_id: message.request_id, ...registry.preview(message) });
+    case "registry_install":
+      await sleep(600);
+      return send(client, { type: "control_result", request_id: message.request_id, ...registry.install(message) });
+    case "registry_share_preview":
+      await sleep(200);
+      return send(client, { type: "control_result", request_id: message.request_id, ...registry.sharePreview(message) });
+    case "registry_share":
+      await sleep(200);
+      return send(client, { type: "control_result", request_id: message.request_id, ...registry.share(message) });
     case "set_preference":
       fixtures.applyPreference(message);
       return controlResult(client, message, {});
@@ -494,6 +518,11 @@ async function handleMessage(client, message) {
         converse(client, { type: "response", text: "Done.", trace: [] });
         await sleep(200);
         send(client, { type: "skill_save_failed", name: "tidy_screenshots", error: "a skill named tidy_screenshots already exists" });
+        return;
+      }
+      const registryReply = registry.command(text);
+      if (registryReply) {
+        converse(client, { type: "response", text: registryReply, trace: [] });
         return;
       }
       if (/break settings/i.test(text)) {
