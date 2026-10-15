@@ -552,7 +552,9 @@ Installed shared skills stay listed and usable either way.
 A learned skill's detail has **Share**: *Preview share* asks the agent for the sanitized
 definition (`registry_share_preview`) and shows the target file path, what changed (home
 paths turned into `~`, usage dropped), the values to check before publishing (a drive
-name, a shell command), and the JSON itself. *Open on GitHub* sends `registry_share`;
+name, a shell command), and the JSON itself. Each flagged value has an "I checked this"
+box, and *Open on GitHub* stays disabled until every one is ticked; it sends
+`registry_share` with those flag ids as `acknowledged`;
 `main.js` opens the returned URL itself, and only if it is `https://github.com/...` (a
 renderer never sees or supplies a URL). If the agent says the file is too long for a link
 (`too_long: true` with `json`), main.js copies the JSON to the clipboard and opens the page
@@ -572,6 +574,7 @@ never on error text:
 | `unavailable` | list (ok:false = nothing cached; ok:true + `stale` = last verified index shown), preview, install | neutral notice |
 | `cap_reached` / `yanked` / `not_found` / `refused` | install, preview | the card's "Not installed" callout |
 | `not_shareable` / `not_found` / `bad_request` | share_preview, share | "Can't share this one" |
+| `unacknowledged_flags` | share | the error under the preview (the button is disabled until every flag is ticked, so only a stale preview reaches it) |
 
 In the inventory an imported skill is `origin: "imported"` (agent-side it is a generated
 skill with a registry record), `deletable: true`, with `registry`: the record
@@ -1495,7 +1498,10 @@ nothing is listed, previewed or installed.** The production key is added at go-l
 **Sharing** your own learned skill (`registry_share_preview` / `registry_share`): the copy
 gets fresh metadata and no `source`; your home folder becomes `~`; emails, URLs, IPs, phone
 numbers, long tokens, other users' home paths, your username and folders deeper than a
-standard one are flagged, and any flag you pick becomes a parameter (the uncertain-params
+standard one are flagged wherever they appear (the skill's name and description, each
+parameter's name, description, enum and default, every step argument). Sharing is refused
+(`unacknowledged_flags`) until every flag is ticked in the preview, and any step flag you
+pick becomes a parameter (the uncertain-params
 idea in reverse). The result is a github.com "new file" URL prefilled with path and JSON;
 you submit the PR with your own account — the app holds no GitHub credentials.
 
@@ -1998,14 +2004,16 @@ Rules and trust chain: "Shared skills (the public registry)" above.
 #    kind: email | url | ip_address | phone_number | token_or_id | someone_elses_home |
 #    personal_path | your_username. `parameterize` (optional) lists flag ids to turn into
 #    string parameters (steps only; a flag in the description stays a warning).
-{"type": "registry_share", "skill": "my_learned_skill", "parameterize": ["f2"], "request_id": "5"}
+{"type": "registry_share", "skill": "my_learned_skill", "parameterize": ["f2"], "acknowledged": ["f1"], "request_id": "5"}
 # -> {..., "ok": true, "skill", "path", "content_hash",
 #     "url": "https://github.com/AnuragK-O/leutheria-skills/new/main?filename=...&value=...",
 #     "copy_to_clipboard": false}
 #    URL over 8000 chars: "url" has only the filename, "copy_to_clipboard": true and
 #    "clipboard_text" is the JSON. The agent opens and copies nothing; main.js does both
 #    (only https://github.com/AnuragK-O/leutheria-skills/new/main?...). Only learned
-#    skills can be shared (else error_code not_shareable).
+#    skills can be shared (else error_code not_shareable). Every flag id must be in
+#    `acknowledged` or `parameterize`, else {"ok": false, "error_code":
+#    "unacknowledged_flags", "unacknowledged": [ids], "error"} and nothing is built.
 ```
 
 #### Overlay panels (`panel`)

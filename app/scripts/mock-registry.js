@@ -479,6 +479,11 @@ function sharePreview(message) {
 function share(message) {
   const preview = sharePreview(message);
   if (!preview.ok) return preview;
+  const acked = new Set([...(message.acknowledged || []), ...(message.parameterize || [])]);
+  const missing = preview.flags.map((item) => item.id).filter((id) => !acked.has(id));
+  if (missing.length) {
+    return { ok: false, error_code: "unacknowledged_flags", unacknowledged: missing, error: `${missing.length} flagged value${missing.length === 1 ? "" : "s"} not checked yet; tick each one in the preview before sharing` };
+  }
   const base = `https://github.com/AnuragK-O/leutheria-skills/new/main?filename=${encodeURIComponent(preview.path)}`;
   const common = { ok: true, skill: preview.skill, path: preview.path, content_hash: preview.content_hash };
   if (badShare) return { ...common, url: `https://github.com/someone-else/leutheria-skills/new/main?filename=${preview.path}`, copy_to_clipboard: false };

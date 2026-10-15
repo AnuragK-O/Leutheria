@@ -474,7 +474,9 @@ async def _full_loop(s: Setup):
         check(str(s.home) not in prev["json"] and prev["definition"]["steps"][0]["args"]["path"] == "~/Documents/Clients"
               and any(ch["where"].endswith("steps[0].args.path") for ch in prev["changes"]), f"home path became ~, listed as a change: {prev['definition']['steps'][0]} {prev['changes']}")
         check(any(f["kind"] == "email" and f["value"] == "bob@example.com" for f in prev["flags"]), "the email is flagged")
-        link = await c.control({"type": "registry_share", "skill": "client_notes"})
+        refused = await c.control({"type": "registry_share", "skill": "client_notes"})
+        check(not refused["ok"] and refused["error_code"] == "unacknowledged_flags", "registry_share refused until every flag is acknowledged")
+        link = await c.control({"type": "registry_share", "skill": "client_notes", "acknowledged": [f["id"] for f in prev["flags"]]})
         check(link["ok"] and link["url"].startswith("https://github.com/AnuragK-O/leutheria-skills/new/main?filename=skills%2Fclient_notes%2F")
               and link["copy_to_clipboard"] is False and "value=" in link["url"], "registry_share: the registry repo's new-file URL, prefilled")
         bad = await c.control({"type": "registry_share_preview", "skill": "repo_status"})

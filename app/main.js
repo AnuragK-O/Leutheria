@@ -1101,8 +1101,11 @@ function isGithubUrl(text) {
 // browser nor the clipboard is touched; the capture script reads what would
 // have happened from __leutheriaTest.shared().
 const sharedRecord = [];
-ipcMain.handle("registry-share", async (_event, skill) => {
-  const result = await sendControlRequest({ type: "registry_share", skill }, REGISTRY_TIMEOUT_MS);
+ipcMain.handle("registry-share", async (_event, { skill, acknowledged } = {}) => {
+  // acknowledged: the flag ids the user ticked; the agent refuses the share
+  // (unacknowledged_flags) unless every flag is among them.
+  const acks = Array.isArray(acknowledged) ? acknowledged.filter((id) => typeof id === "string").slice(0, 200) : [];
+  const result = await sendControlRequest({ type: "registry_share", skill, acknowledged: acks }, REGISTRY_TIMEOUT_MS);
   if (!result.ok) return { ok: false, error: result.error || "The agent couldn't prepare the share.", error_code: result.error_code };
   if (!isGithubUrl(result.url)) {
     log(`[share] refused to open a URL that isn't https://github.com/: ${String(result.url).slice(0, 80)}`);

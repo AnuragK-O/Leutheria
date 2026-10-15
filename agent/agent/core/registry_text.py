@@ -26,10 +26,13 @@ Two directions:
 
   out  share_sanitize() turns a learned skill into a registry file: the
        user's home folder becomes "~", other people's home paths and
-       personal-looking constants (emails, phone numbers, addresses, URLs,
-       tokens, a folder deeper than a standard one) are flagged, and any
+       personal-looking constants (emails, phone numbers, IP addresses,
+       URLs, tokens, the user name, a folder deeper than a standard one)
+       are flagged wherever they are -- name, description, parameter names,
+       descriptions, enums and defaults, step arguments -- and any step
        flag the user picks becomes a parameter -- the uncertain-params idea
-       from skill learning, run in reverse.
+       from skill learning, run in reverse. Sharing is refused until every
+       flag is acknowledged (registry_client).
 """
 
 import copy
@@ -208,27 +211,43 @@ def share_sanitize(definition: dict, homes, username: str, standard_folders, par
 
     std = {f.lower() for f in standard_folders}
     user_re = re.compile(r"(?<![A-Za-z0-9])" + re.escape(username) + r"(?![A-Za-z0-9])", re.IGNORECASE) if username else None
+
+    def scan(where, text, arg_key=None, literal_only=False):
+        """Every rule, on one string. Step args are templates: only their
+        literal parts can hold a constant ({param} is the user's input)."""
+        for span in (_literal_spans(text) if literal_only else (text,)):
+            for rx, kind in (
+                (_EMAIL_RE, "email"), (_SHARE_URL_RE, "url"), (_IP_RE, "ip_address"),
+                (_PHONE_RE, "phone_number"), (_TOKEN_RE, "token_or_id"), (_OTHER_HOME_RE, "someone_elses_home"),
+            ):
+                for m in rx.finditer(span):
+                    flag(where, m.group(0), kind, arg_key)
+            for m in _TILDE_PATH_RE.finditer(span):
+                if m.group(1).lower() not in std or m.group(2).strip("/"):
+                    flag(where, m.group(0).rstrip("/"), "personal_path", arg_key)
+            if user_re and user_re.search(span):
+                flag(where, username, "your_username", arg_key)
+
+    # Every string in the definition, names included (H2): the skill's
+    # name, its description, each parameter's name, description, enum and
+    # default, and the literal parts of every step argument. Only a step
+    # argument's flag can become a parameter; the rest are for the user to
+    # fix in the skill or to acknowledge.
+    scan("skill.name", content["name"])
+    for where, text in _walk_strings(content["description"], "skill.description"):
+        scan(where, text)
+    for pname, spec in (content["input_schema"].get("properties") or {}).items():
+        base = f"input_schema.properties.{pname}"
+        scan(base, pname)
+        if isinstance(spec, dict):
+            for key in ("description", "enum", "default"):
+                if key in spec:
+                    for where, text in _walk_strings(spec[key], f"{base}.{key}"):
+                        scan(where, text)
     for i, step in enumerate(content["steps"]):
         for arg_key, value in step["args"].items():
             for where, text in _walk_strings(value, f"steps[{i}].args.{arg_key}"):
-                for span in _literal_spans(text):
-                    for rx, kind in (
-                        (_EMAIL_RE, "email"), (_SHARE_URL_RE, "url"), (_IP_RE, "ip_address"),
-                        (_PHONE_RE, "phone_number"), (_TOKEN_RE, "token_or_id"), (_OTHER_HOME_RE, "someone_elses_home"),
-                    ):
-                        for m in rx.finditer(span):
-                            flag(where, m.group(0), kind, arg_key)
-                    for m in _TILDE_PATH_RE.finditer(span):
-                        if m.group(1).lower() not in std or m.group(2).strip("/"):
-                            flag(where, m.group(0).rstrip("/"), "personal_path", arg_key)
-                    if user_re and user_re.search(span):
-                        flag(where, username, "your_username", arg_key)
-    for where, text in _walk_strings(content["description"], "skill.description"):
-        for rx, kind in ((_EMAIL_RE, "email"), (_SHARE_URL_RE, "url"), (_PHONE_RE, "phone_number")):
-            for m in rx.finditer(text):
-                flag(where, m.group(0), kind, None)
-        if user_re and user_re.search(text):
-            flag(where, username, "your_username", None)
+                scan(where, text, arg_key, literal_only=True)
 
     # Flags the user chose to turn into parameters.
     chosen = {f["id"]: f for f in flags if f["id"] in set(parameterize or ())}

@@ -584,7 +584,14 @@ async def main():
     cmd = preview2["definition"]["steps"][1]["args"]["cmd"]
     check(preview2["ok"] and "bob@example.com" not in cmd and "{email}" in cmd
           and preview2["definition"]["input_schema"]["required"] == ["email"], f"flag turned into a parameter: {cmd}")
-    link = await ctl({"type": "registry_share", "skill": "client_mail"})
+    refused = await ctl({"type": "registry_share", "skill": "client_mail"})
+    check(not refused["ok"] and refused["error_code"] == "unacknowledged_flags"
+          and set(refused["unacknowledged"]) == {f["id"] for f in preview["flags"]}, "share refused until every flag is acknowledged")
+    some = [f["id"] for f in preview["flags"]][:-1]
+    refused = await ctl({"type": "registry_share", "skill": "client_mail", "acknowledged": some})
+    check(not refused["ok"] and refused["unacknowledged"] == [preview["flags"][-1]["id"]], "...one unticked flag is still a refusal")
+    all_ids = [f["id"] for f in preview["flags"]]
+    link = await ctl({"type": "registry_share", "skill": "client_mail", "acknowledged": all_ids})
     check(link["ok"] and link["url"].startswith("https://github.com/AnuragK-O/leutheria-skills/new/main?filename=skills%2Fclient_mail%2F")
           and "value=" in link["url"] and link["copy_to_clipboard"] is False, "share URL prefilled with path and JSON")
     long_skill = {
@@ -592,9 +599,30 @@ async def main():
         "steps": [{"tool": "run_command", "args": {"cmd": "echo " + "x" * 9000}}],
     }
     registry.register_skill(long_skill)
-    link = await ctl({"type": "registry_share", "skill": "long_one"})
+    long_ids = [f["id"] for f in (await ctl({"type": "registry_share_preview", "skill": "long_one"}))["flags"]]
+    link = await ctl({"type": "registry_share", "skill": "long_one", "acknowledged": long_ids})
     check(link["ok"] and link["copy_to_clipboard"] and "value=" not in link["url"]
           and json.loads(link["clipboard_text"])["name"] == "long_one", "too long for a URL: clipboard fallback flagged")
+    # Every string is scanned, not only step args (review H2).
+    leaky = {
+        "name": "home_sync_backup",
+        "description": "Sync to 10.0.0.12 with token ab12cd34ef56gh78ij90kl12mn34 for bob@example.com.",
+        "input_schema": {"type": "object", "properties": {
+            "home_target": {"type": "string", "description": "Default is /Users/alice/Backups.",
+                            "enum": ["~/Documents/Clients/acme", "carol@example.org"], "default": "~/Documents/Clients/acme"},
+        }},
+        "steps": [{"tool": "list_files", "args": {"path": "{home_target}"}}],
+    }
+    check(registry.register_skill(leaky)["ok"], "a skill with personal data outside its steps registered")
+    preview = await ctl({"type": "registry_share_preview", "skill": "home_sync_backup"})
+    got = {(f["where"], f["kind"]) for f in preview["flags"]}
+    for want in [("skill.name", "your_username"), ("skill.description", "ip_address"), ("skill.description", "token_or_id"),
+                 ("skill.description", "email"), ("input_schema.properties.home_target", "your_username"),
+                 ("input_schema.properties.home_target.description", "someone_elses_home"),
+                 ("input_schema.properties.home_target.enum[0]", "personal_path"),
+                 ("input_schema.properties.home_target.enum[1]", "email"),
+                 ("input_schema.properties.home_target.default", "personal_path")]:
+        check(want in got, f"flagged outside the steps: {want}")
     result = await ctl({"type": "registry_share_preview", "skill": "tidy_stamp"})
     check(not result["ok"], "an imported skill can't be re-shared")
     result = await ctl({"type": "registry_share_preview", "skill": "quick_note"})

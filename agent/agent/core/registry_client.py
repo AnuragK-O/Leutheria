@@ -91,7 +91,8 @@ class RegistryError(Exception):
     a cached verified index may still be shown), verification_failed (a
     signature, hash, content_hash, structure or rollback check failed: a
     security state, never papered over with the cache), no_signing_key,
-    not_found, yanked, cap_reached, bad_request, not_shareable, refused."""
+    not_found, yanked, cap_reached, bad_request, not_shareable, refused,
+    unacknowledged_flags (registry_share before every flag was ticked)."""
 
     def __init__(self, message: str, code: str = "unavailable"):
         super().__init__(message)
@@ -559,9 +560,21 @@ async def handle_control(payload: dict) -> dict:
             return {**result, "version": entry["version"]} if result.get("ok") else result
 
         if kind in ("registry_share_preview", "registry_share"):
-            preview = share_preview(payload.get("skill"), payload.get("parameterize") or [])
+            parameterize = payload.get("parameterize") or []
+            preview = share_preview(payload.get("skill"), parameterize)
             if not preview.get("ok") or kind == "registry_share_preview":
                 return preview
+            # Flags are not advisory (review H2): a share opens only once the
+            # user has ticked every flagged constant (or made it a parameter).
+            acknowledged = payload.get("acknowledged") or []
+            if not isinstance(acknowledged, list) or not all(isinstance(a, str) for a in acknowledged):
+                return {"ok": False, "error_code": "bad_request", "error": "acknowledged must be a list of flag ids"}
+            missing = [f["id"] for f in preview["flags"] if f["id"] not in set(acknowledged) | set(parameterize)]
+            if missing:
+                log_event("skill_share_unacknowledged", skill=preview["skill"], flags=len(missing))
+                return {"ok": False, "error_code": "unacknowledged_flags", "unacknowledged": missing,
+                        "error": f"{len(missing)} flagged value{'s' if len(missing) != 1 else ''} not checked yet; "
+                                 "tick each one in the preview before sharing"}
             return share_link(preview)
     except RegistryError as e:
         log_event("registry_refused", type=kind, name=str(payload.get("name") or payload.get("skill")), error=str(e), code=e.code)

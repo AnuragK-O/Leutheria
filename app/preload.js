@@ -36,7 +36,7 @@ contextBridge.exposeInMainWorld("leutheria", {
   registrySharePreview: (skill) => ipcRenderer.invoke("registry-share-preview", skill),
   // main.js opens the GitHub page itself (https://github.com/ only); no URL
   // crosses this bridge in either direction.
-  registryShare: (skill) => ipcRenderer.invoke("registry-share", skill),
+  registryShare: (skill, acknowledged) => ipcRenderer.invoke("registry-share", { skill, acknowledged }),
 
   // --- voice session ---
   // action: "start" | "end" | "toggle"

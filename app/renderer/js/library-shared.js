@@ -929,7 +929,12 @@
       )
     );
 
+    // Every flag has to be ticked before the share opens (the agent refuses
+    // it otherwise: unacknowledged_flags). Ticks live in the share state, so
+    // they survive a re-render but not a new preview.
     const flagged = preview.flags || [];
+    const acked = state.acked || [];
+    const allAcked = flagged.every((item) => acked.includes(item.id));
     if (flagged.length) {
       rows.appendChild(
         el(
@@ -945,7 +950,19 @@
                 {},
                 el("code.share-field", { text: item.where }),
                 el("code.share-value", { text: String(item.value) }),
-                el("span", { text: FLAG_REASONS[item.kind] || FLAG_REASONS.other })
+                el("span", { text: FLAG_REASONS[item.kind] || FLAG_REASONS.other }),
+                el(
+                  "label.inline-check.share-ack",
+                  {},
+                  el("input", {
+                    type: "checkbox",
+                    checked: acked.includes(item.id),
+                    "data-flag": item.id,
+                    onchange: (event) =>
+                      set({ ...state, phase: state.phase === "error" ? "preview" : state.phase, acked: event.target.checked ? [...new Set([...acked, item.id])] : acked.filter((id) => id !== item.id) }),
+                  }),
+                  el("span", { text: "I checked this" })
+                )
               )
             )
           )
@@ -995,12 +1012,13 @@
           "button.btn.btn-primary",
           {
             "data-focus": "open-github",
-            disabled: state.phase === "opening",
+            disabled: state.phase === "opening" || !allAcked,
+            title: allAcked ? null : "Tick each flagged value first",
             onclick: async () => {
               set({ ...state, phase: "opening" });
-              const result = await api.registryShare(entry.name);
+              const result = await api.registryShare(entry.name, acked);
               if (result && result.ok) set({ phase: "opened", preview, copied: result.copied });
-              else set({ phase: "error", preview, error: (result && result.error) || "GitHub couldn't be opened." });
+              else set({ phase: "error", preview, acked, error: (result && result.error) || "GitHub couldn't be opened." });
             },
           },
           state.phase === "opening" ? "Opening…" : tooLong ? "Copy and open GitHub" : "Open on GitHub"

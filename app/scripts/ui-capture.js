@@ -1232,6 +1232,8 @@ async function runShared(theme) {
     );
     await main.eval(`document.querySelector(".share-preview").scrollIntoView()`);
     await main.shot(file("share-preview"));
+    check(`${T} Open on GitHub is disabled until every flag is ticked`, await main.eval(`[...document.querySelectorAll("#library-detail button")].find((b) => /Open on GitHub/.test(b.textContent)).disabled`));
+    await main.eval(`(() => { let box, n = 0; while ((box = document.querySelector(".share-ack input:not(:checked)")) && n++ < 50) box.click(); })()`);
     await main.eval(clickText("#library-detail button", "Open on GitHub"));
     const opened = await main.waitFor(`document.querySelector(".share-done")`);
     const record = await hooks.eval(`__leutheriaTest.shared()`);
@@ -1246,6 +1248,7 @@ async function runShared(theme) {
     check(`${T} a too-long file offers copy-and-open`, await main.waitFor(`/Copy and open GitHub/.test(document.getElementById("library-detail").textContent) && document.querySelector(".share-flagged li")`));
     await main.eval(`document.querySelector(".share-preview").scrollIntoView()`);
     await main.shot(file("share-preview-long"));
+    await main.eval(`(() => { let box, n = 0; while ((box = document.querySelector(".share-ack input:not(:checked)")) && n++ < 50) box.click(); })()`);
     await main.eval(clickText("#library-detail button", "Copy and open GitHub"));
     await main.waitFor(`document.querySelector(".share-done")`);
     const recordLong = await hooks.eval(`__leutheriaTest.shared()`);
@@ -1259,6 +1262,7 @@ async function runShared(theme) {
     await main.eval(clickText("#library-detail button", "Done"));
     await main.eval(clickText("#library-detail button", "Preview share"));
     await main.waitFor(`document.querySelector(".share-preview")`);
+    await main.eval(`(() => { let box, n = 0; while ((box = document.querySelector(".share-ack input:not(:checked)")) && n++ < 50) box.click(); })()`);
     await main.eval(clickText("#library-detail button", "Open on GitHub"));
     const refused = await main.waitFor(`/didn't point at github\\.com/.test(document.getElementById("library-detail").textContent)`);
     check(`${T} main.js refuses a share URL outside the registry repo's new-file page`, refused && (await hooks.eval(`__leutheriaTest.shared().length`)) === recordLong.length);
@@ -1479,6 +1483,11 @@ async function runRegistryReal(theme) {
     );
     await main.eval(`document.querySelector(".share-preview").scrollIntoView()`);
     await main.shot(file("share-preview"));
+    check(
+      `${T} Open on GitHub stays disabled until every flag is ticked`,
+      await main.eval(`[...document.querySelectorAll("#library-detail button")].find((b) => /Open on GitHub/.test(b.textContent)).disabled && document.querySelectorAll(".share-ack input").length === document.querySelectorAll(".share-flagged li").length`)
+    );
+    await main.eval(`(() => { let box, n = 0; while ((box = document.querySelector(".share-ack input:not(:checked)")) && n++ < 50) box.click(); })()`);
     await main.eval(clickText("#library-detail button", "Open on GitHub"));
     const opened = await main.waitFor(`document.querySelector(".share-done")`, 10000);
     const record = await hooks.eval(`__leutheriaTest.shared()`);
