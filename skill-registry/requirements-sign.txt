@@ -1,0 +1,21 @@
+# What the signing and verifying jobs in publish.yml install, and nothing else:
+# cryptography and its two runtime dependencies, each pinned to a version AND
+# to the sha256 of every wheel pip may pick (installed with --require-hashes
+# --no-deps --only-binary :all:, so an unlisted file or dependency is refused).
+#
+# TODO(hashes): the hashes are not filled in yet -- they were prepared offline,
+# with no access to PyPI. Until they are, pip refuses to install ("Hashes are
+# required in --require-hashes mode") and publish fails closed: nothing is
+# signed with unverified code. Generate them on a machine with network access:
+#
+#   python3.12 -m pip install pip-tools
+#   printf 'cryptography==50.0.2\ncffi==2.1.1\npycparser==3.0\n' > requirements-sign.in
+#   pip-compile --generate-hashes --allow-unsafe --no-strip-extras \
+#       --output-file requirements-sign.txt requirements-sign.in
+#
+# then keep this header, check that the three versions are the pinned ones,
+# and that the list includes the manylinux x86_64 cp312/abi3 wheels.
+# Bump together with requirements-ci.txt and Leutheria's requirements.txt.
+cryptography==50.0.2
+cffi==2.1.1
+pycparser==3.0

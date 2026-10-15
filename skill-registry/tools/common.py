@@ -19,6 +19,14 @@ MAX_SKILL_BYTES = 64 * 1024
 HASH_RE = re.compile(r"[0-9a-f]{64}")
 NAME_RE = re.compile(r"[a-z][a-z0-9_]{0,63}")  # same as validate.NAME_RE; validate is authoritative
 INDEX_FORMAT = 1
+# expires_at (signed, in the index): generated_at + INDEX_VALIDITY_DAYS. The
+# publish workflow re-signs daily, so a fresh index is never more than a day
+# old; the rest is slack for a CI outage. Clients refuse an index past its
+# expires_at, or one whose expires_at is more than INDEX_MAX_VALIDITY_DAYS
+# after its generated_at (so even a mis-issued index can't be frozen for long).
+INDEX_VALIDITY_DAYS = 7
+INDEX_MAX_VALIDITY_DAYS = 8
+ISO_Z_RE = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ")
 SUMMARY_MAX = 200
 REVIEW_VERDICTS = ("auto_approved", "human_approved")
 RISKS = ("low", "medium", "high")
@@ -170,6 +178,35 @@ def write_json(path, value) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def parse_iso_z(stamp: str):
+    """'YYYY-MM-DDTHH:MM:SSZ' (UTC, whole seconds) -> aware datetime; anything else raises."""
+    import datetime
+    if not isinstance(stamp, str) or not ISO_Z_RE.fullmatch(stamp):
+        raise RegistryError(f"not a YYYY-MM-DDTHH:MM:SSZ timestamp: {stamp!r}")
+    return datetime.datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+
+
+def format_iso_z(when) -> str:
+    return when.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def expiry_problem(index: dict, now) -> str | None:
+    """Why this index's generated_at/expires_at is unacceptable at `now`, or None."""
+    import datetime
+    try:
+        generated = parse_iso_z(index.get("generated_at"))
+        expires = parse_iso_z(index.get("expires_at"))
+    except RegistryError as e:
+        return f"index timestamps: {e}"
+    if expires <= generated:
+        return "expires_at is not after generated_at"
+    if expires - generated > datetime.timedelta(days=INDEX_MAX_VALIDITY_DAYS):
+        return f"expires_at is more than {INDEX_MAX_VALIDITY_DAYS} days after generated_at"
+    if now >= expires:
+        return f"index expired at {index['expires_at']}"
+    return None
 
 
 def render_index(index: dict) -> bytes:

@@ -10,14 +10,24 @@ sha256 and size, a plain summary, requires and has_run_command, and whether
 it is yanked. A file without a record is pending and left out. Any other
 inconsistency -- a record without its file, a mismatched record, a
 non-yanked file that no longer validates (say a tool it uses was removed:
-yank it) -- fails the build rather than silently dropping a skill.
+yank it), one name with records by two authors -- fails the build rather
+than silently dropping a skill or letting one author's version update
+another's.
 
-If the result equals the existing index apart from generated_at, the file is
-left untouched (so its signature stays valid and nothing is committed).
+The index carries generated_at and a signed expires_at (generated_at +
+common.INDEX_VALIDITY_DAYS) so a client can tell a frozen copy from a live
+one: a mirror or attacker replaying an old signed index can hide a yank only
+until it expires. If the result equals the existing index apart from those
+two timestamps, the file is left untouched (so its signature stays valid and
+nothing is committed) -- unless --refresh, which the daily scheduled publish
+passes so the published index never gets near its expiry.
+
+    build_index.py ... [--refresh]
 Exit 0 on success, 1 on any inconsistency.
 """
 
 import argparse
+import datetime
 import sys
 from pathlib import Path
 
@@ -86,6 +96,12 @@ def build(repo: Path, leutheria: Path, catalog_path: Path, now: str):
         })
     for name, digest in sorted(yanked - {(e["name"], e["content_hash"]) for e in entries}):
         errors.append(f"yanked.json names {name}/{digest[:12]}, which is not published")
+    authors = {}
+    for e in entries:
+        authors.setdefault(e["name"], set()).add(str(e["author"]).lower())
+    for name, who in sorted(authors.items()):
+        if len(who) > 1:
+            errors.append(f"{name} has records by more than one author ({len(who)}); a name has one owner")
     seen = {}
     for e in entries:
         key = (e["name"], e["version"])
@@ -93,9 +109,11 @@ def build(repo: Path, leutheria: Path, catalog_path: Path, now: str):
             errors.append(f"{e['name']} has two files recorded as version {e['version']}")
         seen[key] = e
     entries.sort(key=lambda e: (e["name"], e["version"]))
+    expires = common.parse_iso_z(now) + datetime.timedelta(days=common.INDEX_VALIDITY_DAYS)
     index = {
         "format": common.INDEX_FORMAT,
         "generated_at": now,
+        "expires_at": common.format_iso_z(expires),
         "catalog_version": catalog["catalog_version"],
         "skills": entries,
     }
@@ -109,6 +127,8 @@ def main() -> int:
     parser.add_argument("--catalog", type=Path)
     parser.add_argument("--out", type=Path)
     parser.add_argument("--now", default=None)
+    parser.add_argument("--refresh", action="store_true",
+                        help="rewrite even if only the timestamps would change (the daily re-sign)")
     args = parser.parse_args()
     out = args.out or args.repo / "index.json"
     try:
@@ -124,10 +144,11 @@ def main() -> int:
         for e in errors:
             print(f"FAIL  {e}", file=sys.stderr)
         return 1
-    if out.exists():
+    if out.exists() and not args.refresh:
         try:
             old = common.read_json(out)
-            if {**old, "generated_at": None} == {**index, "generated_at": None}:
+            stamps = {"generated_at": None, "expires_at": None}
+            if "expires_at" in old and {**old, **stamps} == {**index, **stamps}:
                 print(f"unchanged  {out} ({len(index['skills'])} entries)")
                 return 0
         except ValueError:

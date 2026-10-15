@@ -1,14 +1,19 @@
 """The PR workflow's decision table (step 4).
 
     decide.py --structural <structural.json> [--screen <result.json>]
-              [--human-approved] --out <decision.json>
+              [--human-approved [--override-static-reject]] --out <decision.json>
 
 Inputs: check_submission's result and screen/screen.py's result
 ({verdict, risk, findings, summary, description_matches_steps,
 static: {verdict, findings, ...}, model, screen_version}).
 
     structural failure                       -> close
-    --human-approved (maintainer's label)    -> merge, verdict human_approved
+    --human-approved, static result present
+      and not "reject"                       -> merge, verdict human_approved
+    --human-approved, static "reject"        -> close, unless also
+      --override-static-reject               -> merge, verdict human_approved
+    --human-approved, no usable static
+      result                                 -> review (nothing to check it against)
     screener reject, or static reject        -> close
     no / malformed screener result           -> review   (fail toward a human)
     screener flag, static not "clean",
@@ -17,6 +22,12 @@ static: {verdict, findings, ...}, model, screen_version}).
 
 Writes {"action": "merge"|"review"|"close", "verdict": "auto_approved"|
 "human_approved"|null, "reasons": [...], "comment": "<markdown for the PR>"}.
+--human-approved means the workflow verified an approving review on the
+exact head commit (tools/human_approval.py), not merely that a label exists.
+A maintainer overrides the AI screener but not the static analyser's block:
+that takes the separately named `human-approved-override` label
+(--override-static-reject), so it can't happen by habit.
+
 Always exits 0 when it could decide; 2 on a usage error.
 """
 
@@ -54,14 +65,33 @@ def _findings_md(screen: dict) -> str:
     return "\n".join(lines[:40]) or "- (none)"
 
 
-def decide(structural: dict, screen, human_approved: bool) -> dict:
+def _static_verdict(screen):
+    static = screen.get("static") if isinstance(screen, dict) else None
+    verdict = static.get("verdict") if isinstance(static, dict) else None
+    return verdict if verdict in ("clean", "needs_review", "reject") else None
+
+
+def decide(structural: dict, screen, human_approved: bool, override_static_reject: bool = False) -> dict:
     if not structural.get("ok"):
         errors = structural.get("errors") or ["structural check failed"]
         return {"action": "close", "verdict": None, "reasons": errors,
                 "comment": "This submission can't be accepted:\n\n" + "\n".join(f"- {e}" for e in errors)}
     if human_approved:
-        return {"action": "merge", "verdict": "human_approved", "reasons": ["approved by a maintainer"],
-                "comment": "Approved by a maintainer; merging and publishing."}
+        sv = _static_verdict(screen)
+        if sv is None:
+            return {"action": "review", "verdict": None, "reasons": ["no usable static analysis result"],
+                    "comment": "A maintainer approved this, but static analysis produced no result to check "
+                               "the approval against, so it isn't merged. Re-run the checks."}
+        if sv == "reject" and not override_static_reject:
+            return {"action": "close", "verdict": None, "reasons": ["static analysis blocked it"],
+                    "comment": "Static analysis blocked this skill, and a maintainer's approval doesn't override "
+                               "that. If the block is a false positive, a maintainer can use the "
+                               "`human-approved-override` label (see README).\n\n" + _findings_md(screen)}
+        overridden = sv == "reject"
+        return {"action": "merge", "verdict": "human_approved",
+                "reasons": ["approved by a maintainer"] + (["static block overridden"] if overridden else []),
+                "comment": "Approved by a maintainer" + (" (static block overridden)" if overridden else "")
+                           + "; merging and publishing."}
     problems = screen_problems(screen) if screen is not None else ["no screener result"]
     if problems:
         return {"action": "review", "verdict": None, "reasons": problems,
@@ -94,8 +124,11 @@ def main() -> int:
     parser.add_argument("--structural", type=Path, required=True)
     parser.add_argument("--screen", type=Path)
     parser.add_argument("--human-approved", action="store_true")
+    parser.add_argument("--override-static-reject", action="store_true")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
+    if args.override_static_reject and not args.human_approved:
+        parser.error("--override-static-reject needs --human-approved")
     try:
         structural = common.read_json(args.structural)
     except (OSError, ValueError) as e:
@@ -106,7 +139,7 @@ def main() -> int:
             screen = common.read_json(args.screen)
         except (OSError, ValueError):
             screen = "unreadable"
-    decision = decide(structural, screen, args.human_approved)
+    decision = decide(structural, screen, args.human_approved, args.override_static_reject)
     common.write_json(args.out, decision)
     print(f"{decision['action'].upper()}  {'; '.join(decision['reasons'])}")
     return 0

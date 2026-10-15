@@ -167,6 +167,50 @@ def main():
     check(marker not in system_text, "skill text never appears in the system prompt")
     check(marker in json.dumps(request["messages"]), "skill text is present in the message data block")
 
+    # run_command auto-publish allowlist (review M4). Benign commands only: what is proved is
+    # the shape rule -- listed program, listed subcommand and options, no shell syntax, no
+    # parameter -- not that any particular attack is caught.
+    tools = static.load_catalog_tools(CATALOG)
+
+    def cmd_skill(cmd, params=None, description="Show some information about this Mac."):
+        return {"name": "show_info", "description": description,
+                "input_schema": {"type": "object", "properties": params or {}, "required": []},
+                "steps": [{"tool": "run_command", "args": {"cmd": cmd}}]}
+
+    def rules(cmd, params=None):
+        return {f["rule"] for f in static.analyze(cmd_skill(cmd, params), tools)["findings"]}
+
+    for cmd in ["git status -sb", "git log --oneline -n 5", "git log --since=2.weeks --stat", "git diff --stat",
+                "git branch --show-current", "brew info wget", "brew list --versions", "brew outdated", "brew update",
+                "brew --version", "ls -la ~/Documents", "date +%Y-%m-%d", "date -u", "echo hello there", "uname -a",
+                "sw_vers -productVersion", "uptime", "df -h", "du -sh ~/Downloads"]:
+        check("not_allowlisted" not in rules(cmd), f"allowlisted: {cmd}")
+    for label, cmd, params in [
+        ("program not listed", "python3 --version", None),
+        ("program given as a path", "/bin/ls -la", None),
+        ("git subcommand not on the read-only list", "git config --list", None),
+        ("git global option", "git -C ~/Projects status", None),
+        ("git option not on the subcommand's list", "git log --output=notes.txt", None),
+        ("git operand where none is allowed", "git branch newname", None),
+        ("brew subcommand not on the list", "brew install wget", None),
+        ("brew tap-qualified name", "brew info someone/sometap/thing", None),
+        ("two commands chained", "ls ~/Documents | wc -l", None),
+        ("quoting", "echo 'hello'", None),
+        ("date operand", "date 0101", None),
+        ("environment assignment prefix", "LANG=C ls", None),
+        ("a parameter in the command", "ls {folder}", {"folder": {"type": "string", "description": "Folder."}}),
+        ("too long", "echo " + "a " * 120, None),
+    ]:
+        check("not_allowlisted" in rules(cmd, params), f"not allowlisted -> needs_review: {label}")
+    said = "Run the git status shell command to show the state of the current repository."
+    result, _ = run(cmd_skill("git config --list", description=said), StubClient(model_says("approve")))
+    check(result["static"]["verdict"] == "needs_review" and result["verdict"] == "flag"
+          and {f["rule"] for f in result["static"]["findings"]} == {"not_allowlisted"},
+          "an unlisted command, otherwise clean, with an approving model is flagged for a person")
+    result, _ = run(cmd_skill("git status -sb", description=said), StubClient(model_says("approve")))
+    check(result["static"]["verdict"] == "clean" and result["verdict"] == "approve",
+          "an allowlisted command with an approving model can still auto-approve")
+
     # Output contract decide.py relies on.
     result, _ = run(BENIGN, StubClient(model_says("approve")))
     keys = {"verdict", "risk", "findings", "summary", "description_matches_steps", "static", "model", "screen_version"}

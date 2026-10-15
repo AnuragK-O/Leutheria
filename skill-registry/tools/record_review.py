@@ -12,7 +12,10 @@ Writes reviews/<name>/<hash>.json:
 here once, so rebuilding the index can never renumber anything. A skill
 file on main without a record is never indexed (build_index lists it as
 pending), which is what keeps a file pushed around the PR flow unpublished.
-Refuses to overwrite an existing record. Exit 0 / 1.
+Refuses to overwrite an existing record, and refuses when the name already
+has a record by another author on --repo (main as it is now, not the PR's
+base). --check-owner-only runs just that check (the workflow does it before
+merging, and record() repeats it after). Exit 0 / 1.
 """
 
 import argparse
@@ -40,10 +43,28 @@ def review_block(verdict: str, screen) -> dict:
     }
 
 
+def check_owner(repo: Path, name: str, author: str) -> None:
+    """The name belongs to whoever has records for it on main *now*. The PR's
+    structural check read the PR's base, which can be older than main: two
+    PRs claiming one new name both pass it, so this re-check is what keeps
+    the second from becoming "version 2" of the first's skill."""
+    folder = repo / "reviews" / name
+    if not folder.is_dir():
+        return
+    for p in folder.glob("*.json"):
+        try:
+            owner = common.read_json(p)["author"]
+        except (OSError, ValueError, KeyError, TypeError):
+            raise common.RegistryError(f"{p.relative_to(repo)} is unreadable; the name can't be claimed automatically")
+        if not isinstance(owner, str) or owner.lower() != author.lower():
+            raise common.RegistryError(f"{name!r} is already published by someone else")
+
+
 def record(repo: Path, rel: str, verdict: str, screen, author: str, pr, published_at: str) -> dict:
     if verdict not in common.REVIEW_VERDICTS:
         raise common.RegistryError(f"verdict must be one of {common.REVIEW_VERDICTS}")
     name, digest = common.split_skill_path(rel)
+    check_owner(repo, name, author)
     if not (repo / rel).is_file():
         raise common.RegistryError(f"{rel} is not in the repository")
     folder = repo / "reviews" / name
@@ -77,7 +98,18 @@ def main() -> int:
     parser.add_argument("--author", required=True)
     parser.add_argument("--pr", type=int)
     parser.add_argument("--published-at", default=None)
+    parser.add_argument("--check-owner-only", action="store_true",
+                        help="only check that --author may publish under this name on --repo (before merging)")
     args = parser.parse_args()
+    if args.check_owner_only:
+        try:
+            name, _ = common.split_skill_path(args.path)
+            check_owner(args.repo, name, args.author)
+        except common.RegistryError as e:
+            print(f"FAIL  {e}", file=sys.stderr)
+            return 1
+        print(f"ok  {args.author} may publish {name}")
+        return 0
     screen = None
     if args.screen and args.screen.exists():
         try:

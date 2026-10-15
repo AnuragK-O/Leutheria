@@ -1,10 +1,12 @@
 """Verify a registry the way the client will: signature, then every file.
 
-    verify_index.py --repo <dir> --keys <keys.json> [--leutheria <dir> [--catalog <path>]]
+    verify_index.py --repo <dir> --keys <keys.json> [--leutheria <dir> [--catalog <path>]] [--now <iso>]
 
 1. index.json.sig verifies over the exact bytes of index.json with a key in
    --keys ({"keys": [{key_id, public_key}]}), selected by key_id;
-2. the index is format 1 and every entry's path is skills/<name>/<hash>.json
+2. the index is format 1, its expires_at is well-formed, after generated_at,
+   at most common.INDEX_MAX_VALIDITY_DAYS after it, and not yet past (as of
+   --now, default the clock); every entry's path is skills/<name>/<hash>.json
    matching its name and content_hash;
 3. each file's size and sha256 match the entry, it is strict JSON, and its
    content_hash recomputes (needs --leutheria for validate.py);
@@ -14,6 +16,7 @@ Any failure exits 1 -- never a partial pass.
 """
 
 import argparse
+import datetime
 import json
 import sys
 from pathlib import Path
@@ -21,7 +24,7 @@ from pathlib import Path
 import common
 
 
-def verify(repo: Path, keys: list, leutheria: Path = None, catalog_path: Path = None) -> list:
+def verify(repo: Path, keys: list, leutheria: Path = None, catalog_path: Path = None, now=None) -> list:
     errors = []
     index_bytes = (repo / "index.json").read_bytes()
     try:
@@ -32,6 +35,10 @@ def verify(repo: Path, keys: list, leutheria: Path = None, catalog_path: Path = 
     index = json.loads(index_bytes)
     if index.get("format") != common.INDEX_FORMAT or not isinstance(index.get("skills"), list):
         return ["index is not format 1"]
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    stale = common.expiry_problem(index, now)
+    if stale:
+        errors.append(stale)
 
     validate = kwargs = None
     if leutheria:
@@ -71,11 +78,13 @@ def main() -> int:
     parser.add_argument("--keys", type=Path, required=True)
     parser.add_argument("--leutheria", type=Path)
     parser.add_argument("--catalog", type=Path)
+    parser.add_argument("--now", help="check expiry as of this YYYY-MM-DDTHH:MM:SSZ (tests); default the clock")
     args = parser.parse_args()
     try:
         keys = common.read_json(args.keys)["keys"]
-        errors = verify(args.repo, keys, args.leutheria, args.catalog)
-    except (OSError, ValueError, KeyError) as e:
+        now = common.parse_iso_z(args.now) if args.now else None
+        errors = verify(args.repo, keys, args.leutheria, args.catalog, now)
+    except (common.RegistryError, OSError, ValueError, KeyError) as e:
         errors = [f"{type(e).__name__}: {e}"]
     for e in errors:
         print(f"FAIL  {e}", file=sys.stderr)

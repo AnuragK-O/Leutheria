@@ -22,7 +22,13 @@ concurrency:
 
 jobs:
   screen:
-    if: github.event.action != 'labeled' || github.event.label.name == 'human-approved'
+    # A label is only a request to check for an approval (human_approval.py
+    # binds it to an approving review of this exact head commit); the label
+    # itself never approves anything.
+    if: >-
+      github.event.action != 'labeled' ||
+      github.event.label.name == 'human-approved' ||
+      github.event.label.name == 'human-approved-override'
     runs-on: ubuntu-latest
     outputs:
       merged: ${{ steps.act.outputs.merged }}
@@ -31,10 +37,19 @@ jobs:
       PR_AUTHOR: ${{ github.event.pull_request.user.login }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       GH_TOKEN: ${{ github.token }}
-      HUMAN: ${{ github.event.action == 'labeled' && 'yes' || 'no' }}
+      LABEL: ${{ github.event.action == 'labeled' && github.event.label.name || '' }}
     steps:
+      # An approval was for the commit a maintainer read; a new push makes
+      # it stale, so the approval labels go with it.
+      - name: A new push voids approval labels
+        if: github.event.action == 'synchronize'
+        run: |
+          for label in human-approved human-approved-override; do
+            gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --remove-label "$label" >/dev/null 2>&1 || true
+          done
+
       - name: Checkout base (trusted scripts)
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           path: base
@@ -44,7 +59,7 @@ jobs:
       # older main isn't read as deleting what was published since. Its first
       # parent is the "before" tree; its second must be the head we screen.
       - name: Checkout the PR merge (data only)
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           ref: refs/pull/${{ github.event.pull_request.number }}/merge
           path: pr
@@ -61,7 +76,7 @@ jobs:
         run: echo "ref=$(tr -cd '0-9a-f' < base/LEUTHERIA_REF)" >> "$GITHUB_OUTPUT"
 
       - name: Checkout Leutheria at the pinned ref (validate.py + tool catalog)
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           repository: AnuragK-O/Leutheria
           ref: ${{ steps.pin.outputs.ref }}
@@ -75,12 +90,38 @@ jobs:
             agent/tool_catalog.json
           sparse-checkout-cone-mode: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.12"
 
       - name: Install
         run: pip install -r base/requirements-ci.txt
+
+      # Approved only if someone with write access (not the author) left an
+      # APPROVED review whose commit_id is exactly HEAD_SHA, the commit that
+      # is screened and then merged with --match-head-sha. Otherwise the
+      # label is removed (so adding it again re-checks) and the PR is told why.
+      - name: 0. Maintainer approval, bound to the head commit
+        id: human
+        if: env.LABEL != ''
+        run: |
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/pulls/$PR/reviews" > reviews.json
+          python base/tools/human_approval.py candidates --reviews reviews.json \
+            --head-sha "$HEAD_SHA" --author "$PR_AUTHOR" > candidates.txt
+          : > perms.txt
+          while read -r login; do
+            perm=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$login/permission" --jq .permission || echo none)
+            echo "$login $perm" >> perms.txt
+          done < candidates.txt
+          python base/tools/human_approval.py verify --reviews reviews.json --head-sha "$HEAD_SHA" \
+            --author "$PR_AUTHOR" --permissions perms.txt --out human.json
+          approved=$(python -c "import json; print('yes' if json.load(open('human.json'))['approved'] is True else 'no')")
+          echo "approved=$approved" >> "$GITHUB_OUTPUT"
+          if [ "$approved" != yes ]; then
+            gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --remove-label "$LABEL" >/dev/null 2>&1 || true
+            python -c "import json, sys; print('The \`' + sys.argv[1] + '\` label was not acted on: ' + json.load(open('human.json'))['reason'] + '. Approve the PR (Review changes, Approve) at its current head, then add the label again.')" "$LABEL" > approval.md
+            gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file approval.md
+          fi
 
       - name: 1. Structural check
         id: structural
@@ -102,10 +143,15 @@ jobs:
             --catalog leutheria/agent/tool_catalog.json --out screen.json
 
       - name: 4. Decide
+        env:
+          HUMAN_OK: ${{ steps.human.outputs.approved }}
         run: |
           args="--structural structural.json --out decision.json"
           [ -f screen.json ] && args="$args --screen screen.json"
-          [ "$HUMAN" = yes ] && args="$args --human-approved"
+          if [ "$HUMAN_OK" = yes ]; then
+            args="$args --human-approved"
+            [ "$LABEL" = human-approved-override ] && args="$args --override-static-reject"
+          fi
           python base/tools/decide.py $args
           python -c "import json; d = json.load(open('decision.json')); open('comment.md', 'w').write(d['comment'])"
 
@@ -124,6 +170,17 @@ jobs:
             review)
               gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label needs-human-review ;;
             merge)
+              # The structural check read the PR's base; main may have moved.
+              # If another PR has since claimed this name, refuse before merging
+              # (record_review.py checks again after, for the window in between).
+              rm -rf owner-check
+              git clone --quiet --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" owner-check
+              if ! python base/tools/record_review.py --repo owner-check --path "$SKILL_PATH" --verdict "$verdict" \
+                  --author "$PR_AUTHOR" --check-owner-only; then
+                gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "This name was published by someone else while this PR was open; please choose another name."
+                gh pr close "$PR" --repo "$GITHUB_REPOSITORY"
+                exit 0
+              fi
               # --match-head-sha: merge exactly the commit that was screened.
               gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --squash --match-head-sha "$HEAD_SHA"
               # Versions are assigned from main as it is when the record is

@@ -14,6 +14,7 @@ subprocesses exactly as CI does, on temp copies, with a stub screener. No
 network, no model, no sound, no sockets.
 """
 
+import datetime
 import json
 import os
 import shutil
@@ -149,16 +150,19 @@ if mode == "crash":
     sys.exit(3)
 verdict, risk, static, match = {"approve": ("approve", "low", "clean", True), "flag": ("flag", "medium", "clean", True),
     "reject": ("reject", "high", "clean", True), "static": ("approve", "low", "needs_review", True),
-    "high": ("approve", "high", "clean", True), "mismatch": ("approve", "low", "clean", False)}[mode]
+    "high": ("approve", "high", "clean", True), "mismatch": ("approve", "low", "clean", False),
+    "static_reject": ("reject", "high", "reject", True), "no_static": ("approve", "low", None, True)}[mode]
 json.dump({"verdict": verdict, "risk": risk, "findings": [{"where": "step 0", "issue": "x @maintainer", "severity": "low"}],
   "summary": "stub", "description_matches_steps": match,
   "static": {"verdict": static, "findings": [{"rule": "sudo", "severity": "high"}] if static != "clean" else []},
   "model": "stub-model", "screen_version": 1}, open(out, "w"))
 ''')
 WORK = TMP / "work"
+NOW = "2026-10-16T00:00:00Z"  # verification clock: after every --now below, before their indexes expire
 
 
-def submit(definition_or_text, author="alice", mode="approve", path=None, human=False, now="2026-10-15T10:00:00Z"):
+def submit(definition_or_text, author="alice", mode="approve", path=None, human=False, now="2026-10-15T10:00:00Z",
+           override=False):
     (TMP / "stub" / "mode.txt").write_text(mode)
     f = write(TMP / "submission.json", definition_or_text)
     args = ["submit", "--work", WORK, "--leutheria", REPO, "--skill", f, "--author", author,
@@ -167,6 +171,8 @@ def submit(definition_or_text, author="alice", mode="approve", path=None, human=
         args += ["--path", path]
     if human:
         args.append("--human-approve")
+    if override:
+        args.append("--override-static-reject")
     r = tool("local_pipeline.py", *args)
     try:
         return json.loads(r.stdout), r
@@ -277,9 +283,62 @@ check(hv["review"]["verdict"] == "human_approved" and hv["version"] == 1, "human
 s, _ = submit(skill(name="mode_bad", steps=[{"tool": "nope", "args": {}}], params={}), human=True)
 check(s["decision"]["action"] == "close", "maintainer approval can't override a structural failure")
 
+# H4: a maintainer approval never overrides a static block by habit, and needs a static result at all.
+s, _ = submit(skill(name="mode_blocked"), mode="static_reject", human=True)
+check(s["decision"]["action"] == "close" and "override" in s["decision"]["comment"],
+      f"maintainer approval alone can't merge a static reject: {s['decision']}")
+s, _ = submit(skill(name="mode_nostatic"), mode="no_static", human=True)
+check(s["decision"]["action"] == "review", f"maintainer approval with no static result goes to review: {s['decision']}")
+s, _ = submit(skill(name="mode_blocked"), mode="static_reject", human=True, override=True, now="2026-10-15T12:30:00Z")
+check(s["decision"]["action"] == "merge" and "overridden" in " ".join(s["decision"]["reasons"]) and s.get("verified"),
+      f"the separately named override merges a static reject: {s['decision']}")
+r = tool("decide.py", "--structural", WORK / "structural.json", "--override-static-reject", "--out", TMP / "d.json")
+check(r.returncode == 2, "--override-static-reject without a verified approval is a usage error")
+
+# H4: approval = an APPROVED review on exactly the head commit, by a writer who isn't the author.
+HEAD, OLD = "a" * 40, "b" * 40
+
+
+def review(login, state, commit, at):
+    return {"id": hash((login, at)) & 0xFFFF, "user": {"login": login}, "state": state,
+            "commit_id": commit, "submitted_at": at}
+
+
+def approval(reviews, perms="maint write\nhelper triage\n", author="alice", head=HEAD):
+    write(TMP / "reviews.json", reviews)
+    (TMP / "perms.txt").write_text(perms)
+    r = tool("human_approval.py", "verify", "--reviews", TMP / "reviews.json", "--head-sha", head,
+             "--author", author, "--permissions", TMP / "perms.txt", "--out", TMP / "human.json")
+    check(r.returncode == 0, f"human_approval decides: {r.stderr}")
+    return json.loads((TMP / "human.json").read_text())
+
+
+check(approval([review("maint", "APPROVED", HEAD, "2026-10-15T10:00:00Z")])["approved"], "approval on the head counts")
+check(not approval([review("maint", "APPROVED", OLD, "2026-10-15T10:00:00Z")])["approved"],
+      "approval of an earlier commit doesn't count for a new head")
+check(not approval([review("alice", "APPROVED", HEAD, "2026-10-15T10:00:00Z")], perms="alice admin\n")["approved"],
+      "the author can't approve their own submission")
+check(not approval([review("helper", "APPROVED", HEAD, "2026-10-15T10:00:00Z")])["approved"],
+      "a reviewer without write access doesn't count (triage can label, not approve)")
+check(not approval([review("maint", "APPROVED", HEAD, "2026-10-15T10:00:00Z"),
+                    review("maint", "CHANGES_REQUESTED", HEAD, "2026-10-15T11:00:00Z")])["approved"],
+      "a later request for changes withdraws the approval")
+check(not approval([review("maint", "APPROVED", HEAD, "2026-10-15T10:00:00Z"),
+                    review("maint", "DISMISSED", HEAD, "2026-10-15T11:00:00Z")])["approved"],
+      "a dismissed approval doesn't count")
+check(approval([[review("x", "COMMENTED", HEAD, "2026-10-15T09:00:00Z")],
+                [review("maint", "APPROVED", HEAD, "2026-10-15T10:00:00Z"),
+                 review("maint", "COMMENTED", OLD, "2026-10-15T11:00:00Z")]])["approved"],
+      "paged review lists are read; a later comment doesn't withdraw an approval")
+check(not approval([], perms="")["approved"], "no reviews, no approval")
+write(TMP / "reviews.json", [])
+check(tool("human_approval.py", "candidates", "--reviews", TMP / "reviews.json", "--head-sha", "HEAD",
+           "--author", "alice").returncode == 2, "a head that isn't a full sha is refused")
+
 # --- 4. build / sign / verify ----------------------------------------------------
 
-check(tool("verify_index.py", "--repo", repo, "--keys", keys, "--leutheria", REPO).returncode == 0, "published repo verifies")
+check(tool("verify_index.py", "--repo", repo, "--keys", keys, "--leutheria", REPO, "--now", NOW).returncode == 0,
+      "published repo verifies")
 r = tool("build_index.py", "--repo", repo, "--leutheria", REPO)
 check(r.returncode == 0 and "unchanged" in r.stdout, "rebuilding an unchanged registry leaves index.json alone")
 pending = skill(name="pushed_directly")
@@ -289,13 +348,43 @@ check(r.returncode == 0 and "pending" in r.stdout and "pushed_directly" not in (
       "a skill file without a review record is not indexed")
 shutil.rmtree(repo / "skills" / "pushed_directly")
 
+# M1: two PRs claim one new name from the same base. Both pass the structural check (it reads
+# the base); the second must be refused at record time, against main as it is then.
+race = TMP / "race"
+shutil.rmtree(race, ignore_errors=True)
+shutil.copytree(repo, race)
+claim_b = skill(name="race_name")
+claim_c = skill(name="race_name", steps=[{"tool": "create_folder", "args": {"path": "{place}/other"}}])
+for who, d in (("bob", claim_b), ("carol", claim_c)):
+    rc, res = struct(lambda h, d=d: add(h, d))  # struct() checks as alice; the name is new, so author is moot
+    check(rc == 0, f"{who}'s claim passes the structural check against the shared base")
+rel_b = f"skills/race_name/{claim_b['content_hash']}.json"
+rel_c = f"skills/race_name/{claim_c['content_hash']}.json"
+add(race, claim_b)
+check(tool("record_review.py", "--repo", race, "--path", rel_b, "--verdict", "auto_approved",
+           "--author", "bob").returncode == 0, "first claim of a new name is recorded")
+r = tool("record_review.py", "--repo", race, "--path", rel_c, "--verdict", "auto_approved", "--author", "carol",
+         "--check-owner-only")
+check(r.returncode == 1 and "someone else" in r.stderr, "the pre-merge owner check refuses the second claimant")
+check(tool("record_review.py", "--repo", race, "--path", rel_c, "--verdict", "auto_approved", "--author", "bob",
+           "--check-owner-only").returncode == 0, "the pre-merge owner check lets the owner through")
+add(race, claim_c)
+r = tool("record_review.py", "--repo", race, "--path", rel_c, "--verdict", "auto_approved", "--author", "carol")
+check(r.returncode == 1 and "someone else" in r.stderr and not (race / "reviews" / "race_name" /
+      f"{claim_c['content_hash']}.json").exists(), "record_review refuses a second author for a name on main")
+write(race / "reviews" / "race_name" / f"{claim_c['content_hash']}.json",
+      {**json.loads((race / "reviews" / "race_name" / f"{claim_b['content_hash']}.json").read_text()),
+       "content_hash": claim_c["content_hash"], "version": 2, "author": "carol"})
+r = tool("build_index.py", "--repo", race, "--leutheria", REPO, "--out", TMP / "race.json")
+check(r.returncode == 1 and "more than one author" in r.stderr, f"build_index fails on two authors for one name: {r.stderr}")
+
 
 def tampered(mutate, label):
     copy = TMP / "tamper"
     shutil.rmtree(copy, ignore_errors=True)
     shutil.copytree(repo, copy)
     mutate(copy)
-    r = tool("verify_index.py", "--repo", copy, "--keys", keys, "--leutheria", REPO)
+    r = tool("verify_index.py", "--repo", copy, "--keys", keys, "--leutheria", REPO, "--now", NOW)
     check(r.returncode == 1, f"verification fails: {label}: {r.stdout}{r.stderr}")
     return r.stderr
 
@@ -336,8 +425,46 @@ def swap_description(c):
 
 tampered(swap_description, "prose-only edit (content_hash unchanged) still caught by sha256")
 other_keys = write(TMP / "other_keys.json", {"keys": [json.loads(tool("keygen.py", "--private-out", TMP / "c.pem").stdout)]})
-r = tool("verify_index.py", "--repo", repo, "--keys", other_keys)
+r = tool("verify_index.py", "--repo", repo, "--keys", other_keys, "--now", NOW)
 check(r.returncode == 1 and "unknown signing key" in r.stderr, "client with a different key refuses the index")
+
+# M3: a signed expiry, so a frozen copy of an old index stops verifying.
+idx = index()
+_ts = lambda s: datetime.datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ")  # noqa: E731
+check(_ts(idx["expires_at"]) - _ts(idx["generated_at"]) == datetime.timedelta(days=7),
+      f"expires_at is generated_at + 7 days: {idx['generated_at']} -> {idx['expires_at']}")
+r = tool("verify_index.py", "--repo", repo, "--keys", keys, "--leutheria", REPO, "--now", "2026-10-23T00:00:00Z")
+check(r.returncode == 1 and "expired" in r.stderr, f"an index past its expires_at fails verification: {r.stderr}")
+
+
+def resigned(mutate_index):
+    def go(c):
+        d = json.loads((c / "index.json").read_text())
+        mutate_index(d)
+        (c / "index.json").write_text(json.dumps(d, indent=2, sort_keys=True) + "\n")
+        tool("sign_index.py", "--index", c / "index.json", "--out", c / "index.json.sig", "--key-file", key_a)
+    return go
+
+
+tampered(resigned(lambda d: d.pop("expires_at")), "a validly signed index with no expires_at")
+tampered(resigned(lambda d: d.update(expires_at="2027-10-15T10:00:00Z")), "a validly signed index valid for a year")
+tampered(resigned(lambda d: d.update(expires_at=d["generated_at"])), "expires_at not after generated_at")
+tampered(resigned(lambda d: d.update(expires_at=d["expires_at"].replace("Z", "+00:00"))), "expires_at not in the Z form")
+before = (repo / "index.json").read_bytes()
+r = tool("build_index.py", "--repo", repo, "--leutheria", REPO, "--now", "2026-10-17T09:00:00Z")
+check("unchanged" in r.stdout and (repo / "index.json").read_bytes() == before, "a plain rebuild keeps the old timestamps")
+r = tool("build_index.py", "--repo", repo, "--leutheria", REPO, "--now", "2026-10-17T09:00:00Z", "--refresh")
+fresh = json.loads((repo / "index.json").read_text())
+check(r.returncode == 0 and (fresh["generated_at"], fresh["expires_at"]) == ("2026-10-17T09:00:00Z", "2026-10-24T09:00:00Z"),
+      "--refresh (the daily re-sign) moves generated_at and expires_at forward")
+legacy = {k: v for k, v in fresh.items() if k != "expires_at"}
+(repo / "index.json").write_bytes(json.dumps(legacy).encode())
+r = tool("build_index.py", "--repo", repo, "--leutheria", REPO, "--now", "2026-10-17T10:00:00Z")
+check("unchanged" not in r.stdout and json.loads((repo / "index.json").read_text()).get("expires_at"),
+      "an index without expires_at is always rewritten")
+tool("sign_index.py", "--index", repo / "index.json", "--out", repo / "index.json.sig", "--key-file", key_a)
+check(tool("verify_index.py", "--repo", repo, "--keys", keys, "--leutheria", REPO, "--now", "2026-10-18T00:00:00Z")
+      .returncode == 0, "the refreshed index re-signs and verifies")
 
 # --- 5. yank ---------------------------------------------------------------------
 
@@ -388,6 +515,50 @@ check("pull_request_target" in sub and "persist-credentials: false" in sub and "
       "submission workflow: base scripts, PR as data, merges only the screened head")
 check("${{ github.event.pull_request.title" not in sub and "${{ github.event.pull_request.body" not in sub,
       "no PR text interpolated into shell")
+sub_jobs = parsed["submission.yml"]["jobs"]["screen"]
+first = sub_jobs["steps"][0]
+check(first.get("if") == "github.event.action == 'synchronize'" and "--remove-label" in first["run"]
+      and "human-approved-override" in first["run"], "a new push removes both approval labels before anything else")
+check("human_approval.py verify" in sub and "--head-sha \"$HEAD_SHA\"" in sub and "HUMAN_OK" in sub
+      and "github.event.action == 'labeled' && 'yes'" not in sub,
+      "the label only triggers a check; approval comes from a review bound to the head sha")
+check(sub.count("--override-static-reject") == 1 and "LABEL\" = human-approved-override" in sub,
+      "the static-reject override needs its own label")
+check(sub.index("--check-owner-only") < sub.index("gh pr merge"), "name ownership is re-checked against main before merging")
+
+# M5: the signing key meets as little code as possible.
+import re  # noqa: E402
+
+for w in workflows:
+    for m in re.finditer(r"uses:\s*(\S+)", w.read_text()):
+        ref = m.group(1)
+        check(ref.startswith("./") or re.fullmatch(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}", ref),
+              f"{w.name}: action pinned to a full commit sha: {ref}")
+pub = parsed["publish.yml"]
+jobs = pub["jobs"]
+holders = [n for n, j in jobs.items() if "REGISTRY_SIGNING_KEY" in json.dumps(j)]
+check(holders == ["sign"], f"only the sign job sees the signing key: {holders}")
+for name in ("submission.yml", "yank.yml"):
+    check("REGISTRY_SIGNING_KEY" not in json.dumps(parsed[name]), f"{name} never names the signing key")
+sign_job = jobs["sign"]
+sign_runs = " ".join(s.get("run", "") for s in sign_job["steps"])
+check(sign_job.get("environment") == "registry-signing" and sign_job.get("permissions") == {"contents": "read"},
+      "sign job runs in the protected registry-signing environment with read-only contents")
+check("--require-hashes" in sign_runs and "requirements-sign.txt" in sign_runs and "requirements-ci" not in sign_runs,
+      "sign job installs only the hash-pinned signing requirements")
+check(set(sign_job["steps"][0]["with"]["sparse-checkout"].split()) ==
+      {"tools/sign_index.py", "tools/common.py", "requirements-sign.txt"},
+      "sign job checks out only the two scripts it runs and its requirements")
+check(pub.get("permissions") == {"contents": "read"} and jobs["commit"]["permissions"] == {"contents": "write"}
+      and "permissions" not in jobs["build"], "only the commit job can write to the repository")
+check(not any("pip install" in s.get("run", "") for s in jobs["build"]["steps"]), "the build job installs nothing")
+on = pub.get("on") or pub.get(True) or pub.get("true") or {}  # YAML 1.1 reads the key `on` as true
+check("schedule" in on and "--refresh" in json.dumps(jobs["build"]), "publish re-signs daily with --refresh (M3)")
+reqs = [l for l in (REGISTRY / "requirements-sign.txt").read_text().splitlines() if l.strip() and not l.startswith("#")]
+check({l.split("==")[0] for l in reqs} == {"cryptography", "cffi", "pycparser"}, "signing requirements are cryptography + its deps")
+if not all("--hash=sha256:" in l for l in reqs):
+    check("TODO(hashes)" in (REGISTRY / "requirements-sign.txt").read_text(), "missing hashes are marked TODO(hashes)")
+    print("WARN  requirements-sign.txt has no hashes yet (TODO(hashes)): publish fails closed until they are generated")
 
 shutil.rmtree(TMP, ignore_errors=True)
 print(f"\nall {passed} checks passed")
