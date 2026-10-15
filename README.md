@@ -571,6 +571,7 @@ never on error text:
 |---|---|---|
 | `verification_failed` | any (signature, unknown key, malformed or older index, file sha256/size/content_hash, validate.py) | red "Index refused"; nothing installable |
 | `no_signing_key` | any | red "no registry key configured" |
+| `expired` | any (the index is at or past its signed `expires_at`) | red "Index refused: out of date"; nothing installable |
 | `unavailable` | list (ok:false = nothing cached; ok:true + `stale` = last verified index shown), preview, install | neutral notice |
 | `cap_reached` / `yanked` / `not_found` / `refused` / `author_changed` | install, preview | the card's "Not installed" callout |
 | `not_shareable` / `not_found` / `bad_request` | share_preview, share | "Can't share this one" |
@@ -1452,8 +1453,15 @@ and every tier apply to its steps unchanged. On top of that:
 `index.json.sig` are fetched (no redirects, 15 s deadline over the whole fetch enforced by a
 socket watchdog, 2 MB index / 4 KB sig / 256 KB skill caps); the Ed25519 signature over the
 exact downloaded bytes must verify with a key in `core/registry_keys.py`, matched by
-`key_id` = first 16 hex of sha256 of the raw public key; the index must be well-formed and
-not older than one already verified here (a replayed old index would un-yank a version); a
+`key_id` = first 16 hex of sha256 of the raw public key; the index must be well-formed, with
+`generated_at` and `expires_at` exactly `YYYY-MM-DDTHH:MM:SSZ`, `expires_at` after
+`generated_at` and at most 8 days after it (else `verification_failed`) and still in the
+future (else `expired` -- also for the cached index when the registry is unreachable; the
+contract is skill-registry/README.md "Index format and expiry"); and not older than one
+already verified here (a replayed old index would un-yank a version). That rollback floor,
+the newest `generated_at` seen, lives in `registry_state.json` beside the trust file, so
+deleting the cache doesn't lower it; an unreadable state file refuses the registry until it
+is fixed or removed. A
 skill file must match the index's size and sha256, carry no `source`, recompute to the
 index's `content_hash`, and pass `validate.py` (`validate_shared` where present) against this
 machine's tools. The verified index is cached in `generated/imported/_index_cache.json` and
@@ -1997,7 +2005,7 @@ Rules and trust chain: "Shared skills (the public registry)" above.
 #       # verified index (re-verified from cache) was used instead
 # refused or nothing verified: {"ok": false, "index_ok": false, "error_code": "...",
 #   "error": "...", "skills": [], "installed": [...], "imported_max": 20}
-#   error_code: verification_failed | no_signing_key | unavailable. A verification
+#   error_code: verification_failed | expired | no_signing_key | unavailable. A verification
 #   failure is never answered from the cache (BUGS.md #69).
 {"type": "registry_preview", "name": "tidy_downloads", "content_hash": "<sha256>", "request_id": "2"}
 # -> {..., "ok": true, name, version, content_hash, author, summary, review, has_run_command,
@@ -2009,7 +2017,7 @@ Rules and trust chain: "Shared skills (the public registry)" above.
 # older version of the same name is replaced (that card is the update's approval)
 # -> {..., "ok": true, "name", "id", "content_hash", "version", "replaced": bool}
 #    or {"ok": false, "error_code": cap_reached | yanked | not_found | refused (name taken) | author_changed
-#        | verification_failed | no_signing_key | unavailable | bad_request, "error"}
+#        | verification_failed | expired | no_signing_key | unavailable | bad_request, "error"}
 {"type": "registry_share_preview", "skill": "my_learned_skill", "parameterize": ["f2"], "request_id": "4"}
 # -> {..., "ok": true, "skill", "path": "skills/<name>/<hash>.json", "content_hash",
 #     "repo": "AnuragK-O/leutheria-skills", "too_long": bool (registry_share will use

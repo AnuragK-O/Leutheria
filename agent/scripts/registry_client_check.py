@@ -25,6 +25,7 @@ import tempfile
 import threading
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 AGENT_DIR = Path(__file__).resolve().parent.parent
@@ -204,10 +205,19 @@ def entry_for(definition, data: bytes, *, summary="Does a thing.", author="octo-
 
 
 STAMP = [0]
+# Index times are relative to now: an index expires 7 days after it was
+# generated, so fixed dates would make this check rot.
+BASE = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(hours=2)
 
 
-def publish(skills, *, key=KEY, key_id=KEY_ID, generated_at=None, tamper_index=False, sig_override=None):
-    """skills: list of (definition, entry_kwargs, file_bytes_or_None)."""
+def stamp(**delta) -> str:
+    return (BASE + timedelta(**delta)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def publish(skills, *, key=KEY, key_id=KEY_ID, generated_at=None, tamper_index=False, sig_override=None,
+            expires_at="+7d"):
+    """skills: list of (definition, entry_kwargs, file_bytes_or_None).
+    expires_at: "+7d" = generated_at + 7 days, None = left out, else as given."""
     entries = []
     for definition, kwargs, data in skills:
         data = data if data is not None else json.dumps(definition, indent=2).encode()
@@ -215,10 +225,14 @@ def publish(skills, *, key=KEY, key_id=KEY_ID, generated_at=None, tamper_index=F
         entries.append(entry_for(definition, data, **kwargs))
     if generated_at is None:
         STAMP[0] += 1
-        generated_at = f"2026-10-15T00:00:{STAMP[0]:02d}Z"
+        generated_at = stamp(seconds=STAMP[0])
+    body = {"format": 1, "generated_at": generated_at, "catalog_version": "0" * 64, "skills": entries}
+    if expires_at == "+7d":
+        expires_at = (datetime.strptime(generated_at, "%Y-%m-%dT%H:%M:%SZ") + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if expires_at is not None:
+        body["expires_at"] = expires_at
     # Byte-for-byte the registry builder's serialization.
-    index = (json.dumps({"format": 1, "generated_at": generated_at, "catalog_version": "0" * 64, "skills": entries},
-                        indent=2, sort_keys=True, ensure_ascii=True) + "\n").encode()
+    index = (json.dumps(body, indent=2, sort_keys=True, ensure_ascii=True) + "\n").encode()
     sig = {"key_id": key_id, "sig": base64.b64encode(key.sign(index)).decode()}
     if tamper_index:
         index = index.replace(b"Does a thing", b"Does a THING")
@@ -227,11 +241,13 @@ def publish(skills, *, key=KEY, key_id=KEY_ID, generated_at=None, tamper_index=F
     registry_client.reset_cache()
 
 
-def forget_cache():
+def forget_cache(floor=True):
+    """Forget the verified index: memory, the cache file, and (unless
+    floor=False) the durable rollback floor."""
     registry_client.reset_cache()
-    cache = registry_client._cache_path()
-    if cache.exists():
-        cache.unlink()
+    for path in [registry_client._cache_path()] + ([registry_client._state_path()] if floor else []):
+        if path.exists():
+            path.unlink()
 
 
 INJECTION = (
@@ -367,9 +383,9 @@ async def main():
 
     # Rollback: an older (validly signed) index after a newer one.
     forget_cache()
-    publish(GOOD, generated_at="2026-10-15T12:00:00Z")
+    publish(GOOD, generated_at=stamp(hours=1))
     registry_client.get_index(refresh=True)
-    publish([(PLAIN, {}, None)], generated_at="2026-10-01T00:00:00Z")
+    publish([(PLAIN, {}, None)], generated_at=stamp(days=-1))
     try:
         registry_client.get_index(refresh=True)
         check(False, "an older index is refused")
@@ -378,17 +394,17 @@ async def main():
     result = await ctl({"type": "registry_list"})
     check(not result["ok"] and not result["index_ok"] and result["error_code"] == "verification_failed" and result["skills"] == [],
           "...and registry_list shows it refused, not the cached newer one (BUGS.md #69)")
-    publish(GOOD, generated_at="2026-10-15T12:00:00Z")
+    publish(GOOD, generated_at=stamp(hours=1))
     index, stale = registry_client.get_index(refresh=False)
     check(not stale and len(index["skills"]) == 2, "after a refusal the next call fetches again (the good index is back)")
     # Tampered after a good fetch: refused, not the cached good one (BUGS.md #69).
-    publish(GOOD, generated_at="2026-10-15T12:00:00Z", tamper_index=True)
+    publish(GOOD, generated_at=stamp(hours=1), tamper_index=True)
     result = await ctl({"type": "registry_list", "refresh": True})
     check(not result["index_ok"] and result["error_code"] == "verification_failed", "a tampered index after a good one is shown refused")
     preview = await ctl({"type": "registry_preview", "name": "just_time", "content_hash": PLAIN["content_hash"]})
     check(not preview["ok"] and preview["error_code"] == "verification_failed", "...and nothing previews from the cached one")
     # Unreachable after a good fetch: the cached index, marked stale.
-    publish(GOOD, generated_at="2026-10-15T12:00:00Z")
+    publish(GOOD, generated_at=stamp(hours=1))
     registry_client.get_index(refresh=True)
     saved_url = os.environ["LEUTHERIA_REGISTRY_URL"]
     os.environ["LEUTHERIA_REGISTRY_URL"] = f"http://127.0.0.1:{spare_port()}/reg/"
@@ -402,6 +418,49 @@ async def main():
     cache["index"] = base64.b64encode(base64.b64decode(cache["index"]).replace(b"Does a thing", b"Hacked")).decode()
     registry_client._cache_path().write_text(json.dumps(cache))
     check(registry_client._read_cache() is None, "an edited index cache fails verification")
+
+    # The rollback floor survives the cache (review M3).
+    state = registry_client._state_path()
+    check(state.exists() and json.loads(state.read_text())["generated_at"] == stamp(hours=1)
+          and state.parent == Path(trust.TRUST_FILE).parent, "rollback floor written beside the trust file")
+    forget_cache(floor=False)
+    publish([(PLAIN, {}, None)], generated_at=stamp(days=-1))
+    result = await ctl({"type": "registry_list", "refresh": True})
+    check(not result["ok"] and result["error_code"] == "verification_failed" and "older" in result["error"],
+          "with the cache deleted, an older signed index is still refused (durable floor)")
+    state.write_text("{not json")
+    forget_cache(floor=False)
+    publish(GOOD, generated_at=stamp(hours=1, seconds=5))
+    result = await ctl({"type": "registry_list", "refresh": True})
+    check(not result["ok"] and result["error_code"] == "verification_failed" and "state file" in result["error"],
+          "an unreadable state file fails closed")
+
+    # expires_at, exactly per skill-registry/README.md "Index format and expiry".
+    print("# expiry")
+    for label, kwargs, code in [
+        ("expired (generated 8 days ago, 7-day validity)", {"generated_at": stamp(days=-8)}, "expired"),
+        ("expires_at missing", {"expires_at": None}, "verification_failed"),
+        ("expires_at not after generated_at", {"generated_at": stamp(hours=2), "expires_at": stamp(hours=2)}, "verification_failed"),
+        ("expires_at more than 8 days out", {"generated_at": stamp(hours=2), "expires_at": stamp(days=8, hours=2, seconds=1)}, "verification_failed"),
+        ("expires_at not in the exact form", {"generated_at": stamp(hours=2), "expires_at": stamp(days=7).replace("Z", "+00:00")}, "verification_failed"),
+        ("generated_at not in the exact form", {"generated_at": stamp(hours=2).replace("Z", ".5Z"), "expires_at": stamp(days=7)}, "verification_failed"),
+    ]:
+        forget_cache()
+        publish(GOOD, **kwargs)
+        result = await ctl({"type": "registry_list", "refresh": True})
+        check(not result["ok"] and not result["index_ok"] and result["error_code"] == code and result["skills"] == [],
+              f"{label}: refused ({code})")
+    forget_cache()
+    publish(GOOD, generated_at=stamp(hours=2), expires_at=stamp(days=8, hours=2))
+    check((await ctl({"type": "registry_list", "refresh": True}))["ok"], "expires_at exactly 8 days out is accepted")
+    # The last verified index, served while the registry is unreachable, expires too.
+    saved_now = registry_client._now
+    registry_client._now = lambda: datetime.now(timezone.utc) + timedelta(days=10)
+    os.environ["LEUTHERIA_REGISTRY_URL"] = f"http://127.0.0.1:{spare_port()}/reg/"
+    result = await ctl({"type": "registry_list", "refresh": True})
+    os.environ["LEUTHERIA_REGISTRY_URL"] = saved_url
+    registry_client._now = saved_now
+    check(not result["ok"] and result["error_code"] == "expired", "unreachable + cached index past expires_at: refused, not shown stale")
     forget_cache()
 
     # --- install approval -----------------------------------------------------------

@@ -50,6 +50,11 @@
       title: "Index refused: no registry key configured",
       short: "There's no key to check the registry's signature with, so nothing from it is shown or installed.",
     },
+    expired: {
+      security: true,
+      title: "Index refused: out of date",
+      short: "The registry index is past its signed expiry date, so a withdrawn skill could be hidden in it. Nothing from it is shown or installed.",
+    },
     unavailable: {
       security: false,
       title: "Couldn't reach the registry",

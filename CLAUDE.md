@@ -422,6 +422,6 @@ and skipped (voice goes to `off`), never blocking or delaying the text reply.
 - `main.js` forwards transcript events to the main window *and* chat panels (`sendToUi`),
   numbered (`_seq`) so a panel opened mid-session replays the session without duplicates.
   A new transcript event goes through `record()` there, or a chat panel never sees it.
-- Local state stays out of git: `preferences.json`, `trusted_commands.json`, `voice_settings.json`,
+- Local state stays out of git: `preferences.json`, `trusted_commands.json`, `registry_state.json`, `voice_settings.json`,
   `home_location.json`, `logs/`,
   `skills/generated/`, `assets/voices/`, `.env`, `plans/`.

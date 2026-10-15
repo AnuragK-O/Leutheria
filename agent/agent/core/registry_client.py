@@ -9,8 +9,11 @@ Trust chain (any failure refuses the whole operation, never a partial one):
   2. the signature is Ed25519 over the exact index bytes, by a key listed
      in core/registry_keys.py (matched by key_id). No key configured = no
      registry: nothing is listed, previewed or installed;
-  3. the index is structurally checked, and refused if it is older than
-     one already verified here (a replayed old index would un-yank);
+  3. the index is structurally checked, refused at or past its signed
+     expires_at (code "expired"), and refused if it is older than one
+     already verified here (a replayed old index would un-yank) -- that
+     floor is kept in registry_state.json beside the trust file, not only
+     in the disposable cache;
   4. a skill file's bytes must match the index's size and sha256, it must
      carry no `source`, its content_hash must recompute and equal the
      index's, and skills/validate.py must pass with this machine's tools.
@@ -49,7 +52,7 @@ import threading
 import time
 import urllib.parse
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from agent.core import path_policy, registry_keys, registry_text
@@ -79,7 +82,18 @@ CONTROL_TYPES = {"registry_list", "registry_preview", "registry_install", "regis
 UI_ONLY_TYPES = {"registry_install", "registry_share"}
 
 _PATH_RE = re.compile(r"index\.json|index\.json\.sig|skills/[a-z][a-z0-9_]{0,63}/[0-9a-f]{64}\.json")
-_ISO_RE = re.compile(r"\d{4}-\d\d-\d\dT[0-9:.]+(Z|[+-]\d\d:\d\d)?")
+# skill-registry/README.md "Index format and expiry": both stamps UTC, exactly
+# this form, both signed. expires_at must be after generated_at, at most
+# INDEX_MAX_VALIDITY_DAYS after it, and in the future.
+_ISO_RE = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ")
+INDEX_MAX_VALIDITY_DAYS = 8
+
+# The rollback floor: the newest generated_at verified on this machine. Kept
+# in a state file beside the trust file (not only in the index cache, which
+# is a disposable copy in generated/), so deleting the cache doesn't let an
+# older signed index back in (review M3). None = beside trust.TRUST_FILE.
+STATE_FILE = None
+STATE_NAME = "registry_state.json"
 _tls = ssl.create_default_context()
 _lock = threading.Lock()
 _memory = {"index": None, "verified_at": 0.0, "key_id": None, "checked_at": None}
@@ -91,6 +105,8 @@ class RegistryError(Exception):
     a cached verified index may still be shown), verification_failed (a
     signature, hash, content_hash, structure or rollback check failed: a
     security state, never papered over with the cache), no_signing_key,
+    expired (the index is at or past its signed expires_at: refused like a
+    verification failure, never answered from the cache), author_changed,
     not_found, yanked, cap_reached, bad_request, not_shareable, refused,
     unacknowledged_flags (registry_share before every flag was ticked)."""
 
@@ -256,7 +272,22 @@ def _verify(index_bytes: bytes, sig_bytes: bytes):
     except (ValueError, UnicodeDecodeError):
         raise RegistryError("index is not valid JSON", bad) from None
     _check_index(index)
+    _check_expiry(index)
     return index, str(key_id)
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _check_expiry(index: dict) -> None:
+    """Refuse an index at or past its signed expires_at: a mirror, proxy or
+    attacker replaying an old, validly signed index can hide a yank for at
+    most that long (contract: skill-registry/README.md)."""
+    if _when(index["expires_at"]) <= _now():
+        raise RegistryError(
+            f"the registry index expired at {index['expires_at']} (generated {index['generated_at']}); "
+            "it has to be re-signed before shared skills can be listed or installed", "expired")
 
 
 def _check_index(index) -> None:
@@ -267,6 +298,17 @@ def _check_index(index) -> None:
         bad("not a format 1 index")
     if not isinstance(index.get("generated_at"), str) or not _ISO_RE.fullmatch(index["generated_at"]):
         bad("generated_at")
+    expires = index.get("expires_at")
+    if not isinstance(expires, str) or not _ISO_RE.fullmatch(expires):
+        bad("expires_at missing or not YYYY-MM-DDTHH:MM:SSZ")
+    try:
+        generated_when, expires_when = _when(index["generated_at"]), _when(expires)
+    except ValueError:
+        bad("generated_at/expires_at is not a real time")
+    if expires_when <= generated_when:
+        bad("expires_at is not after generated_at")
+    if expires_when - generated_when > timedelta(days=INDEX_MAX_VALIDITY_DAYS):
+        bad(f"expires_at is more than {INDEX_MAX_VALIDITY_DAYS} days after generated_at")
     seen = set()
     for i, e in enumerate(index["skills"]):
         if not isinstance(e, dict):
@@ -304,6 +346,48 @@ def _cache_path() -> Path:
     return registry.imported_dir() / "_index_cache.json"
 
 
+def _state_path() -> Path:
+    if STATE_FILE:
+        return Path(STATE_FILE)
+    from agent.core import trust
+
+    return Path(trust.TRUST_FILE).with_name(STATE_NAME)
+
+
+def _read_floor():
+    """The newest generated_at verified on this machine, or None if no index
+    ever was. A file that exists but can't be used fails closed: the
+    registry stays refused (verification_failed) until it is fixed or
+    removed, rather than silently losing the rollback floor."""
+    path = _state_path()
+    if not path.exists() and not path.is_symlink():
+        return None
+    try:
+        if path.is_symlink() or path.stat().st_size > 4096:
+            raise ValueError("it is a symlink or too large")
+        stamp = json.loads(path.read_text(encoding="utf-8"))["generated_at"]
+        if not isinstance(stamp, str) or not _ISO_RE.fullmatch(stamp):
+            raise ValueError("generated_at is malformed")
+        _when(stamp)
+        return stamp
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        raise RegistryError(
+            f"the registry state file {path.name} can't be read ({e}); shared skills stay unavailable "
+            "until it is fixed or removed", "verification_failed") from None
+
+
+def _write_floor(stamp: str) -> None:
+    _write_private(_state_path(), json.dumps({"generated_at": stamp}).encode())
+
+
+def _write_private(path: Path, data: bytes) -> None:
+    """Atomic replace of `path` with `data`."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
+
+
 def _read_cache():
     """The cached index, re-verified (the cache file is a copy of what the
     registry served, not something trusted because it is on disk)."""
@@ -332,25 +416,34 @@ def get_index(refresh: bool = False):
             return _memory["index"], None
         previous = _memory["index"] or _read_cache()
         try:
+            floor = _read_floor()
             index_bytes = _fetch("index.json", MAX_INDEX_BYTES)
             sig_bytes = _fetch("index.json.sig", MAX_SIG_BYTES)
             index, key_id = _verify(index_bytes, sig_bytes)
-            if previous is not None and _when(index["generated_at"]) < _when(previous["generated_at"]):
+            seen = [s for s in (floor, previous and previous["generated_at"]) if s]
+            if seen and _when(index["generated_at"]) < max(_when(s) for s in seen):
                 raise RegistryError("the registry served an index older than one already seen here", "verification_failed")
         except RegistryError as e:
             log_event("registry_index_failed", error=str(e), code=e.code)
             if previous is None or e.code != "unavailable" or not accepted_keys():
                 _memory.update(index=previous, verified_at=0.0, key_id=None, checked_at=None)
                 raise
+            try:
+                _check_expiry(previous)  # the last verified one may have expired since
+            except RegistryError:
+                _memory.update(index=None, verified_at=0.0, key_id=None, checked_at=None)
+                raise
             return previous, str(e)
         _memory.update(index=index, verified_at=time.monotonic(), key_id=key_id,
                        checked_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        if floor is None or _when(index["generated_at"]) > _when(floor):
+            try:
+                _write_floor(index["generated_at"])
+            except OSError as e:
+                log_event("registry_state_write_failed", error=str(e))
         try:
-            path = _cache_path()
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_name(path.name + ".tmp")
-            tmp.write_text(json.dumps({"index": base64.b64encode(index_bytes).decode(), "sig": base64.b64encode(sig_bytes).decode()}))
-            os.replace(tmp, path)
+            _write_private(_cache_path(), json.dumps(
+                {"index": base64.b64encode(index_bytes).decode(), "sig": base64.b64encode(sig_bytes).decode()}).encode())
         except OSError as e:
             log_event("registry_cache_write_failed", error=str(e))
         log_event("registry_index_verified", skills=len(index["skills"]))
