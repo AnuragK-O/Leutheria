@@ -295,3 +295,39 @@ def outbound_reason(url) -> str:
         return None
     read = ", ".join(s.replace("_", " ") for s in request.sources)
     return f"this request already read text that could be steering me ({read}), and you didn't name this address: {url}"
+
+
+# --- imported (shared) skills ----------------------------------------------
+#
+# While a skill installed from the public registry runs, every dispatch() its
+# steps make sees which skill they belong to and whether it has completed a
+# run on this machine yet. Set by skills/registry.run_imported() around the
+# template interpreter, from the registry record kept beside the skill --
+# never from the skill's own JSON -- so the dispatcher's imported-skill rules
+# hold however that file was edited. Same ContextVar reasoning as the
+# request above: a skill's steps dispatch from the skill's own task.
+
+
+class ImportedRun:
+    __slots__ = ("name", "content_hash", "first_run")
+
+    def __init__(self, name: str, content_hash: str, first_run: bool):
+        self.name = name
+        self.content_hash = content_hash
+        self.first_run = first_run
+
+
+_imported: contextvars.ContextVar = contextvars.ContextVar("leutheria_imported_skill", default=None)
+
+
+def begin_imported(name: str, content_hash: str, first_run: bool):
+    return _imported.set(ImportedRun(name, content_hash, first_run))
+
+
+def end_imported(token) -> None:
+    _imported.reset(token)
+
+
+def current_imported():
+    """The ImportedRun whose step is being dispatched, or None."""
+    return _imported.get()

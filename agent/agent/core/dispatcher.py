@@ -47,9 +47,35 @@ async def dispatch(
         log_event("dispatch_blocked_disabled", tool=tool_name, args=args)
         return {"ok": False, "error": f"{tool_name} is currently disabled by the user"}
 
+    # A step of a skill installed from the public registry (core/session.py
+    # ImportedRun, set by skills/registry.run_imported from the skill's
+    # registry record -- not from its JSON). Until the skill has completed
+    # one run here, every step asks; its run_command steps ask every time.
+    # Neither ask can be satisfied by a trust entry or switched off by a
+    # preference, and neither can grant "always" (see the remember handling
+    # below). That is the whole of the imported-skill rule set at run time.
+    imported = session.current_imported() if tool is not None else None
+    imported_reasons = []
+    if imported is not None:
+        if tool_name == "run_command":
+            imported_reasons.append((
+                f"a command in the shared skill {imported.name} (commands from shared skills always ask)",
+                f"this command comes from the shared skill {imported.name}, and those always ask",
+            ))
+        elif imported.first_run:
+            imported_reasons.append((
+                f"first run of the shared skill {imported.name}: each step asks once",
+                f"this is the first run of the shared skill {imported.name}, so each step asks",
+            ))
+
     # A "scoped" tool drives the GUI, so it's gated per target app for a
     # stretch of time rather than per call -- see _check_scope.
     if tool is not None and tool["safety"] == "scoped":
+        if imported_reasons:
+            approved, _ = await _confirm(tool_name, args, websocket, pending, intro_text, imported_reasons)
+            if not approved:
+                log_event("tool_declined", tool=tool_name, args=args, imported=imported.name)
+                return {"ok": False, "error": f"{tool_name} was declined by the user (or the confirmation prompt timed out)"}
         allowed, error = await _check_scope(tool_name, tool, args, websocket, pending, intro_text)
         if not allowed:
             return {"ok": False, "error": error}
@@ -88,8 +114,15 @@ async def dispatch(
     # call, never take away an ask the policy raised.
     default_confirm = tool is not None and tool["safety"] == "destructive"
     needs = preferences.requires_confirmation(tool_name, default_confirm) or bool(reasons)
-    if needs and not trust.is_trusted(tool_name, args):
-        approved, remember = await _confirm(tool_name, args, websocket, pending, intro_text, reasons)
+    if imported_reasons or (needs and not trust.is_trusted(tool_name, args)):
+        approved, remember = await _confirm(tool_name, args, websocket, pending, intro_text, reasons + imported_reasons)
+        if imported is not None:
+            # A shared skill's command is never remembered at all; on its
+            # first run nothing it does may be trusted for good.
+            if tool_name == "run_command":
+                remember = None
+            elif remember == "always":
+                remember = "session"
 
         if remember == "session":
             trust.trust_for_session(tool_name, args)

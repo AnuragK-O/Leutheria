@@ -78,17 +78,36 @@ def _write(entries: list) -> None:
 _load_permanent_trust()
 
 
+def _imported_refuses(tool_name: str, scope: str) -> bool:
+    """Inside a step of a shared (imported) skill, run_command is never
+    trusted and nothing is trusted "always" on the skill's first run. The
+    dispatcher already doesn't ask for either; this is the second lock, so
+    no future caller can write such an entry by mistake."""
+    from agent.core import session
+
+    imported = session.current_imported()
+    if imported is None:
+        return False
+    return tool_name == "run_command" or (scope == "always" and imported.first_run)
+
+
 def is_trusted(tool_name: str, args: dict) -> bool:
+    if _imported_refuses(tool_name, "check"):
+        return False
     key = _key(tool_name, args)
     return key in _session_trust or key in _permanent_trust
 
 
 def trust_for_session(tool_name: str, args: dict) -> None:
+    if _imported_refuses(tool_name, "session"):
+        return
     _session_trust.add(_key(tool_name, args))
 
 
 def trust_always(tool_name: str, args: dict) -> None:
     """Persist to disk immediately, and also cover this session right away."""
+    if _imported_refuses(tool_name, "always"):
+        return
     key = _key(tool_name, args)
     _permanent_trust.add(key)
     _session_trust.add(key)

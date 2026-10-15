@@ -7,7 +7,9 @@ import uuid
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-from agent.core import agent_loop, audio_io, control, skill_learning, voice_session, voice_settings, ws_auth
+from agent.core import (
+    agent_loop, audio_io, control, registry_client, skill_learning, voice_session, voice_settings, ws_auth,
+)
 from agent.core.audio_input import transcribe_payload
 from agent.core.dispatcher import dispatch
 from agent.core.llm_anthropic import AnthropicBackend
@@ -532,6 +534,15 @@ async def _refresh_input_devices(websocket, request_id) -> None:
     await _send(websocket, {"type": "control_result", "request_id": request_id, **result})
 
 
+async def _registry_control(websocket, payload: dict) -> None:
+    try:
+        result = await registry_client.handle_control(payload)
+    except Exception as e:  # a bug here must still answer the UI's promise
+        log_event("registry_control_error", type=payload.get("type"), error=f"{type(e).__name__}: {e}")
+        result = {"ok": False, "error": f"{payload.get('type')} failed: {type(e).__name__}"}
+    await _send(websocket, {"type": "control_result", "request_id": payload.get("request_id"), **result})
+
+
 # What an overlay may send besides hello and control messages. It's a view,
 # not a conversation: a command from it would run on a connection with no
 # chat to show the reply in and no card of its own to confirm through.
@@ -562,6 +573,19 @@ async def _read_loop(websocket, connection: dict):
             # other control messages it can't be answered inline; it replies
             # (same request_id) when done, without holding up this loop.
             _in_background(_refresh_input_devices(websocket, payload.get("request_id")))
+            continue
+
+        if payload.get("type") in registry_client.CONTROL_TYPES:
+            # Shared-skill registry messages can wait on the network, so like
+            # a device refresh they are answered from a background task
+            # (same request_id) and never hold up this loop. Installing and
+            # sharing come after a card only the UI shows, so not from an
+            # overlay.
+            if is_overlay and payload["type"] in registry_client.UI_ONLY_TYPES:
+                await _send(websocket, {"type": "control_result", "request_id": payload.get("request_id"),
+                                        "ok": False, "error": "not available to an overlay connection"})
+                continue
+            _in_background(_registry_control(websocket, payload))
             continue
 
         if payload.get("type") in control.CONTROL_TYPES:

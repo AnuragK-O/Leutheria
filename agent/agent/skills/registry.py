@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 from agent.core.logging_util import log_event
-from agent.skills import backup_folder, panels, quick_note, setup_project, validate
+from agent.skills import backup_folder, install_shared_skill, panels, quick_note, setup_project, validate
 from agent.skills.template_skill import run_template
 from agent.skills.validate import SkillValidationError, skill_path
 from agent.tools.registry import TOOLS
@@ -1115,6 +1115,23 @@ SKILLS = {
             "required": [],
         },
     },
+    # --- shared skills ---
+    "install_shared_skill": {
+        "fn": install_shared_skill.run,
+        "description": (
+            "Install a skill other Leutheria users shared, by its name as search_shared_skills "
+            "returned it. Nothing is installed until the user approves a card that lists every "
+            "step; the first time the installed skill runs, each of its steps asks again. Use "
+            "this only when the user asked to install that shared skill."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "The shared skill's name, e.g. 'tidy_downloads'."},
+            },
+            "required": ["name"],
+        },
+    },
 }
 
 
@@ -1141,11 +1158,99 @@ def _write_atomic(path: Path, definition: dict) -> None:
     os.replace(tmp, path)
 
 
-def _register_definition(definition: dict, path: Path) -> None:
+MAX_RECORD_BYTES = 64 * 1024
+
+# Registry records of imported (shared) skills, by name: author, version,
+# review, whether it has completed a run here. Kept beside the skill, in
+# generated/imported/<name>.json, never inside the skill's own JSON -- the
+# record, not the skill file, is what makes a skill "imported" to the
+# dispatcher, so editing the skill file can't take a skill out from under
+# the imported-skill rules (it fails its hash, or no longer matches its
+# record, and is refused at load). See core/registry_client.py.
+IMPORTED: dict = {}
+
+RECORD_KEYS = {
+    "name", "content_hash", "version", "author", "summary", "review", "has_run_command",
+    "published_at", "installed_at", "first_run_done",
+}
+
+
+def imported_dir() -> Path:
+    return Path(GENERATED_DIR) / "imported"
+
+
+def _record_path(name: str) -> Path:
+    return skill_path(imported_dir(), name)
+
+
+def read_record(name: str):
+    """The record for `name`, or None if there is none. Raises
+    SkillValidationError for one that exists but can't be used."""
+    path = _record_path(name)
+    if not path.exists() and not path.is_symlink():
+        return None
+    if path.is_symlink() or path.stat().st_size > MAX_RECORD_BYTES:
+        raise SkillValidationError("its registry record is a symlink or too large")
+    record = json.loads(path.read_text(encoding="utf-8"), parse_constant=_reject_constant)
+    if not isinstance(record, dict) or record.get("name") != name or not isinstance(record.get("content_hash"), str):
+        raise SkillValidationError("its registry record is malformed")
+    return {k: record.get(k) for k in RECORD_KEYS}
+
+
+def write_record(record: dict) -> None:
+    imported_dir().mkdir(parents=True, exist_ok=True)
+    _write_atomic(_record_path(record["name"]), {k: record.get(k) for k in sorted(RECORD_KEYS)})
+
+
+async def run_imported(definition: dict, args: dict, websocket, pending: dict) -> dict:
+    """An imported skill's fn: the template interpreter, run with the
+    skill's identity in session's ContextVar so dispatch() applies the
+    imported-skill rules to each step (every step asks until one run has
+    completed; run_command asks every time and is never trusted). Marks the
+    first run complete only on a clean success."""
+    from agent.core import session
+
+    name = definition["name"]
+    record = IMPORTED.get(name)
+    if record is None or record.get("content_hash") != definition["content_hash"]:
+        return {"ok": False, "error": f"{name} has no matching registry record; reinstall it", "steps": []}
+    first_run = not record.get("first_run_done")
+    token = session.begin_imported(name, definition["content_hash"], first_run)
+    try:
+        result = await run_template(definition, args, websocket, pending)
+    finally:
+        session.end_imported(token)
+    if first_run and isinstance(result, dict) and result.get("ok") and IMPORTED.get(name) is record:
+        record["first_run_done"] = True
+        try:
+            write_record(record)
+        except OSError as e:
+            log_event("imported_record_write_failed", name=name, error=str(e))
+        log_event("imported_skill_first_run", name=name, content_hash=definition["content_hash"])
+    return result
+
+
+def _register_definition(definition: dict, path: Path, record: dict = None) -> None:
+    fn = functools.partial(run_template, definition)
+    description, input_schema = definition["description"], definition["input_schema"]
+    extra = {}
+    if record is not None:
+        from agent.core import registry_text
+
+        # The model never sees the author's prose (core/registry_text.py).
+        fn = functools.partial(run_imported, definition)
+        description = registry_text.model_description(
+            record.get("author"), record.get("summary"), definition["requires"],
+            any(step["tool"] == "run_command" for step in definition["steps"]),
+        )
+        input_schema = registry_text.model_input_schema(definition["input_schema"])
+        IMPORTED[definition["name"]] = record
+        extra = {"registry": record, "author_description": definition["description"]}
     SKILLS[definition["name"]] = {
-        "fn": functools.partial(run_template, definition),
-        "description": definition["description"],
-        "input_schema": definition["input_schema"],
+        "fn": fn,
+        "description": description,
+        "input_schema": input_schema,
+        **extra,
         "source_signature": definition.get("source_signature"),
         # Everything below is inspection metadata for the Library UI. "origin"
         # is also what makes a skill deletable -- a generated skill is just a
@@ -1207,11 +1312,23 @@ def _load_generated_skill(path: Path, seen_ids: set) -> None:
     if definition["id"] in seen_ids:
         raise SkillValidationError(f"duplicate id {definition['id']}")
 
+    # Imported is decided by the record as much as by the file: a record
+    # with no matching imported file, or an imported file with no record,
+    # is refused -- either way the file is no longer what was approved.
+    record = read_record(name)
+    if record is not None or definition["source"] != "learned":
+        if record is None:
+            raise SkillValidationError("imported skill has no registry record")
+        if definition["source"] != f"imported:{record['content_hash']}" or definition["content_hash"] != record["content_hash"]:
+            raise SkillValidationError("imported skill does not match its registry record")
+        if reasons:
+            raise SkillValidationError("imported skill was changed on disk")
+
     if reasons:
         _write_atomic(path, definition)
         log_event("skill_migrated", name=name, path=str(path), reasons=reasons)
     seen_ids.add(definition["id"])
-    _register_definition(definition, path)
+    _register_definition(definition, path, record)
 
 
 def load_generated_skills() -> None:
@@ -1220,6 +1337,7 @@ def load_generated_skills() -> None:
     never stops startup or the other skills loading."""
     for name in [n for n, s in SKILLS.items() if s.get("origin") == "generated"]:
         SKILLS.pop(name)
+    IMPORTED.clear()
     if not GENERATED_DIR.exists():
         return
     seen_ids: set = set()
@@ -1249,11 +1367,20 @@ def available_name(name: str) -> str:
     return candidate
 
 
-def register_skill(definition: dict) -> dict:
+def register_skill(definition: dict, record: dict = None, replace: bool = False) -> dict:
     """Validate a newly-approved generated skill, stamp its metadata, write
     it, and make it usable in this running process with no restart. Returns
     {"ok": False, "error"} instead of raising; nothing is written unless the
-    whole definition validates."""
+    whole definition validates.
+
+    An imported skill (source "imported:<hash>") keeps the metadata it was
+    published with, and must come with its registry record (only
+    core/registry_client.py, after an approval, has one); its content_hash
+    is checked against its content and its source like any loaded file's.
+    replace=True lets it replace an installed imported skill of the same
+    name -- an approved update."""
+    if record is not None or str(definition.get("source", "")).startswith("imported:"):
+        return _register_imported(definition, record, replace)
     try:
         path = skill_path(GENERATED_DIR, definition.get("name"))
         content = {k: v for k, v in definition.items() if k not in validate.METADATA_KEYS}
@@ -1265,7 +1392,11 @@ def register_skill(definition: dict) -> dict:
 
     existing = SKILLS.get(full["name"])
     if existing is not None:
-        if existing.get("origin") == "generated" and existing.get("content_hash") == full["content_hash"]:
+        if (
+            existing.get("origin") == "generated"
+            and existing.get("registry") is None
+            and existing.get("content_hash") == full["content_hash"]
+        ):
             return {"ok": True, "name": full["name"], "id": existing["id"], "unchanged": True}
         return {"ok": False, "error": f"a skill named {full['name']!r} already exists"}
     if path.exists() or path.is_symlink():
@@ -1276,6 +1407,46 @@ def register_skill(definition: dict) -> dict:
     _write_atomic(path, full)
     _register_definition(full, path)
     return {"ok": True, "name": full["name"], "id": full["id"], "content_hash": full["content_hash"]}
+
+
+def _register_imported(definition: dict, record, replace: bool) -> dict:
+    try:
+        if record is None:
+            raise SkillValidationError("imported skills are installed only through the registry client")
+        path = skill_path(GENERATED_DIR, definition.get("name"))
+        full = {k: v for k, v in definition.items() if k in validate.ALLOWED_KEYS - {"source_signature"}}
+        validate.validate(full, **validation_kwargs())
+        if full["source"] != f"imported:{full['content_hash']}" or record.get("content_hash") != full["content_hash"]:
+            raise SkillValidationError("source, content_hash and registry record disagree")
+        if record.get("name") != full["name"]:
+            raise SkillValidationError("registry record is for a different skill")
+    except (SkillValidationError, KeyError, TypeError, AttributeError, ValueError) as e:
+        return {"ok": False, "error": str(e)}
+
+    name = full["name"]
+    existing = SKILLS.get(name)
+    if existing is not None:
+        if existing.get("registry") is None:
+            return {"ok": False, "error": f"a skill named {name!r} already exists"}
+        if existing.get("content_hash") == full["content_hash"]:
+            return {"ok": True, "name": name, "id": existing["id"], "unchanged": True}
+        if not replace:
+            return {"ok": False, "error": f"a different version of {name!r} is installed"}
+    elif path.exists() or path.is_symlink():
+        return {"ok": False, "error": f"{path.name} already exists on disk"}
+
+    for other_name, other in SKILLS.items():
+        if other_name != name and other.get("id") == full["id"]:
+            return {"ok": False, "error": f"its id is already used by {other_name}"}
+
+    record = {**{k: record.get(k) for k in RECORD_KEYS}, "first_run_done": False}
+    GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+    # Skill first, then record: a crash in between leaves a pair that
+    # doesn't match, which the next load refuses rather than trusts.
+    _write_atomic(path, full)
+    write_record(record)
+    _register_definition(full, path, record)
+    return {"ok": True, "name": name, "id": full["id"], "content_hash": full["content_hash"], "replaced": existing is not None}
 
 
 def delete_skill(name: str) -> dict:
@@ -1293,7 +1464,11 @@ def delete_skill(name: str) -> dict:
     path = Path(skill["path"])
     if path.exists():
         path.unlink()
+    record_path = _record_path(name)
+    if record_path.exists() or record_path.is_symlink():
+        record_path.unlink()
     SKILLS.pop(name, None)
+    IMPORTED.pop(name, None)
     preferences.clear(name)
     return {"ok": True, "name": name}
 
