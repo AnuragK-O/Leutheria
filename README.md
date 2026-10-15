@@ -1464,7 +1464,7 @@ deleting the cache doesn't lower it; an unreadable state file refuses the regist
 is fixed or removed. A
 skill file must match the index's size and sha256, carry no `source`, recompute to the
 index's `content_hash`, and pass `validate.py` (`validate_shared` where present) against this
-machine's tools. The verified index is cached in `generated/imported/_index_cache.json` and
+machine's tools. The verified index is cached in `generated/imported/_index_cache.json` (it and the state file are written through a random `O_EXCL|O_NOFOLLOW` 0600 temp file in a 0700 `.registry-tmp/` beside them, refused if that is a symlink) and
 re-verified whenever it's read. **`registry_keys.PRODUCTION_KEYS` ships empty: with no key,
 nothing is listed, previewed or installed.** The production key is added at go-live.
 

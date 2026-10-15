@@ -317,6 +317,21 @@ async def main():
     check("evil" not in tidy_listed["summary"].lower() and "ignore" not in tidy_listed["summary"].lower(),
           f"listed summary is sanitized: {tidy_listed['summary']!r}")
     check(registry_client._cache_path().exists(), "verified index cached")
+    # Temp files: random names, O_EXCL|O_NOFOLLOW, in a 0700 dir (review L6).
+    tmp_dir = registry_client._cache_path().parent / registry_client.TMP_DIR_NAME
+    check(tmp_dir.is_dir() and not tmp_dir.is_symlink() and (tmp_dir.stat().st_mode & 0o777) == 0o700 and not list(tmp_dir.iterdir())
+          and (registry_client._cache_path().stat().st_mode & 0o777) == 0o600, "cache written through a private 0700 temp dir, file 0600")
+    elsewhere = TMP / "elsewhere"
+    elsewhere.mkdir()
+    tmp_dir.rmdir()
+    tmp_dir.symlink_to(elsewhere)
+    forget_cache()
+    index, _ = registry_client.get_index(refresh=True)
+    check(index and not registry_client._cache_path().exists() and not list(elsewhere.iterdir())
+          and events("registry_cache_write_failed"), "a symlinked temp dir is refused: nothing written through it")
+    tmp_dir.unlink()
+    registry_client.get_index(refresh=True)
+    check(registry_client._cache_path().exists() and tmp_dir.is_dir() and not tmp_dir.is_symlink(), "...and a real one is made again")
     preview = await ctl({"type": "registry_preview", "name": "tidy_stamp", "content_hash": TIDY["content_hash"]})
     check(preview["ok"] and len(preview["steps"]) == 2 and preview["steps"][1]["run_command"]
           and preview["has_run_command"] and preview["author"] == "octo-cat"

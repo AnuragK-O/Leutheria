@@ -50,6 +50,7 @@ import os
 import re
 import socket
 import ssl
+import stat
 import sys
 import threading
 import time
@@ -405,12 +406,41 @@ def _write_floor(stamp: str) -> None:
     _write_private(_state_path(), json.dumps({"generated_at": stamp}).encode())
 
 
+TMP_DIR_NAME = ".registry-tmp"
+
+
 def _write_private(path: Path, data: bytes) -> None:
-    """Atomic replace of `path` with `data`."""
+    """Atomic replace of `path` with `data` (review L6). The temp file is a
+    fresh random name, created O_EXCL|O_NOFOLLOW with mode 0600, inside a
+    0700 directory of ours next to `path` -- refused if that directory is a
+    symlink or someone else's -- so nothing planted at a predictable name
+    can redirect the write. os.replace renames over `path` itself (a symlink
+    there is replaced, not followed). Raises OSError."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_bytes(data)
-    os.replace(tmp, path)
+    tmp_dir = path.parent / TMP_DIR_NAME
+    try:
+        os.mkdir(tmp_dir, 0o700)
+    except FileExistsError:
+        pass
+    info = os.lstat(tmp_dir)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        raise OSError(f"{tmp_dir} is not a private directory of this user")
+    if info.st_mode & 0o077:
+        os.chmod(tmp_dir, 0o700)
+    tmp = tmp_dir / f"{path.name}.{uuid.uuid4().hex}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _read_cache():
