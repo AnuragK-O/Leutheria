@@ -526,5 +526,39 @@ check(sub.count("--override-static-reject") == 1 and "LABEL\" = human-approved-o
       "the static-reject override needs its own label")
 check(sub.index("--check-owner-only") < sub.index("gh pr merge"), "name ownership is re-checked against main before merging")
 
+# M5: the signing key meets as little code as possible.
+import re  # noqa: E402
+
+for w in workflows:
+    for m in re.finditer(r"uses:\s*(\S+)", w.read_text()):
+        ref = m.group(1)
+        check(ref.startswith("./") or re.fullmatch(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}", ref),
+              f"{w.name}: action pinned to a full commit sha: {ref}")
+pub = parsed["publish.yml"]
+jobs = pub["jobs"]
+holders = [n for n, j in jobs.items() if "REGISTRY_SIGNING_KEY" in json.dumps(j)]
+check(holders == ["sign"], f"only the sign job sees the signing key: {holders}")
+for name in ("submission.yml", "yank.yml"):
+    check("REGISTRY_SIGNING_KEY" not in json.dumps(parsed[name]), f"{name} never names the signing key")
+sign_job = jobs["sign"]
+sign_runs = " ".join(s.get("run", "") for s in sign_job["steps"])
+check(sign_job.get("environment") == "registry-signing" and sign_job.get("permissions") == {"contents": "read"},
+      "sign job runs in the protected registry-signing environment with read-only contents")
+check("--require-hashes" in sign_runs and "requirements-sign.txt" in sign_runs and "requirements-ci" not in sign_runs,
+      "sign job installs only the hash-pinned signing requirements")
+check(set(sign_job["steps"][0]["with"]["sparse-checkout"].split()) ==
+      {"tools/sign_index.py", "tools/common.py", "requirements-sign.txt"},
+      "sign job checks out only the two scripts it runs and its requirements")
+check(pub.get("permissions") == {"contents": "read"} and jobs["commit"]["permissions"] == {"contents": "write"}
+      and "permissions" not in jobs["build"], "only the commit job can write to the repository")
+check(not any("pip install" in s.get("run", "") for s in jobs["build"]["steps"]), "the build job installs nothing")
+on = pub.get("on") or pub.get(True) or pub.get("true") or {}  # YAML 1.1 reads the key `on` as true
+check("schedule" in on and "--refresh" in json.dumps(jobs["build"]), "publish re-signs daily with --refresh (M3)")
+reqs = [l for l in (REGISTRY / "requirements-sign.txt").read_text().splitlines() if l.strip() and not l.startswith("#")]
+check({l.split("==")[0] for l in reqs} == {"cryptography", "cffi", "pycparser"}, "signing requirements are cryptography + its deps")
+if not all("--hash=sha256:" in l for l in reqs):
+    check("TODO(hashes)" in (REGISTRY / "requirements-sign.txt").read_text(), "missing hashes are marked TODO(hashes)")
+    print("WARN  requirements-sign.txt has no hashes yet (TODO(hashes)): publish fails closed until they are generated")
+
 shutil.rmtree(TMP, ignore_errors=True)
 print(f"\nall {passed} checks passed")

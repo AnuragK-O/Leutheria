@@ -65,17 +65,35 @@ By submitting you dedicate the skill file to the public domain under CC0 1.0 (se
   by `record_review.py` against main as it is when the record is written, so two PRs racing
   for one new name can't make the second "version 2" of the first's skill. `build_index.py`
   also fails if any name has records by more than one author.
-- **`publish.yml`** (push to main, called, or manual): `tools/build_index.py`,
-  `tools/sign_index.py`, `tools/verify_index.py`, and commits `index.json` + `.sig` if
-  they changed. A skill file without a review record is never indexed, so a file that
-  reached main some other way stays unpublished.
+- **`publish.yml`** (push to main, called, daily, or manual), three jobs so the signing key
+  meets as little code as possible: **build** (`tools/build_index.py`; no secrets, installs
+  nothing), **sign** (the only job that can read the key: it runs in the `registry-signing`
+  environment, checks out only `tools/sign_index.py`, `tools/common.py` and
+  `requirements-sign.txt`, installs only `cryptography` and its two dependencies with
+  `pip --require-hashes`, and signs the exact bytes build produced), and **commit**
+  (`tools/verify_index.py` as the client would, then commits `index.json` + `.sig` if they
+  changed). A skill file without a review record is never indexed, so a file that reached
+  main some other way stays unpublished.
 - Pushes made by workflows don't trigger other workflows, so `submission` and `yank` call
   `publish` themselves.
+- Every action is pinned to a full commit SHA, with its tag in a comment. To update one,
+  look up the new tag's commit (`gh api repos/actions/checkout/commits/<tag> --jq .sha`)
+  and change every use of it.
 
-Repository settings this needs: secrets `ANTHROPIC_API_KEY` and `REGISTRY_SIGNING_KEY`;
-labels `needs-human-review`, `human-approved` and `human-approved-override`; Actions allowed to create and approve
-pull requests and to push to `main` (if `main` is protected, let `github-actions[bot]` bypass
-it).
+Repository settings this needs:
+
+- Secret `ANTHROPIC_API_KEY` (repository secret, used by `submission`).
+- Environment **`registry-signing`** (Settings → Environments): deployment branches and tags
+  → *Selected branches*, `main` only; no required reviewers (the daily re-sign runs
+  unattended); the secret **`REGISTRY_SIGNING_KEY` as an environment secret there**, and no
+  repository- or organisation-level secret of that name.
+- Labels `needs-human-review`, `human-approved` and `human-approved-override`.
+- Actions allowed to create and approve pull requests and to push to `main`; branch
+  protection on `main` (pull requests required, `github-actions[bot]` allowed to bypass), and
+  a CODEOWNERS rule so `.github/`, `tools/`, `screen/` and `requirements-*.txt` need the
+  owner's review. Collaborators with write access can approve submissions (see below), so
+  keep that list short.
+- `requirements-sign.txt` must carry its hashes (see its header) or publish fails closed.
 
 ### Which commands can be auto-published
 
@@ -158,7 +176,8 @@ python tools/keygen.py --private-out new-key.pem --keys keys/public_keys.json
 
 prints `{"key_id", "public_key"}` (Ed25519, raw key in base64; key_id = first 16 hex of its
 sha256) and adds it to `keys/public_keys.json`. Put the PEM text in the
-`REGISTRY_SIGNING_KEY` secret and delete the file.
+`REGISTRY_SIGNING_KEY` secret of the `registry-signing` environment (never a repository
+secret) and delete the file.
 
 To rotate: generate the new key; add its public entry to Leutheria's
 `agent/agent/core/registry_keys.py` (the client accepts any listed key) and ship that
