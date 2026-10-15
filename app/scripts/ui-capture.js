@@ -13,6 +13,10 @@
      node scripts/ui-capture.js --out /tmp/ui --no-panels    # skip it
      node scripts/ui-capture.js --out /tmp/ui --shared-only  # only the shared-skills pass (Library + skills panel)
      node scripts/ui-capture.js --out /tmp/ui --no-shared    # skip it
+     node scripts/ui-capture.js --out /tmp/ui --registry     # only the shared-skills pass against the REAL agent:
+       # agent/scripts/registry_e2e_check.py --fixture (a local signed registry and a
+       # sandboxed agent on spare ports, no model, no sound): install, update, yank,
+       # a tampered index and a share, all through the agent's own answers
      node scripts/ui-capture.js --out /tmp/ui --real ws://127.0.0.1:8794
        # against an agent that's already running (never 8765): no mock is
        # started, and only the checks that are safe on a real agent run --
@@ -67,8 +71,9 @@ const MOCK_PORT = Number(arg("mock-port", 8797));
 const DEBUG_PORT = Number(arg("debug-port", 9347));
 const INSPECT_PORT = Number(arg("inspect-port", 9348));
 const PANELS_ONLY = flag("panels-only");
-const SHARED_ONLY = flag("shared-only");
-const WITH_SHARED = !flag("no-shared") && !arg("real", null);
+const REGISTRY_REAL = flag("registry");
+const SHARED_ONLY = flag("shared-only") || REGISTRY_REAL;
+const WITH_SHARED = !flag("no-shared") && !arg("real", null) && !REGISTRY_REAL;
 const WITH_PANELS = !flag("no-panels") && !arg("real", null);
 const REAL_URL = arg("real", null);
 const WITH_SESSION = !flag("no-session") && !REAL_URL;
@@ -1318,6 +1323,186 @@ async function runShared(theme) {
   }
 }
 
+// --- the shared-skill registry against the REAL agent and a real signed index --
+// agent/scripts/registry_e2e_check.py --fixture builds a local registry with
+// the registry repo's own pipeline (keygen, stubbed screener, signed index),
+// serves it, and starts the real agent server sandboxed (temp HOME and state,
+// test registry URL + key, TTS stubbed, no model). This pass drives Electron
+// against it, so every field the UI reads comes from the agent itself, not
+// from the mock's idea of it. Commands to the fixture (v2, yank, tamper)
+// change what the registry serves mid-run.
+
+async function runRegistryReal(theme) {
+  const dir = path.join(OUT, theme, "registry-real");
+  fs.mkdirSync(dir, { recursive: true });
+  const file = (name) => path.join(dir, `${name}.png`);
+  const T = `[${theme}] registry (real agent):`;
+  const python = arg("python", path.join(APP_DIR, "..", "agent", ".venv", "bin", "python"));
+  const fixture = spawn(python, [path.join(APP_DIR, "..", "agent", "scripts", "registry_e2e_check.py"), "--fixture"], {
+    cwd: path.join(APP_DIR, "..", "agent"),
+    stdio: ["pipe", "pipe", "ignore"],
+  });
+  const lines = [];
+  let buffered = "";
+  fixture.stdout.on("data", (chunk) => {
+    buffered += chunk;
+    let index;
+    while ((index = buffered.indexOf("\n")) >= 0) {
+      lines.push(buffered.slice(0, index));
+      buffered = buffered.slice(index + 1);
+    }
+  });
+  const nextLine = async (test, ms) => {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+      const found = lines.findIndex(test);
+      if (found >= 0) return lines.splice(found, 1)[0];
+      if (fixture.exitCode !== null) break;
+      await sleep(100);
+    }
+    return null;
+  };
+  const tell = async (cmd) => {
+    fixture.stdin.write(`${cmd}\n`);
+    const reply = await nextLine((line) => line === `ok ${cmd}` || line.startsWith(`error ${cmd}`), 120000);
+    if (reply !== `ok ${cmd}`) throw new Error(`fixture ${cmd}: ${reply}`);
+  };
+
+  let electron = null;
+  try {
+    const ready = await nextLine((line) => line.startsWith("{"), 240000);
+    if (!ready) throw new Error("the registry fixture didn't start");
+    const fx = JSON.parse(ready);
+    if (/:8765\b/.test(fx.url)) throw new Error("fixture picked 8765");
+    const env = {
+      ...childEnv(fx.token),
+      LEUTHERIA_AGENT_URL: fx.url,
+      LEUTHERIA_NO_SPAWN: "1",
+      LEUTHERIA_CAPTURE_DIR: path.join(dir, "_state"),
+      LEUTHERIA_CAPTURE_THEME: theme,
+      LEUTHERIA_TEST_HOOKS: "1",
+    };
+    delete env.ELECTRON_RUN_AS_NODE;
+    electron = spawn(require("electron"), [".", `--remote-debugging-port=${DEBUG_PORT}`, `--inspect=${INSPECT_PORT}`], { cwd: APP_DIR, env, stdio: "ignore" });
+
+    const hooks = await Page.attach(null, 20000, INSPECT_PORT);
+    await hooks.waitFor(`globalThis.__leutheriaTest`, 15000);
+    await hooks.eval(`(() => { const d = __leutheriaTest.display().bounds; __leutheriaTest.setCursor({ x: d.x + Math.round(d.width / 2), y: d.y + Math.round(d.height / 2) }); })()`);
+    const main = await Page.attach("renderer/index.html");
+    await main.size(WIDTHS[0], HEIGHT);
+    check(`${T} connects to the real agent`, await main.waitFor(`document.getElementById("status").dataset.state === "connected"`, 15000));
+    await main.waitFor(`window.LX && LX.state.inventory`, 8000);
+    if (theme === "light") await main.eval(`document.getElementById("theme-toggle").click()`);
+    const rowNames = (group) => `[...document.querySelectorAll("#library-group-${group} .list-row")].map((n) => n.dataset.name)`;
+    const pick = (name) => clickText("#library-list .list-row-name", name);
+    const card = `document.querySelector("#library-detail .install-card")`;
+    const refresh = async () => {
+      await main.eval(`document.querySelector(".shared-refresh").click()`);
+      await sleep(1500);
+    };
+
+    await main.eval(clickNav(NAV.library));
+    await main.eval(`document.querySelector('.segmented button[data-kind="shared"]').click()`);
+    check(`${T} Discover lists the two published skills (the held one isn't there)`, await main.waitFor(`${rowNames("shared-discover")}.join() === "list_notes_folder,repo_status"`, 20000));
+    await main.eval(`LX.library.reveal("shared:")`);
+    check(
+      `${T} the overview reads the index as verified, with the key id`,
+      await main.waitFor(`document.querySelector('.shared-index-state[data-state="verified"]') && /Signed with registry key [0-9a-f]{16}/.test(document.getElementById("library-detail").textContent)`)
+    );
+    await main.shot(file("overview"));
+
+    await main.eval(pick("repo_status"));
+    check(
+      `${T} the install card shows every step from the agent's preview, run_command flagged`,
+      await main.waitFor(
+        `${card} && ${card}.querySelectorAll(".install-steps .step").length === 2 && ${card}.querySelectorAll(".step-command").length === 1 && /git -C ~\\/Projects\\/demo status --short/.test(${card}.textContent) && ${card}.querySelector(".shared-cmd-warning")`,
+        15000
+      )
+    );
+    check(
+      `${T} the card shows the local model description and the author's text`,
+      await main.eval(`/^Shared skill by octo-cat/.test(${card}.querySelector(".shared-model-desc").textContent) && /Show the time, then the git status/.test(${card}.querySelector(".shared-author-desc").textContent)`)
+    );
+    await main.shot(file("install-card"));
+    await main.eval(`${card}.querySelector(".btn-hot").click()`);
+    check(
+      `${T} Install: the card settles, the skill is in the inventory as imported`,
+      (await main.waitFor(`${card} && ${card}.classList.contains("resolved")`, 15000)) &&
+        (await main.waitFor(`LX.state.inventory.skills.some((s) => s.name === "repo_status" && s.origin === "imported" && s.registry.version === 1)`, 10000)) &&
+        (await main.waitFor(`${rowNames("shared-installed")}.join() === "repo_status"`))
+    );
+    await main.shot(file("installed"));
+
+    await tell("v2");
+    await refresh();
+    check(`${T} v2 published: the row says update`, await main.waitFor(`document.querySelector('#library-list .list-row[data-name="repo_status"] .badge-warning')`, 10000));
+    await main.eval(pick("list_notes_folder"));
+    await main.eval(pick("repo_status"));
+    check(
+      `${T} the update is a new approval with the new step marked; v1 is still installed`,
+      (await main.waitFor(
+        `${card} && /Update to v2/.test(${card}.textContent) && ${card}.querySelectorAll(".install-steps .step").length === 3 && ${card}.querySelectorAll(".install-steps .badge-accent").length === 1`,
+        15000
+      )) && (await main.eval(`LX.state.inventory.skills.find((s) => s.name === "repo_status").registry.version === 1`))
+    );
+    await main.shot(file("update-offered"));
+
+    await tell("yank");
+    await refresh();
+    check(
+      `${T} yanked: installed v1 shows withdrawn`,
+      await main.waitFor(`document.querySelector('#library-list .list-row[data-name="repo_status"] .badge-danger') && document.querySelector("#library-detail .shared-withdrawn")`, 10000)
+    );
+    await main.shot(file("withdrawn"));
+
+    await tell("tamper");
+    await refresh();
+    await main.eval(`LX.library.reveal("shared:")`);
+    check(
+      `${T} tampered index: the red refused state, nothing installable, installed kept`,
+      (await main.waitFor(`document.querySelector('#library-list .shared-index-refused[data-index="verification_failed"]')`, 10000)) &&
+        (await main.eval(`!document.getElementById("library-group-shared-discover") && ${rowNames("shared-installed")}.join() === "repo_status" && !document.querySelector("#library-detail .install-card")`))
+    );
+    await main.shot(file("index-refused"));
+    await tell("untamper");
+    await refresh();
+
+    await main.eval(`document.querySelector('.segmented button[data-kind="all"]').click()`);
+    await main.eval(pick("client_notes"));
+    await main.eval(clickText("#library-detail button", "Preview share"));
+    check(
+      `${T} share preview from the agent: target path, the home path change, the flagged email, the file`,
+      await main.waitFor(
+        `document.querySelector(".share-preview") && /^skills\\/client_notes\\/[0-9a-f]{64}\\.json$/.test(document.querySelector(".share-path").textContent) && document.querySelectorAll(".share-changes li").length >= 1 && [...document.querySelectorAll(".share-flagged li")].some((li) => /bob@example\\.com/.test(li.textContent)) && /"steps"/.test(document.querySelector(".share-json").textContent)`,
+        15000
+      )
+    );
+    await main.eval(`document.querySelector(".share-preview").scrollIntoView()`);
+    await main.shot(file("share-preview"));
+    await main.eval(clickText("#library-detail button", "Open on GitHub"));
+    const opened = await main.waitFor(`document.querySelector(".share-done")`, 10000);
+    const record = await hooks.eval(`__leutheriaTest.shared()`);
+    const last = record[record.length - 1] || {};
+    check(
+      `${T} Open on GitHub: the registry repo's new-file page recorded (nothing opened), nothing copied`,
+      opened && /^https:\/\/github\.com\/AnuragK-O\/leutheria-skills\/new\/main\?filename=skills%2Fclient_notes%2F/.test(last.url || "") && last.copied === 0
+    );
+    await main.shot(file("share-opened"));
+  } finally {
+    for (const child of [electron, fixture]) {
+      if (!child || child.exitCode !== null || child.signalCode !== null) continue;
+      const gone = new Promise((resolve) => child.once("exit", () => resolve(true)));
+      if (child === fixture) fixture.stdin.end("quit\n");
+      else child.kill();
+      if (!(await Promise.race([gone, sleep(child === fixture ? 10000 : 4000)]))) {
+        child.kill("SIGKILL");
+        await Promise.race([gone, sleep(3000)]);
+      }
+    }
+    await sleep(600);
+  }
+}
+
 async function runReal(main, theme, file) {
   await main.shot(file("real-assistant-empty"));
 
@@ -1415,6 +1600,13 @@ async function runReal(main, theme, file) {
         await runPanels(theme);
       } catch (err) {
         check(`[${theme}] panels: run completed`, false, err.message);
+      }
+    }
+    if (REGISTRY_REAL) {
+      try {
+        await runRegistryReal(theme);
+      } catch (err) {
+        check(`[${theme}] registry (real agent): run completed`, false, err.message);
       }
     }
     if (WITH_SHARED && !PANELS_ONLY) {

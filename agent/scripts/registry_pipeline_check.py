@@ -153,7 +153,7 @@ verdict, risk, static, match = {"approve": ("approve", "low", "clean", True), "f
 json.dump({"verdict": verdict, "risk": risk, "findings": [{"where": "step 0", "issue": "x @maintainer", "severity": "low"}],
   "summary": "stub", "description_matches_steps": match,
   "static": {"verdict": static, "findings": [{"rule": "sudo", "severity": "high"}] if static != "clean" else []},
-  "model": "stub-model", "screen_version": 1}, open(out, "w"))
+  "model": {"id": "stub-model", "called": True, "status": "ok", "error": None, "usage": None}, "screen_version": 1}, open(out, "w"))
 ''')
 WORK = TMP / "work"
 

@@ -372,6 +372,8 @@ async def _full_loop(s: Setup):
     check(r3["decision"]["action"] == "review", f"a stub 'flag' verdict is held for human review: {r3['decision']['reasons']}")
     names = sorted(e["name"] for e in s.index()["skills"])
     check(names == ["list_notes_folder", "repo_status"], f"index has exactly the two approved skills: {names}")
+    by = {e["review"]["screened_by"] for e in s.index()["skills"]}
+    check(all(b.endswith("(stub:ok)") and "{" not in b for b in by), f"review.screened_by names the model and the stub (BUGS.md #70): {by}")
     s.serve()
     s.prepare_home()
     s.start_agent()

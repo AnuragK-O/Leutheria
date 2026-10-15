@@ -25,6 +25,21 @@ import common
 MAX_FLAGS = 20
 
 
+def _screened_by(model) -> str:
+    """screen.py's "model" is {"id", "called", "status", ...}: the model id,
+    plus the status when the call wasn't a plain success (e.g. "stub:ok",
+    "no_key", "skipped_static_block"), so the index never claims a screening
+    that didn't happen. A bare string is taken as the id. Stringifying the
+    dict put a Python repr in every index entry (BUGS.md #70)."""
+    if isinstance(model, dict):
+        name = str(model.get("id") or "none")
+        status = model.get("status")
+        if not model.get("called") or status != "ok":
+            name += f" ({status or 'not called'})"
+        return name[:100]
+    return str(model or "none")[:100]
+
+
 def review_block(verdict: str, screen) -> dict:
     screen = screen if isinstance(screen, dict) else {}
     flags = [common.flag_text(f) for f in ((screen.get("static") or {}).get("findings") or [])]
@@ -35,7 +50,7 @@ def review_block(verdict: str, screen) -> dict:
         "verdict": verdict,
         "risk": risk,
         "flags": [f for f in flags if f][:MAX_FLAGS],
-        "screened_by": str(screen.get("model") or "none")[:100],
+        "screened_by": _screened_by(screen.get("model")),
         "screen_version": version if isinstance(version, int) and not isinstance(version, bool) else 0,
     }
 
