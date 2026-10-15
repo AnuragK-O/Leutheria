@@ -402,7 +402,7 @@ async function handleMessage(client, message) {
       }
       return;
     case "get_voice_settings":
-      return controlResult(client, message, { settings, tts_available: { piper: true, elevenlabs: false } });
+      return controlResult(client, message, { settings, tts_available: { say: true, piper: false, elevenlabs: false } });
     case "set_voice_settings": {
       const problem = fixtures.voiceSettingProblem(message.settings || {});
       if (problem) {
