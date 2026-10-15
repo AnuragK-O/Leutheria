@@ -149,7 +149,8 @@ if mode == "crash":
     sys.exit(3)
 verdict, risk, static, match = {"approve": ("approve", "low", "clean", True), "flag": ("flag", "medium", "clean", True),
     "reject": ("reject", "high", "clean", True), "static": ("approve", "low", "needs_review", True),
-    "high": ("approve", "high", "clean", True), "mismatch": ("approve", "low", "clean", False)}[mode]
+    "high": ("approve", "high", "clean", True), "mismatch": ("approve", "low", "clean", False),
+    "static_reject": ("reject", "high", "reject", True), "no_static": ("approve", "low", None, True)}[mode]
 json.dump({"verdict": verdict, "risk": risk, "findings": [{"where": "step 0", "issue": "x @maintainer", "severity": "low"}],
   "summary": "stub", "description_matches_steps": match,
   "static": {"verdict": static, "findings": [{"rule": "sudo", "severity": "high"}] if static != "clean" else []},
@@ -158,7 +159,8 @@ json.dump({"verdict": verdict, "risk": risk, "findings": [{"where": "step 0", "i
 WORK = TMP / "work"
 
 
-def submit(definition_or_text, author="alice", mode="approve", path=None, human=False, now="2026-10-15T10:00:00Z"):
+def submit(definition_or_text, author="alice", mode="approve", path=None, human=False, now="2026-10-15T10:00:00Z",
+           override=False):
     (TMP / "stub" / "mode.txt").write_text(mode)
     f = write(TMP / "submission.json", definition_or_text)
     args = ["submit", "--work", WORK, "--leutheria", REPO, "--skill", f, "--author", author,
@@ -167,6 +169,8 @@ def submit(definition_or_text, author="alice", mode="approve", path=None, human=
         args += ["--path", path]
     if human:
         args.append("--human-approve")
+    if override:
+        args.append("--override-static-reject")
     r = tool("local_pipeline.py", *args)
     try:
         return json.loads(r.stdout), r
@@ -276,6 +280,58 @@ hv = [x for x in index()["skills"] if x["name"] == "mode_flag"][0]
 check(hv["review"]["verdict"] == "human_approved" and hv["version"] == 1, "human_approved recorded")
 s, _ = submit(skill(name="mode_bad", steps=[{"tool": "nope", "args": {}}], params={}), human=True)
 check(s["decision"]["action"] == "close", "maintainer approval can't override a structural failure")
+
+# H4: a maintainer approval never overrides a static block by habit, and needs a static result at all.
+s, _ = submit(skill(name="mode_blocked"), mode="static_reject", human=True)
+check(s["decision"]["action"] == "close" and "override" in s["decision"]["comment"],
+      f"maintainer approval alone can't merge a static reject: {s['decision']}")
+s, _ = submit(skill(name="mode_nostatic"), mode="no_static", human=True)
+check(s["decision"]["action"] == "review", f"maintainer approval with no static result goes to review: {s['decision']}")
+s, _ = submit(skill(name="mode_blocked"), mode="static_reject", human=True, override=True, now="2026-10-15T12:30:00Z")
+check(s["decision"]["action"] == "merge" and "overridden" in " ".join(s["decision"]["reasons"]) and s.get("verified"),
+      f"the separately named override merges a static reject: {s['decision']}")
+r = tool("decide.py", "--structural", WORK / "structural.json", "--override-static-reject", "--out", TMP / "d.json")
+check(r.returncode == 2, "--override-static-reject without a verified approval is a usage error")
+
+# H4: approval = an APPROVED review on exactly the head commit, by a writer who isn't the author.
+HEAD, OLD = "a" * 40, "b" * 40
+
+
+def review(login, state, commit, at):
+    return {"id": hash((login, at)) & 0xFFFF, "user": {"login": login}, "state": state,
+            "commit_id": commit, "submitted_at": at}
+
+
+def approval(reviews, perms="maint write\nhelper triage\n", author="alice", head=HEAD):
+    write(TMP / "reviews.json", reviews)
+    (TMP / "perms.txt").write_text(perms)
+    r = tool("human_approval.py", "verify", "--reviews", TMP / "reviews.json", "--head-sha", head,
+             "--author", author, "--permissions", TMP / "perms.txt", "--out", TMP / "human.json")
+    check(r.returncode == 0, f"human_approval decides: {r.stderr}")
+    return json.loads((TMP / "human.json").read_text())
+
+
+check(approval([review("maint", "APPROVED", HEAD, "2026-10-15T10:00:00Z")])["approved"], "approval on the head counts")
+check(not approval([review("maint", "APPROVED", OLD, "2026-10-15T10:00:00Z")])["approved"],
+      "approval of an earlier commit doesn't count for a new head")
+check(not approval([review("alice", "APPROVED", HEAD, "2026-10-15T10:00:00Z")], perms="alice admin\n")["approved"],
+      "the author can't approve their own submission")
+check(not approval([review("helper", "APPROVED", HEAD, "2026-10-15T10:00:00Z")])["approved"],
+      "a reviewer without write access doesn't count (triage can label, not approve)")
+check(not approval([review("maint", "APPROVED", HEAD, "2026-10-15T10:00:00Z"),
+                    review("maint", "CHANGES_REQUESTED", HEAD, "2026-10-15T11:00:00Z")])["approved"],
+      "a later request for changes withdraws the approval")
+check(not approval([review("maint", "APPROVED", HEAD, "2026-10-15T10:00:00Z"),
+                    review("maint", "DISMISSED", HEAD, "2026-10-15T11:00:00Z")])["approved"],
+      "a dismissed approval doesn't count")
+check(approval([[review("x", "COMMENTED", HEAD, "2026-10-15T09:00:00Z")],
+                [review("maint", "APPROVED", HEAD, "2026-10-15T10:00:00Z"),
+                 review("maint", "COMMENTED", OLD, "2026-10-15T11:00:00Z")]])["approved"],
+      "paged review lists are read; a later comment doesn't withdraw an approval")
+check(not approval([], perms="")["approved"], "no reviews, no approval")
+write(TMP / "reviews.json", [])
+check(tool("human_approval.py", "candidates", "--reviews", TMP / "reviews.json", "--head-sha", "HEAD",
+           "--author", "alice").returncode == 2, "a head that isn't a full sha is refused")
 
 # --- 4. build / sign / verify ----------------------------------------------------
 
@@ -388,6 +444,15 @@ check("pull_request_target" in sub and "persist-credentials: false" in sub and "
       "submission workflow: base scripts, PR as data, merges only the screened head")
 check("${{ github.event.pull_request.title" not in sub and "${{ github.event.pull_request.body" not in sub,
       "no PR text interpolated into shell")
+sub_jobs = parsed["submission.yml"]["jobs"]["screen"]
+first = sub_jobs["steps"][0]
+check(first.get("if") == "github.event.action == 'synchronize'" and "--remove-label" in first["run"]
+      and "human-approved-override" in first["run"], "a new push removes both approval labels before anything else")
+check("human_approval.py verify" in sub and "--head-sha \"$HEAD_SHA\"" in sub and "HUMAN_OK" in sub
+      and "github.event.action == 'labeled' && 'yes'" not in sub,
+      "the label only triggers a check; approval comes from a review bound to the head sha")
+check(sub.count("--override-static-reject") == 1 and "LABEL\" = human-approved-override" in sub,
+      "the static-reject override needs its own label")
 
 shutil.rmtree(TMP, ignore_errors=True)
 print(f"\nall {passed} checks passed")

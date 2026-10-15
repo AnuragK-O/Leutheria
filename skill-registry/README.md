@@ -67,16 +67,31 @@ By submitting you dedicate the skill file to the public domain under CC0 1.0 (se
   `publish` themselves.
 
 Repository settings this needs: secrets `ANTHROPIC_API_KEY` and `REGISTRY_SIGNING_KEY`;
-labels `needs-human-review` and `human-approved`; Actions allowed to create and approve
+labels `needs-human-review`, `human-approved` and `human-approved-override`; Actions allowed to create and approve
 pull requests and to push to `main` (if `main` is protected, let `github-actions[bot]` bypass
 it).
 
 ### Reviewing a flagged submission
 
-Read the PR's comment (static and screener findings) and the file itself. To approve, add the
-`human-approved` label: the workflow re-checks structure, merges the screened head and
-records `verdict: human_approved`. A new push to the PR needs a fresh label. To reject, close
-the PR with a comment.
+Read the PR's comment (static and screener findings) and the file itself. To approve:
+
+1. **Approve the PR** (Files changed → Review changes → Approve) while it shows the commit you
+   read. The approval is bound to that commit.
+2. Add the `human-approved` label. The label is only a request to check: `tools/human_approval.py`
+   looks for an APPROVED review whose `commit_id` is exactly the PR's current head, left by
+   someone with write, maintain or admin access who isn't the author (a later "request
+   changes" or a dismissal withdraws it). If there is none, the label is removed and the PR
+   says why. Otherwise the workflow re-checks structure, re-screens, merges exactly that head
+   (`--match-head-sha`) and records `verdict: human_approved`.
+
+A new push to the PR removes both approval labels; review the new commit and start again.
+
+A maintainer's approval overrides the AI screener, but **never a static-analysis block**: an
+approved PR whose static verdict is `reject` is closed. If the block is a false positive you
+have checked, use the separately named `human-approved-override` label instead (same review
+requirement); the record says `human_approved` and the merge comment says the static block was
+overridden. An approval with no static result at all (the screening step crashed) goes back
+to review rather than merging. To reject, close the PR with a comment.
 
 ### Yanking
 

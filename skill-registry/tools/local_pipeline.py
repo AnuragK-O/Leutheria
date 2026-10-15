@@ -3,7 +3,8 @@
     local_pipeline.py submit --work <dir> --leutheria <dir> --skill <file.json>
                              --author <login> --key-file <pem> --keys <keys.json>
                              [--path skills/<name>/<hash>.json] [--screen-script <screen.py>]
-                             [--human-approve] [--catalog <path>] [--now <iso>]
+                             [--human-approve [--override-static-reject]]
+                             [--catalog <path>] [--now <iso>]
     local_pipeline.py yank   --work <dir> --leutheria <dir> --name <n> --content-hash <h>
                              --key-file <pem> --keys <keys.json> [--catalog <path>]
 
@@ -97,8 +98,10 @@ def submit(args) -> dict:
     decide_args = ["--structural", work / "structural.json", "--out", work / "decision.json"]
     if screen_path.exists():
         decide_args += ["--screen", screen_path]
-    if args.human_approve:
+    if args.human_approve:  # stands for a verified approval of this exact head (human_approval.py)
         decide_args.append("--human-approved")
+        if args.override_static_reject:
+            decide_args.append("--override-static-reject")
     run("decide.py", *decide_args)
     decision = common.read_json(work / "decision.json")
     summary["decision"] = decision
@@ -149,6 +152,7 @@ def main() -> int:
     s.add_argument("--path")
     s.add_argument("--screen-script")
     s.add_argument("--human-approve", action="store_true")
+    s.add_argument("--override-static-reject", action="store_true")
     y = sub.choices["yank"]
     y.add_argument("--name", required=True)
     y.add_argument("--content-hash", required=True)
