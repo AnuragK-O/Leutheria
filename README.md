@@ -1479,6 +1479,14 @@ nothing is listed, previewed or installed.** The production key is added at go-l
   "system:", "do not tell", "instead of"...), capped at 200 characters; parameter
   descriptions get the same at 150. A filter, not a proof — the screener and the run-time
   rules are the other layers. The Library gets the author's text as `author_description`.
+- What the model reads as the author wrote it is held to plain values: `validate_shared`
+  (the registry's CI runs it too) refuses a string enum value or default longer than 64
+  characters, outside letters/digits/spaces and `. _ ~ / + @ % & : , ( ) -`, or with
+  punctuation followed by a space (a sentence), and more than 20 enum values; the client
+  refuses to preview or install (`refused`) a skill whose name, parameter names, enum
+  values or defaults trip the instruction filter (read with `_` as spaces). The model's
+  schema for an imported skill carries no string defaults at all (`run_template` applies
+  them locally) and drops an enum that fails the filter.
 - At run time (`dispatcher.dispatch`, from `session.current_imported()`, which
   `registry.run_imported` sets from the record): until the skill has completed one clean
   run, **every** step asks — trust entries and "don't ask" preferences don't skip it, and an

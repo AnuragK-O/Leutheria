@@ -402,6 +402,12 @@ def fetch_verified_skill(entry: dict) -> dict:
         validate.validate(definition, **registry.validation_kwargs())
     except (SkillValidationError, KeyError, TypeError, AttributeError) as e:
         raise RegistryError(f"{entry['name']}: not a valid skill here: {e}", "verification_failed") from None
+    # Names, enum values and defaults reach the model as the author wrote
+    # them (only descriptions are rewritten), so they go through the
+    # instruction filter too (review H3).
+    problems = registry_text.model_facing_problems(definition)
+    if problems:
+        raise RegistryError(f"{entry['name']}: instruction-like text where the model would read it: {', '.join(problems[:5])}", "refused")
     if sorted(set(entry["requires"])) != definition["requires"]:
         raise RegistryError(f"{entry['name']}: index requires does not match the steps", "verification_failed")
     has_rc = any(s["tool"] == "run_command" for s in definition["steps"])

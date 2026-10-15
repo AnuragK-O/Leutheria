@@ -109,13 +109,64 @@ def model_description(author, summary, requires: list, has_run_command: bool) ->
     return line
 
 
+def plain_value_ok(value) -> bool:
+    """A string enum value or default the model may see: what
+    validate.check_shared_value allows, and no instruction-like phrasing
+    (read with underscores and hyphens as spaces)."""
+    from agent.skills.validate import SkillValidationError, check_shared_value
+
+    if not isinstance(value, str):
+        return True
+    try:
+        check_shared_value(value, "value")
+    except SkillValidationError:
+        return False
+    return not INSTRUCTION_RE.search(re.sub(r"[_-]+", " ", value))
+
+
+def identifier_ok(name) -> bool:
+    """A skill or parameter name, read as words, with no instruction-like
+    phrasing ("ignore_previous_instructions", "always_approve_this")."""
+    return isinstance(name, str) and not INSTRUCTION_RE.search(re.sub(r"[_-]+", " ", name))
+
+
+def model_facing_problems(definition: dict) -> list:
+    """What in a shared skill reaches the model as the author wrote it and
+    fails the filter: the skill's name, each parameter's name, each string
+    enum value and default. Empty when it may be installed (review H3)."""
+    problems = []
+    if not identifier_ok(definition.get("name")):
+        problems.append(f"name {definition.get('name')!r}")
+    for pname, spec in ((definition.get("input_schema") or {}).get("properties") or {}).items():
+        if not identifier_ok(pname):
+            problems.append(f"parameter name {pname!r}")
+        if not isinstance(spec, dict):
+            continue
+        for i, value in enumerate(spec.get("enum") or []):
+            if not plain_value_ok(value):
+                problems.append(f"{pname}.enum[{i}]")
+        if "default" in spec and not plain_value_ok(spec["default"]):
+            problems.append(f"{pname}.default")
+    return problems
+
+
 def model_input_schema(schema: dict) -> dict:
-    """The skill's input_schema with every parameter description sanitized
-    (the author wrote those too). Types, enums, defaults and required are
-    behaviour, covered by content_hash, and kept as they are."""
+    """The skill's input_schema as the model sees it (review H3). Every
+    parameter description is sanitized (the author wrote those too). A
+    string default is left out entirely: run_template applies defaults
+    locally when an argument is missing, so the model never has to read
+    one. An enum is kept only if every value passes plain_value_ok (the
+    install already refused one that doesn't; this is the second layer).
+    Types and required are kept as they are."""
     out = copy.deepcopy(schema)
     for spec in (out.get("properties") or {}).values():
-        if isinstance(spec, dict) and "description" in spec:
+        if not isinstance(spec, dict):
+            continue
+        if isinstance(spec.get("default"), str):
+            spec.pop("default")
+        if "enum" in spec and not all(plain_value_ok(v) for v in spec["enum"]):
+            spec.pop("enum")
+        if "description" in spec:
             cleaned = sanitize_prose(spec["description"], PARAM_DESCRIPTION_MAX)
             if cleaned:
                 spec["description"] = cleaned
