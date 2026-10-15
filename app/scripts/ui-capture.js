@@ -1204,6 +1204,14 @@ async function runShared(theme) {
       check(`${T} index ${code}: ${security ? "a security state (red, alert)" : "a neutral notice"}; nothing listed to install, installed kept`, ok);
       await main.shot(file(`shared-index-${code}`));
     }
+    // Unreachable, with a verified index from before: shown, marked stale, not refused.
+    await command("registry stale");
+    await refresh();
+    check(
+      `${T} a stale index is listed with a neutral notice, not refused`,
+      (await main.waitFor(`document.querySelector('#library-list .shared-index[data-index="stale"]')`)) &&
+        (await main.eval(`!document.querySelector(".shared-index-refused") && Boolean(document.getElementById("library-group-shared-discover"))`))
+    );
     await command("registry ok");
     await refresh();
 
@@ -1248,7 +1256,7 @@ async function runShared(theme) {
     await main.waitFor(`document.querySelector(".share-preview")`);
     await main.eval(clickText("#library-detail button", "Open on GitHub"));
     const refused = await main.waitFor(`/didn't point at github\\.com/.test(document.getElementById("library-detail").textContent)`);
-    check(`${T} main.js refuses to open a share URL that isn't github.com`, refused && (await hooks.eval(`__leutheriaTest.shared().length`)) === recordLong.length);
+    check(`${T} main.js refuses a share URL outside the registry repo's new-file page`, refused && (await hooks.eval(`__leutheriaTest.shared().length`)) === recordLong.length);
     await main.eval(`document.querySelector(".share .callout")?.scrollIntoView()`);
     await main.shot(file("share-refused-url"));
     await command("registry ok");

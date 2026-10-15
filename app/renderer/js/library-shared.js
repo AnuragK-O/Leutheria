@@ -57,19 +57,16 @@
     },
   };
 
+  // registry_list's shape is in README ("Shared skills"): index_ok false
+  // with an error_code means the agent answered and refused the index; a
+  // stale index (registry unreachable, the last verified one shown) is
+  // index_ok true with stale and error_code "unavailable", and isn't a
+  // problem that hides anything.
   function indexProblem() {
     if (loadError) return { code: "unavailable", detail: loadError, ...INDEX_ERRORS.unavailable };
     if (!data || data.index_ok) return null;
-    let code = data.error_code;
-    if (!INDEX_ERRORS[code]) {
-      // An agent that sends only text: read it the cautious way round.
-      const text = String(data.error || "");
-      code = /no .*key|key .*not configured/i.test(text)
-        ? "no_signing_key"
-        : /signature|verif|sha256|hash|tamper/i.test(text)
-          ? "verification_failed"
-          : "unavailable";
-    }
+    // An unknown or missing code is read the cautious way round.
+    const code = INDEX_ERRORS[data.error_code] ? data.error_code : "verification_failed";
     return { code, detail: data.error || "", ...INDEX_ERRORS[code] };
   }
 
@@ -86,7 +83,9 @@
       result = { ok: false, error: err.message };
     }
     loading = false;
-    if (result && result.ok) {
+    // An index the agent refused is still an answer (ok false, index_ok
+    // false, error_code): it's drawn as that state, not as "unreachable".
+    if (result && (result.ok || result.index_ok === false)) {
       data = result;
       loadError = null;
     } else {
@@ -100,51 +99,56 @@
   const imported = () => ((LX.state.inventory && LX.state.inventory.skills) || []).filter((skill) => skill.origin === "imported");
   const toolsOf = (steps) => [...new Set((steps || []).map((step) => step.tool))];
 
-  // An installed skill the index can't describe (index down, or the entry is
-  // gone): what the inventory's sidecar info says about it.
-  function entryFromInventory(skill) {
-    const info = skill.registry || {};
-    const requires = toolsOf(skill.steps);
+  // An installed skill described by its registry record (registry_list's
+  // `installed`, or the inventory's `registry`): the index lists only the
+  // newest live version of each name, so an installed older or withdrawn
+  // version is known only from here.
+  function entryFromRecord(name, rec, skill) {
+    const requires = (skill && (skill.requires || toolsOf(skill.steps))) || [];
     return {
-      name: skill.name,
-      version: info.version ?? null,
-      content_hash: info.content_hash || null,
-      author: info.author || "unknown",
-      summary: info.summary || skill.description || "",
+      name,
+      version: rec.version ?? null,
+      content_hash: rec.content_hash || null,
+      author: rec.author || "unknown",
+      summary: rec.summary || (skill && skill.description) || "",
       requires,
-      has_run_command: requires.includes("run_command"),
-      review: info.review || null,
-      yanked: false,
-      fromInventory: true,
+      has_run_command: rec.has_run_command != null ? Boolean(rec.has_run_command) : requires.includes("run_command"),
+      review: rec.review || null,
+      published_at: rec.published_at || null,
+      yanked: Boolean(rec.withdrawn),
+      fromRecord: true,
     };
   }
 
   function items() {
-    const byName = new Map();
-    for (const entry of (data && data.index_ok && data.skills) || []) {
-      if (!byName.has(entry.name)) byName.set(entry.name, []);
-      byName.get(entry.name).push(entry);
-    }
+    // skills: the newest non-withdrawn version of each name; installed: one
+    // record per installed name, with withdrawn / update_available decided
+    // by the agent against the verified index.
+    const latestByName = new Map(((data && data.index_ok && data.skills) || []).map((entry) => [entry.name, entry]));
+    const records = new Map(((data && data.installed) || []).map((rec) => [rec.name, rec]));
     const local = new Map(imported().map((skill) => [skill.name, skill]));
-    const names = new Set([...byName.keys(), ...local.keys()]);
+    const names = new Set([...latestByName.keys(), ...records.keys(), ...local.keys()]);
     const list = [];
     for (const name of names) {
-      const versions = (byName.get(name) || []).sort((a, b) => b.version - a.version);
-      const latest = versions.find((entry) => !entry.yanked) || null;
+      const latest = latestByName.get(name) || null;
       const skill = local.get(name) || null;
-      const listed = versions.find((entry) => entry.installed_version != null);
-      const installedVersion = skill && skill.registry && skill.registry.version != null ? skill.registry.version : listed ? listed.installed_version : null;
-      const installed = Boolean(skill) || installedVersion != null;
-      if (!installed && !latest) continue; // withdrawn and not here: hidden from Discover
-      const installedEntry = installed ? versions.find((entry) => entry.version === installedVersion) || null : null;
-      const withdrawn = installed && Boolean(installedEntry ? installedEntry.yanked : versions.length && !latest);
+      const listedRec = records.get(name) || null;
+      const rec = listedRec || (skill && skill.registry) || null;
+      const installed = Boolean(skill || listedRec);
+      if (!installed && !latest) continue;
+      const installedVersion = rec && rec.version != null ? rec.version : null;
+      const withdrawn = installed && Boolean(listedRec && listedRec.withdrawn);
       const update =
-        installed && Boolean(latest) && (installedVersion != null ? latest.version > installedVersion : versions.some((entry) => entry.update_available));
-      const entry = installed ? installedEntry || (skill ? entryFromInventory(skill) : latest) : latest;
-      list.push({ name, entry, latest, versions, skill, installed, installedVersion, withdrawn, update });
+        installed && Boolean(latest) && (listedRec ? Boolean(listedRec.update_available) : installedVersion != null && latest.version > installedVersion);
+      const current = installed && latest && rec && latest.content_hash === rec.content_hash;
+      const entry = installed ? (current ? latest : rec ? entryFromRecord(name, rec, skill) : latest) : latest;
+      list.push({ name, entry, latest, skill, installed, installedVersion, withdrawn, update });
     }
     return list.sort((a, b) => a.name.localeCompare(b.name));
   }
+
+  const installedCount = () => (data && data.installed ? data.installed.length : imported().length);
+  const importedMax = () => (data && data.imported_max != null ? data.imported_max : null);
 
   function matches(item, terms) {
     const entry = item.entry;
@@ -239,6 +243,7 @@
     clear(rowsEl);
     const problem = indexProblem();
     if (problem) rowsEl.appendChild(indexNotice(problem, true));
+    else if (data && data.stale) rowsEl.appendChild(staleNotice(true));
     else if (!data && loading) rowsEl.appendChild(el("div.list-none", { role: "status" }, el("div.empty", { text: "Loading the shared index…" })));
 
     const list = visible(terms);
@@ -342,6 +347,24 @@
             text:
               "This is what a tampered or substituted index looks like, so it's treated as one. Installed shared skills keep working; updates and withdrawals can't be checked until a verified index loads.",
           }),
+        el("button.link-button", { text: loading ? "Checking…" : "Try again", "data-focus": "retry", onclick: () => load(true) })
+      )
+    );
+  }
+
+  // The registry couldn't be reached; the agent showed the last index it
+  // verified. Neutral: nothing here was refused.
+  function staleNotice(short) {
+    return el(
+      "div.callout.shared-index.callout-neutral",
+      { role: "status", "data-index": "stale" },
+      icon("info"),
+      el(
+        "div.shared-index-text",
+        {},
+        el("strong", { text: "Showing the last verified index" }),
+        el("span", { text: "The registry couldn't be reached just now, so this is the list from the last check." }),
+        !short && data.error && el("code.shared-index-detail", { text: data.error }),
         el("button.link-button", { text: loading ? "Checking…" : "Try again", "data-focus": "retry", onclick: () => load(true) })
       )
     );
@@ -563,8 +586,11 @@
       return card;
     }
 
-    const skill = preview.result.skill || preview.result.definition || {};
-    const steps = skill.steps || [];
+    // registry_preview (README "Shared skills"): the card's fields at the
+    // top level -- steps[{tool, args, safety, run_command}], input_schema,
+    // author_description (never sent to the model), model_description.
+    const card_ = preview.result;
+    const steps = card_.steps || [];
     const commands = steps.filter((step) => step.tool === "run_command").length;
     if (commands) {
       body.appendChild(
@@ -598,7 +624,7 @@
       let change = null;
       if (previous) {
         if (index >= previous.length) change = "new";
-        else if (JSON.stringify(previous[index]) !== JSON.stringify(step)) change = "changed";
+        else if (previous[index].tool !== step.tool || JSON.stringify(previous[index].args) !== JSON.stringify(step.args)) change = "changed";
       }
       list.appendChild(
         el(
@@ -626,8 +652,8 @@
     }
 
     // what it asks for, and how the model will see it
-    const properties = (skill.input_schema && skill.input_schema.properties) || {};
-    const required = (skill.input_schema && skill.input_schema.required) || [];
+    const properties = (card_.input_schema && card_.input_schema.properties) || {};
+    const required = (card_.input_schema && card_.input_schema.required) || [];
     body.appendChild(
       el(
         "dl.shared-facts",
@@ -642,8 +668,9 @@
         ),
         preview.result.model_description && el("dt", { text: "The model sees" }),
         preview.result.model_description && el("dd", { class: "shared-model-desc", text: preview.result.model_description }),
-        skill.description && el("dt", { text: "Author's text" }),
-        skill.description && el("dd", {}, el("span.shared-author-desc", { text: skill.description }), el("span.shared-aside", { text: " Never sent to the model." }))
+        card_.author_description && el("dt", { text: "Author's text" }),
+        card_.author_description &&
+          el("dd", {}, el("span.shared-author-desc", { text: card_.author_description }), el("span.shared-aside", { text: " Never sent to the model." }))
       )
     );
 
@@ -660,7 +687,10 @@
       return card;
     }
 
-    const atCap = !isUpdate && data && data.cap != null && data.installed_count >= data.cap;
+    // The list's numbers are the fresher (a preview is loaded once and kept).
+    const max = importedMax() != null ? importedMax() : card_.imported_max;
+    const count = data && data.installed ? installedCount() : Math.max(card_.imported_count || 0, installedCount());
+    const atCap = !isUpdate && max != null && count >= max;
     const failed = install && install.state === "error" ? install.result : null;
     if (failed) {
       const problem = INDEX_ERRORS[failed.error_code];
@@ -679,7 +709,7 @@
           { role: "note" },
           el("span.needs-click-key", { text: "At the limit" }),
           el("span", {
-            text: `${data.installed_count} of ${data.cap} shared skills installed. Each one adds to every request Leutheria makes, so delete one before installing another.`,
+            text: `${count} of ${max} shared skills installed. Each one adds to every request Leutheria makes, so delete one before installing another.`,
           })
         )
       );
@@ -718,7 +748,6 @@
       load(false);
     } else {
       installs.set(key, { state: "error", result: result || {} });
-      if (result && result.error_code === "cap_reached" && data) data.installed_count = data.cap;
       onChange();
     }
   }
@@ -742,10 +771,11 @@
       )
     );
     if (problem) detail.appendChild(indexNotice(problem, false));
+    else if (data && data.stale) detail.appendChild(staleNotice(false));
     else if (!data) detail.appendChild(el("div.empty", { role: "status", text: loading ? "Loading the shared index…" : "Not loaded." }));
 
-    const count = data && data.installed_count != null ? data.installed_count : all.filter((item) => item.installed).length;
-    const cap = data && data.cap != null ? data.cap : null;
+    const count = data ? installedCount() : all.filter((item) => item.installed).length;
+    const cap = importedMax();
     detail.appendChild(
       el(
         "section",
@@ -759,9 +789,9 @@
             {},
             el(
               "div.stat-value.shared-index-state",
-              { "data-state": problem ? (problem.security ? "refused" : "offline") : data ? "verified" : "none" },
+              { "data-state": problem ? (problem.security ? "refused" : "offline") : data ? (data.stale ? "offline" : "verified") : "none" },
               el("span.shared-led"),
-              problem ? (problem.security ? "refused" : "offline") : data ? "verified" : "--"
+              problem ? (problem.security ? "refused" : "offline") : data ? (data.stale ? "cached" : "verified") : "--"
             ),
             el("div.stat-label", { text: "index signature" })
           ),
@@ -793,6 +823,20 @@
   }
 
   // --- share (a learned skill's detail, full Library only) -------------------------------------
+
+  // What each kind of flagged constant means for someone else (the kinds
+  // core/registry_text.py:share_sanitize reports).
+  const FLAG_REASONS = {
+    email: "An email address. Other people would send to it: make it a parameter, or remove it.",
+    url: "A web address from your setup. Check it's meant for everyone.",
+    ip_address: "An IP address from your network. Other people won't have it.",
+    phone_number: "Looks like a phone number. Check it isn't personal.",
+    token_or_id: "Looks like a token or an ID. Never publish a secret.",
+    someone_elses_home: "A path in another user's home folder. Other people won't have it.",
+    personal_path: "A folder from this Mac. Other people may not have it: make it a parameter, or leave it if that's intended.",
+    your_username: "Your user name. It would be published with the skill.",
+    other: "Check this before publishing.",
+  };
 
   function shareSection(entry, rerender) {
     const state = shares.get(entry.name) || { phase: "idle" };
@@ -851,8 +895,10 @@
     card.appendChild(
       el("div.card-header", {}, el("h2", { text: "What would be published" }), el("p", { text: preview.repo || "AnuragK-O/leutheria-skills" }))
     );
+    // registry_share_preview (README "Shared skills"): path, changes
+    // [{where, before, after, why}], flags [{id, where, value, kind}].
     const rows = el("div.share-rows");
-    rows.appendChild(el("div.share-row", {}, el("span.micro-key", { text: "File" }), el("code.share-path", { text: preview.target_path || "--" })));
+    rows.appendChild(el("div.share-row", {}, el("span.micro-key", { text: "File" }), el("code.share-path", { text: preview.path || "--" })));
 
     const changes = preview.changes || [];
     rows.appendChild(
@@ -868,14 +914,14 @@
                 el(
                   "li",
                   {},
-                  el("code.share-field", { text: change.field }),
+                  el("code.share-field", { text: change.where }),
                   el(
                     "span.share-diff",
                     {},
                     change.before != null && el("del", { text: String(change.before) }),
                     change.after != null ? [el("span.share-arrow", { text: " → " }), el("ins", { text: String(change.after) })] : el("span.share-removed", { text: " removed" })
                   ),
-                  change.note && el("span.share-note", { text: change.note })
+                  change.why && el("span.share-note", { text: change.why })
                 )
               )
             )
@@ -883,7 +929,7 @@
       )
     );
 
-    const flagged = preview.flagged || [];
+    const flagged = preview.flags || [];
     if (flagged.length) {
       rows.appendChild(
         el(
@@ -897,9 +943,9 @@
               el(
                 "li.needs-click",
                 {},
-                el("code.share-field", { text: item.field }),
+                el("code.share-field", { text: item.where }),
                 el("code.share-value", { text: String(item.value) }),
-                el("span", { text: item.reason })
+                el("span", { text: FLAG_REASONS[item.kind] || FLAG_REASONS.other })
               )
             )
           )
