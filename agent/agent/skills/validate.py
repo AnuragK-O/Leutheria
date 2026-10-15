@@ -11,6 +11,12 @@ machine wrote -- a future shared skill -- so it rejects rather than repairs.
 Metadata (id / content_hash / version / source / requires / created_at) is
 what a shared copy will be compared by; see content_hash() for why the
 hash covers what it does.
+
+Stdlib-only on purpose (plus template_skill, which is too): the public skill
+registry's CI imports this file on Linux from a pinned Leutheria checkout,
+with tools described by agent/tool_catalog.json instead of the live
+registry -- see catalog_validation_kwargs() and validate_shared(). Never
+import anything macOS-only or agent-runtime here.
 """
 
 import hashlib
@@ -330,3 +336,72 @@ def validate_metadata(definition: dict) -> None:
 def validate(definition, **kwargs) -> None:
     validate_content(definition, **kwargs)
     validate_metadata(definition)
+
+
+# --- shared (registry) skills and the tool catalog ------------------------
+#
+# agent/tool_catalog.json is the live tool registry reduced to what
+# validation and screening need (scripts/export_tool_catalog.py writes it).
+# Everything below works from that file alone, so the registry's CI can
+# validate a submission exactly as the app will, without macOS.
+
+CATALOG_FORMAT = 1
+CATALOG_TOOL_KEYS = ("name", "safety", "input_schema", "paths", "outbound", "untrusted_output")
+
+
+def catalog_digest(catalog: dict) -> str:
+    """catalog_version: sha256 of the canonical JSON of what the catalog says
+    (format, tools, built-in skill names). The git ref it was exported from
+    is deliberately left out, so the version changes only when a tool does."""
+    body = {
+        "format": catalog["format"],
+        "tools": catalog["tools"],
+        "builtin_skills": catalog["builtin_skills"],
+    }
+    canonical = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def check_catalog(catalog) -> None:
+    if not isinstance(catalog, dict) or catalog.get("format") != CATALOG_FORMAT:
+        _fail(f"tool catalog must be a format-{CATALOG_FORMAT} object")
+    tools = catalog.get("tools")
+    if not isinstance(tools, list) or not all(isinstance(t, dict) and isinstance(t.get("name"), str) for t in tools):
+        _fail("tool catalog: tools must be a list of objects with a name")
+    if not isinstance(catalog.get("builtin_skills"), list):
+        _fail("tool catalog: builtin_skills must be a list")
+    if catalog.get("catalog_version") != catalog_digest(catalog):
+        _fail("tool catalog: catalog_version does not match its content")
+
+
+def catalog_validation_kwargs(catalog: dict) -> dict:
+    """The validate_content()/validate() keyword arguments the agent builds
+    from its live registries (skills.registry.validation_kwargs), built from
+    the catalog instead. The catalog is checked first: a corrupt one would
+    otherwise make every tool look unknown, or none."""
+    check_catalog(catalog)
+    tools = {t["name"]: t for t in catalog["tools"]}
+    builtin = set(catalog["builtin_skills"])
+    return {"tools": tools, "reserved_names": set(tools) | builtin, "skill_names": builtin}
+
+
+# Keys a registry file must not carry: `source` is set by the installing
+# client ("imported:<content_hash>"), and source_signature is the learning
+# machine's own provenance note.
+SHARED_FORBIDDEN_KEYS = {"source", "source_signature"}
+
+
+def validate_shared(definition, **kwargs) -> None:
+    """A skill file as published in the registry: the generated-skill format
+    minus `source`, with every metadata field present and consistent (the
+    content_hash must recompute). Raises SkillValidationError."""
+    if not isinstance(definition, dict):
+        _fail("definition must be a JSON object")
+    forbidden = SHARED_FORBIDDEN_KEYS & set(definition)
+    if forbidden:
+        _fail(f"a shared skill must not carry {sorted(forbidden)}")
+    validate_content(definition, **kwargs)
+    missing = (METADATA_KEYS - {"source"}) - set(definition)
+    if missing:
+        _fail(f"missing metadata: {sorted(missing)}")
+    validate_metadata({**definition, "source": f"imported:{content_hash(definition)}"})
