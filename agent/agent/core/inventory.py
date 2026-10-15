@@ -123,6 +123,12 @@ def snapshot() -> dict:
                 "source": skill.get("source"),
                 "content_hash": skill.get("content_hash"),
                 "requires": skill.get("requires"),
+                # Imported (shared) skills only: the registry record (author,
+                # version, review, first_run_done) and the author's own
+                # description, which the model never sees -- "description"
+                # above is the one built locally (core/registry_text.py).
+                "registry": skill.get("registry"),
+                "author_description": skill.get("author_description"),
             },
         )
         for name, skill in SKILLS.items()
