@@ -1528,9 +1528,13 @@ pick becomes a parameter (the uncertain-params
 idea in reverse). The result is a github.com "new file" URL prefilled with path and JSON;
 you submit the PR with your own account — the app holds no GitHub credentials.
 
-**Test-only overrides**: `LEUTHERIA_REGISTRY_URL` replaces the host (https, or http to
-loopback only) and, only together with it, `LEUTHERIA_REGISTRY_TEST_KEY`
-(`<key_id>:<base64 raw public key>`) adds one accepted key. They exist for
+**Test-only overrides**, honoured only while `LEUTHERIA_REGISTRY_TEST=1` is also set (else
+ignored, with a stderr warning and a `registry_test_override_ignored` event):
+`LEUTHERIA_REGISTRY_URL` replaces the host (https, or http to loopback only) and, only
+together with it, `LEUTHERIA_REGISTRY_TEST_KEY` (`<key_id>:<base64 raw public key>`) adds
+one accepted key. In force, the agent prints a warning to stderr and logs
+`registry_test_mode` at startup, and `registry_list` answers `test_registry: true`, shown
+as a "test registry" tag in the Library's Shared overview. They exist for
 `scripts/registry_client_check.py` (a local `http.server` registry signed with a throwaway
 key: good path, every tamper case, slow server, rollback, first-run gating, run_command
 never trusted, edited files, cap, update, yank, uninstall, share) — never set them for real
@@ -2000,6 +2004,7 @@ Rules and trust chain: "Shared skills (the public registry)" above.
 #                    published_at, installed_at, first_run_done,
 #                    "withdrawn": bool, "in_index": bool, "update_available": bool}, ...],
 #     "key_id": "<signing key id>", "checked_at": "<iso of this verification>",
+#     "test_registry": false,   # true only under the test-only overrides (also on refusals)
 #     "stale": true, "error_code": "unavailable", "error": "..."}
 #       # stale/error_code/error only when the registry couldn't be REACHED and the last
 #       # verified index (re-verified from cache) was used instead

@@ -1413,6 +1413,7 @@ async function runRegistryReal(theme) {
       `${T} the overview reads the index as verified, with the key id`,
       await main.waitFor(`document.querySelector('.shared-index-state[data-state="verified"]') && /Signed with registry key [0-9a-f]{16}/.test(document.getElementById("library-detail").textContent)`)
     );
+    check(`${T} the overview tags the local registry as a test registry`, await main.eval(`/test registry/.test(document.querySelector(".shared-test-registry")?.textContent || "")`));
     await main.shot(file("overview"));
 
     await main.eval(pick("repo_status"));

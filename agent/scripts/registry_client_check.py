@@ -6,7 +6,7 @@ the imported-skill rules, against a local registry.
 
 A throwaway Ed25519 key pair is generated here; a local http.server on a
 spare loopback port serves an index signed with it, through the test-only
-LEUTHERIA_REGISTRY_URL / LEUTHERIA_REGISTRY_TEST_KEY overrides. HOME,
+LEUTHERIA_REGISTRY_URL / LEUTHERIA_REGISTRY_TEST_KEY overrides (with LEUTHERIA_REGISTRY_TEST=1). HOME,
 generated/, preferences, trust and the event log all point into a temp
 dir. run_command is stubbed (nothing is executed), speech is stubbed (no
 sound), the model is never called. Exits non-zero on the first failure.
@@ -35,7 +35,7 @@ TMP = Path(tempfile.mkdtemp(prefix="leutheria_registry_check_"))
 HOME = TMP / "home"
 HOME.mkdir()
 os.environ["HOME"] = str(HOME)
-for var in ("LEUTHERIA_REGISTRY_URL", "LEUTHERIA_REGISTRY_TEST_KEY", "LEUTHERIA_MAX_IMPORTED_SKILLS"):
+for var in ("LEUTHERIA_REGISTRY_URL", "LEUTHERIA_REGISTRY_TEST_KEY", "LEUTHERIA_REGISTRY_TEST", "LEUTHERIA_MAX_IMPORTED_SKILLS"):
     os.environ.pop(var, None)
 
 from agent.core import logging_util  # noqa: E402
@@ -286,6 +286,15 @@ async def main():
     result = await ctl({"type": "registry_install", "name": "just_time", "content_hash": PLAIN["content_hash"]})
     check(not result["ok"] and installed_names() == [], "registry_install refuses with no key, nothing installed")
     os.environ["LEUTHERIA_REGISTRY_TEST_KEY"] = f"{KEY_ID}:{public_b64(KEY)}"
+    # Without the explicit test flag the URL and key overrides do nothing (review L1).
+    check(registry_client.accepted_keys() == {} and registry_client.registry_base() == registry_client.REGISTRY_URL
+          and not registry_client.test_registry() and events("registry_test_override_ignored"),
+          "without LEUTHERIA_REGISTRY_TEST=1 the URL and key overrides are ignored, and that is logged")
+    result = await ctl({"type": "registry_list"})
+    check(not result["ok"] and result["test_registry"] is False, "registry_list says test_registry: false")
+    os.environ["LEUTHERIA_REGISTRY_TEST"] = "1"
+    check(registry_client.registry_base() == os.environ["LEUTHERIA_REGISTRY_URL"] and registry_client.test_registry()
+          and events("registry_test_mode"), "with the flag the overrides are in force, logged as test mode")
     saved_url = os.environ.pop("LEUTHERIA_REGISTRY_URL")
     check(registry_client.accepted_keys() == {}, "the test key is ignored without the test URL override")
     os.environ["LEUTHERIA_REGISTRY_URL"] = saved_url
@@ -303,6 +312,7 @@ async def main():
     result = await ctl({"type": "registry_list", "refresh": True})
     check(result["ok"] and result["index_ok"] and {s["name"] for s in result["skills"]} == {"tidy_stamp", "just_time"},
           "registry_list returns the verified index")
+    check(result["test_registry"] is True, "registry_list says test_registry: true under the test overrides")
     tidy_listed = next(s for s in result["skills"] if s["name"] == "tidy_stamp")
     check("evil" not in tidy_listed["summary"].lower() and "ignore" not in tidy_listed["summary"].lower(),
           f"listed summary is sanitized: {tidy_listed['summary']!r}")

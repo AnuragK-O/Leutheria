@@ -710,6 +710,9 @@ async def _serve():
         # on it. auth= names the mode (and the token file's path, which is
         # not secret) -- never the token.
         print(f"AGENT_READY ws://{HOST}:{PORT} auth={auth.describe()}", flush=True)
+        # Says so on stderr and in the log, at startup, if the test-only
+        # registry overrides are set (in force or ignored).
+        registry_client.test_registry()
         await asyncio.Future()  # run forever
 
 

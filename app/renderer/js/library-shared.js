@@ -785,7 +785,16 @@
       el(
         "section",
         {},
-        el("div.section-label", { text: "Registry" }),
+        el(
+          "div.section-label",
+          {},
+          "Registry",
+          // registry_list's test_registry: the test-only URL/key overrides are
+          // in force (LEUTHERIA_REGISTRY_TEST=1). Never true in a real install.
+          data &&
+            data.test_registry &&
+            el("span.badge.badge-warning.shared-test-registry", { text: "test registry", title: "A local test registry and key replace the public one" })
+        ),
         el(
           "div.stat-grid.stat-grid-3",
           {},

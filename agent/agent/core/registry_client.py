@@ -25,11 +25,13 @@ registry record beside it (skills/registry.py); the model sees a description
 built here, never the author's. Updates are new approvals; a yanked version
 stays installed and is shown as withdrawn. At most MAX_IMPORTED installed.
 
-Test-only: LEUTHERIA_REGISTRY_URL replaces the host (http only to loopback)
-and, only together with it, LEUTHERIA_REGISTRY_TEST_KEY ("<key_id>:<base64
-raw public key>") adds one accepted key. Both exist for
-scripts/registry_client_check.py and a local registry; neither is for use
-by a real install.
+Test-only, and only with LEUTHERIA_REGISTRY_TEST=1 also set (review L1):
+LEUTHERIA_REGISTRY_URL replaces the host (http only to loopback) and, only
+together with it, LEUTHERIA_REGISTRY_TEST_KEY ("<key_id>:<base64 raw public
+key>") adds one accepted key. Without the flag both are ignored (and that is
+logged). In force, it is printed to stderr and logged at startup, and
+registry_list says test_registry: true, which the Library shows. Both exist
+for the check scripts and a local registry; neither is for a real install.
 
 Threads: fetching and verifying (get_index, fetch_verified_skill) run on a
 worker thread (control messages via run_in_executor, search_shared_skills as
@@ -48,6 +50,7 @@ import os
 import re
 import socket
 import ssl
+import sys
 import threading
 import time
 import urllib.parse
@@ -65,6 +68,7 @@ SHARE_REPO = "https://github.com/AnuragK-O/leutheria-skills"
 SHARE_BRANCH = "main"
 TEST_URL_ENV = "LEUTHERIA_REGISTRY_URL"
 TEST_KEY_ENV = "LEUTHERIA_REGISTRY_TEST_KEY"
+TEST_FLAG_ENV = "LEUTHERIA_REGISTRY_TEST"
 MAX_IMPORTED_ENV = "LEUTHERIA_MAX_IMPORTED_SKILLS"
 
 TIMEOUT = 6.0  # seconds, per socket operation
@@ -118,9 +122,30 @@ class RegistryError(Exception):
 # --- configuration ------------------------------------------------------------
 
 
+_test_warned = set()
+
+
+def test_registry() -> bool:
+    """True when the test-only overrides are in force: the URL override AND
+    the explicit test flag (review L1). Either alone does nothing."""
+    url_set = bool(os.environ.get(TEST_URL_ENV))
+    flag_set = os.environ.get(TEST_FLAG_ENV) == "1"
+    if url_set and not flag_set and "ignored" not in _test_warned:
+        _test_warned.add("ignored")
+        print(f"WARNING: {TEST_URL_ENV} is set but {TEST_FLAG_ENV}=1 is not; ignoring it (public registry)", file=sys.stderr, flush=True)
+        log_event("registry_test_override_ignored")
+    if url_set and flag_set and "active" not in _test_warned:
+        _test_warned.add("active")
+        print(f"WARNING: TEST REGISTRY in use ({os.environ.get(TEST_URL_ENV)[:120]}"
+              f"{', test key' if os.environ.get(TEST_KEY_ENV) else ''}); this is not the public registry",
+              file=sys.stderr, flush=True)
+        log_event("registry_test_mode", test_key=bool(os.environ.get(TEST_KEY_ENV)))
+    return url_set and flag_set
+
+
 def registry_base() -> str:
     override = os.environ.get(TEST_URL_ENV)
-    if not override:
+    if not override or not test_registry():
         return REGISTRY_URL
     parts = urllib.parse.urlsplit(override)
     if parts.scheme == "https" and parts.hostname:
@@ -139,7 +164,7 @@ def accepted_keys() -> dict:
 
     entries = list(registry_keys.PRODUCTION_KEYS)
     test = os.environ.get(TEST_KEY_ENV)
-    if test and os.environ.get(TEST_URL_ENV):
+    if test and test_registry():
         key_id, _, b64 = test.partition(":")
         entries.append({"key_id": key_id, "public_key": b64})
     keys = {}
@@ -416,6 +441,8 @@ def get_index(refresh: bool = False):
             return _memory["index"], None
         previous = _memory["index"] or _read_cache()
         try:
+            if not accepted_keys():  # nothing could verify it: don't even fetch
+                raise RegistryError("no registry signing key is configured, so shared skills are unavailable", "no_signing_key")
             floor = _read_floor()
             index_bytes = _fetch("index.json", MAX_INDEX_BYTES)
             sig_bytes = _fetch("index.json.sig", MAX_SIG_BYTES)
@@ -678,7 +705,7 @@ def _list_result(index, stale_error) -> dict:
         })
     result = {"ok": True, "index_ok": True, "skills": skills, "installed": installed_list,
               "imported_max": max_imported(), "generated_at": index.get("generated_at"),
-              "key_id": _memory["key_id"], "checked_at": _memory["checked_at"]}
+              "key_id": _memory["key_id"], "checked_at": _memory["checked_at"], "test_registry": test_registry()}
     if stale_error:
         result.update(stale=True, error_code="unavailable", error=stale_error)
     return result
@@ -698,7 +725,7 @@ async def handle_control(payload: dict) -> dict:
                 return {"ok": False, "index_ok": False, "error_code": e.code, "error": str(e), "skills": [],
                         "installed": [{**rec, "withdrawn": bool(rec.get("withdrawn")), "in_index": False, "update_available": False}
                                       for _, rec in sorted(installed().items())],
-                        "imported_max": max_imported()}
+                        "imported_max": max_imported(), "test_registry": test_registry()}
             apply_withdrawals(index)
             return _list_result(index, stale)
 

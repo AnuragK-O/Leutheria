@@ -16,7 +16,8 @@ by `python -m http.server` on a spare loopback port.
 The agent side is the real server (core/server.py main(), as __main__.py runs
 it) in a child process, on a spare port, with its own random LEUTHERIA_TOKEN,
 LEUTHERIA_MANUAL_DISPATCH=1, LEUTHERIA_VOICE_SOURCE=<a silent WAV made here>,
-the test-only LEUTHERIA_REGISTRY_URL / LEUTHERIA_REGISTRY_TEST_KEY, and HOME
+the test-only LEUTHERIA_REGISTRY_URL / LEUTHERIA_REGISTRY_TEST_KEY (with
+LEUTHERIA_REGISTRY_TEST=1), and HOME
 plus every state file (generated/, preferences, trust, voice settings, the
 event log) redirected into the temp dir before the server starts -- the
 agent's state paths are module constants with no env override, so a
@@ -283,6 +284,7 @@ class Setup:
             ws_auth.TOKEN_ENV: self.token,
             "LEUTHERIA_MANUAL_DISPATCH": "1",
             "LEUTHERIA_VOICE_SOURCE": str(self.wav),
+            "LEUTHERIA_REGISTRY_TEST": "1",
             "LEUTHERIA_REGISTRY_URL": self.registry_url,
             "LEUTHERIA_REGISTRY_TEST_KEY": f"{self.key_entry['key_id']}:{self.key_entry['public_key']}",
         })
