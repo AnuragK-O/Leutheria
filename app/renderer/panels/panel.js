@@ -21,7 +21,7 @@
   // module's own checks still work). scripts: loaded in order after util.js.
   const PANELS = {
     chat: { title: "Chat", subtitle: "Talk to Leutheria", view: "assistant", scripts: ["../js/chat.js"] },
-    skills: { title: "Skills", view: "library", scripts: ["../js/library-groups.js", "../js/library.js"] },
+    skills: { title: "Skills", view: "library", scripts: ["../js/library-groups.js", "../js/library-shared.js", "../js/library.js"] },
     activity: { title: "Activity", view: "activity", scripts: ["../js/activity.js"] },
     permissions: { title: "Permissions", view: "permissions", scripts: ["../js/permissions.js"] },
     timers: { title: "Timers", view: "timers", scripts: ["timers.js"] },
