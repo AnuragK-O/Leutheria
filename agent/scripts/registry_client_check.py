@@ -485,6 +485,12 @@ async def main():
           "voice install declined -> nothing installed")
     check(len(card["args"]["steps"]) == 2 and card["args"]["steps"][1]["run_command"] and card["args"]["author"] == "octo-cat",
           "voice install card lists every step with run_command flagged and the author")
+    check(card.get("voice_approvable") is False,
+          "a skill with run_command steps installs only with a click (spoken yes refused) (review L3)")
+    plain_sock = FakeSocket(pending, lambda m: (False, None))
+    await dispatcher.dispatch("install_shared_skill", {"name": "just_time"}, plain_sock, pending)
+    check(plain_sock.cards() and plain_sock.cards()[0].get("voice_approvable") is True,
+          "a skill without commands can still be installed by voice")
     approver = FakeSocket(pending, lambda m: (True, "always"))
     result = await dispatcher.dispatch("install_shared_skill", {"name": "tidy_stamp"}, approver, pending)
     check(result["ok"] and installed_names() == ["tidy_stamp"], "voice install approved -> installed")

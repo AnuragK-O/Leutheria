@@ -339,8 +339,11 @@ def _spoken_path_reason(path: str, why: str) -> str:
 
 
 async def _confirm(
-    tool_name: str, args: dict, websocket, pending: dict, intro_text: str = "", reasons: list = None
+    tool_name: str, args: dict, websocket, pending: dict, intro_text: str = "", reasons: list = None,
+    click_only: bool = False,
 ) -> tuple:
+    """click_only: a spoken yes can't approve this card (as for a command
+    voice_confirm.needs_click flags); a spoken no still cancels it."""
     if websocket is None or pending is None:
         # No interactive channel to confirm through (e.g. dispatch called
         # directly outside a live connection) -- fail closed, not open.
@@ -350,7 +353,7 @@ async def _confirm(
     future = asyncio.get_running_loop().create_future()
     pending[confirmation_id] = future
     reasons = reasons or []
-    voice_yes = not (tool_name == "run_command" and voice_confirm.needs_click(args.get("cmd")))
+    voice_yes = not (click_only or (tool_name == "run_command" and voice_confirm.needs_click(args.get("cmd"))))
     _voice_yes_allowed[confirmation_id] = voice_yes
 
     await websocket.send(

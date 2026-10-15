@@ -1472,6 +1472,9 @@ nothing is listed, previewed or installed.** The production key is added at go-l
 - Install only after an approval that showed every step and its args: the UI's card
   (`registry_preview` then `registry_install`) or, by voice, `install_shared_skill(name)`,
   whose `_confirm` card's args are the same preview. The approval is never remembered.
+  When the skill has `run_command` steps the voice card is `voice_approvable: false`: it
+  installs only with a click on the card, where the commands are written out (a spoken
+  "no" still cancels).
 - Stored as `generated/<name>.json` with `source: "imported:<content_hash>"` and the
   publish metadata; author, version, review, `first_run_done` go in a **record** beside it,
   `generated/imported/<name>.json`, never in the skill. The record is what makes a skill

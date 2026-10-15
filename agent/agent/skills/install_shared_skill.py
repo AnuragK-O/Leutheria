@@ -34,15 +34,20 @@ async def run(args: dict, websocket, pending: dict) -> dict:
     if conflict:
         return conflict
 
-    card =registry_client.approval_card(entry, definition)
+    card = registry_client.approval_card(entry, definition)
     steps = len(card["steps"])
     intro = (
         f"Install the shared skill {card['name']}, version {card['version']}, by {card['author']}? "
         f"It has {steps} step{'s' if steps != 1 else ''}"
         + (", including shell commands that will ask every time they run" if card["has_run_command"] else "")
-        + ". Every step is on the card. Should I install it?"
+        + ". Every step is on the card."
+        + ("" if card["has_run_command"] else " Should I install it?")
     )
-    approved, _ = await _confirm("install_shared_skill", card, websocket, pending, intro)
+    # A skill with shell commands installs only with a click on the card,
+    # where its commands are written out (review L3): a spoken yes to a
+    # summary is not a reading of them. A spoken no still cancels.
+    approved, _ = await _confirm("install_shared_skill", card, websocket, pending, intro,
+                                 click_only=card["has_run_command"])
     if not approved:
         log_event("shared_skill_install_declined", name=card["name"], content_hash=card["content_hash"])
         return {"ok": False, "error": "the install was declined (or the card timed out)"}
