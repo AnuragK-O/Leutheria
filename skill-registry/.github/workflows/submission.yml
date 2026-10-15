@@ -170,6 +170,17 @@ jobs:
             review)
               gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label needs-human-review ;;
             merge)
+              # The structural check read the PR's base; main may have moved.
+              # If another PR has since claimed this name, refuse before merging
+              # (record_review.py checks again after, for the window in between).
+              rm -rf owner-check
+              git clone --quiet --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" owner-check
+              if ! python base/tools/record_review.py --repo owner-check --path "$SKILL_PATH" --verdict "$verdict" \
+                  --author "$PR_AUTHOR" --check-owner-only; then
+                gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "This name was published by someone else while this PR was open; please choose another name."
+                gh pr close "$PR" --repo "$GITHUB_REPOSITORY"
+                exit 0
+              fi
               # --match-head-sha: merge exactly the commit that was screened.
               gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --squash --match-head-sha "$HEAD_SHA"
               # Versions are assigned from main as it is when the record is

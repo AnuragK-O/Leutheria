@@ -10,7 +10,9 @@ sha256 and size, a plain summary, requires and has_run_command, and whether
 it is yanked. A file without a record is pending and left out. Any other
 inconsistency -- a record without its file, a mismatched record, a
 non-yanked file that no longer validates (say a tool it uses was removed:
-yank it) -- fails the build rather than silently dropping a skill.
+yank it), one name with records by two authors -- fails the build rather
+than silently dropping a skill or letting one author's version update
+another's.
 
 If the result equals the existing index apart from generated_at, the file is
 left untouched (so its signature stays valid and nothing is committed).
@@ -86,6 +88,12 @@ def build(repo: Path, leutheria: Path, catalog_path: Path, now: str):
         })
     for name, digest in sorted(yanked - {(e["name"], e["content_hash"]) for e in entries}):
         errors.append(f"yanked.json names {name}/{digest[:12]}, which is not published")
+    authors = {}
+    for e in entries:
+        authors.setdefault(e["name"], set()).add(str(e["author"]).lower())
+    for name, who in sorted(authors.items()):
+        if len(who) > 1:
+            errors.append(f"{name} has records by more than one author ({len(who)}); a name has one owner")
     seen = {}
     for e in entries:
         key = (e["name"], e["version"])

@@ -58,7 +58,11 @@ By submitting you dedicate the skill file to the public domain under CC0 1.0 (se
   `screen/screen.py` (screening, only if structure passed), `tools/decide.py` (decision
   table). On merge it squash-merges exactly the screened head (`--match-head-sha`), writes
   the review record with `tools/record_review.py` (which assigns the version: previous max
-  for the name + 1, fixed forever), and calls `publish.yml`.
+  for the name + 1, fixed forever), and calls `publish.yml`. Name ownership is checked three
+  times: against the PR's base (structural), against current main just before merging, and
+  by `record_review.py` against main as it is when the record is written, so two PRs racing
+  for one new name can't make the second "version 2" of the first's skill. `build_index.py`
+  also fails if any name has records by more than one author.
 - **`publish.yml`** (push to main, called, or manual): `tools/build_index.py`,
   `tools/sign_index.py`, `tools/verify_index.py`, and commits `index.json` + `.sig` if
   they changed. A skill file without a review record is never indexed, so a file that

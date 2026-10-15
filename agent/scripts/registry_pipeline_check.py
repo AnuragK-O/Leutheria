@@ -345,6 +345,36 @@ check(r.returncode == 0 and "pending" in r.stdout and "pushed_directly" not in (
       "a skill file without a review record is not indexed")
 shutil.rmtree(repo / "skills" / "pushed_directly")
 
+# M1: two PRs claim one new name from the same base. Both pass the structural check (it reads
+# the base); the second must be refused at record time, against main as it is then.
+race = TMP / "race"
+shutil.rmtree(race, ignore_errors=True)
+shutil.copytree(repo, race)
+claim_b = skill(name="race_name")
+claim_c = skill(name="race_name", steps=[{"tool": "create_folder", "args": {"path": "{place}/other"}}])
+for who, d in (("bob", claim_b), ("carol", claim_c)):
+    rc, res = struct(lambda h, d=d: add(h, d))  # struct() checks as alice; the name is new, so author is moot
+    check(rc == 0, f"{who}'s claim passes the structural check against the shared base")
+rel_b = f"skills/race_name/{claim_b['content_hash']}.json"
+rel_c = f"skills/race_name/{claim_c['content_hash']}.json"
+add(race, claim_b)
+check(tool("record_review.py", "--repo", race, "--path", rel_b, "--verdict", "auto_approved",
+           "--author", "bob").returncode == 0, "first claim of a new name is recorded")
+r = tool("record_review.py", "--repo", race, "--path", rel_c, "--verdict", "auto_approved", "--author", "carol",
+         "--check-owner-only")
+check(r.returncode == 1 and "someone else" in r.stderr, "the pre-merge owner check refuses the second claimant")
+check(tool("record_review.py", "--repo", race, "--path", rel_c, "--verdict", "auto_approved", "--author", "bob",
+           "--check-owner-only").returncode == 0, "the pre-merge owner check lets the owner through")
+add(race, claim_c)
+r = tool("record_review.py", "--repo", race, "--path", rel_c, "--verdict", "auto_approved", "--author", "carol")
+check(r.returncode == 1 and "someone else" in r.stderr and not (race / "reviews" / "race_name" /
+      f"{claim_c['content_hash']}.json").exists(), "record_review refuses a second author for a name on main")
+write(race / "reviews" / "race_name" / f"{claim_c['content_hash']}.json",
+      {**json.loads((race / "reviews" / "race_name" / f"{claim_b['content_hash']}.json").read_text()),
+       "content_hash": claim_c["content_hash"], "version": 2, "author": "carol"})
+r = tool("build_index.py", "--repo", race, "--leutheria", REPO, "--out", TMP / "race.json")
+check(r.returncode == 1 and "more than one author" in r.stderr, f"build_index fails on two authors for one name: {r.stderr}")
+
 
 def tampered(mutate, label):
     copy = TMP / "tamper"
@@ -453,6 +483,7 @@ check("human_approval.py verify" in sub and "--head-sha \"$HEAD_SHA\"" in sub an
       "the label only triggers a check; approval comes from a review bound to the head sha")
 check(sub.count("--override-static-reject") == 1 and "LABEL\" = human-approved-override" in sub,
       "the static-reject override needs its own label")
+check(sub.index("--check-owner-only") < sub.index("gh pr merge"), "name ownership is re-checked against main before merging")
 
 shutil.rmtree(TMP, ignore_errors=True)
 print(f"\nall {passed} checks passed")
