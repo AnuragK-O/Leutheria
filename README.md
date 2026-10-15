@@ -559,36 +559,25 @@ renderer never sees or supplies a URL). If the agent says the file is too long f
 without it: the button then reads *Copy and open GitHub*. The user submits the pull request
 from their own GitHub account.
 
-Control messages the UI sends (answered as `control_result` with the same `request_id`;
-shapes the spec (`plans/skill-registry-spec.md`) leaves open are the UI's assumptions,
-marked *):
+Control messages the UI sends are answered as `control_result` with the same
+`request_id`; their shapes are the agent's, listed under "Shared-skill registry
+(`registry_*`)" in the protocol reference below -- one shape per message, and the mock
+agent (`scripts/mock-registry.js`) returns exactly those. The UI keys on `error_code`,
+never on error text:
 
-```
-{"type": "registry_list", "refresh"*: true}
-  -> {"ok": true, "index_ok": true, "skills": [<index entry> + "installed_version"?, "update_available"?],
-      "installed_count"*: 3, "cap"*: 20, "key_id"*: "...", "checked_at"*: "<iso>"}
-  -> {"ok": true, "index_ok": false, "error": "...", "error_code"*: "verification_failed" |
-      "no_signing_key" | "unavailable", "skills": []}
-{"type": "registry_preview", "name": "...", "content_hash": "..."}
-  -> {"ok": true, "skill": {name, description, input_schema, steps, ...},
-      "entry"*: <index entry>, "model_description"*: "Shared skill by ..."}
-{"type": "registry_install", "name": "...", "content_hash": "..."}
-  -> {"ok": true}  |  {"ok": false, "error": "...", "error_code"*: "cap_reached" | "yanked" | <index code>}
-{"type": "registry_share_preview", "skill": "<learned skill name>"}
-  -> {"ok": true, "definition": {...}, "target_path": "skills/<name>/<hash>.json",
-      "changes"*: [{"field", "before", "after" (null = removed), "note"}],
-      "flagged"*: [{"field", "value", "reason"}], "repo"*: "...", "too_long"*: false}
-{"type": "registry_share", "skill": "<learned skill name>"}
-  -> {"ok": true, "url": "https://github.com/...", "target_path": "...",
-      "too_long"*: true, "json"*: "<file text, only when too_long>"}
-```
+| `error_code` | Where | The UI shows |
+|---|---|---|
+| `verification_failed` | any (signature, unknown key, malformed or older index, file sha256/size/content_hash, validate.py) | red "Index refused"; nothing installable |
+| `no_signing_key` | any | red "no registry key configured" |
+| `unavailable` | list (ok:false = nothing cached; ok:true + `stale` = last verified index shown), preview, install | neutral notice |
+| `cap_reached` / `yanked` / `not_found` / `refused` | install, preview | the card's "Not installed" callout |
+| `not_shareable` / `not_found` / `bad_request` | share_preview, share | "Can't share this one" |
 
-Without `error_code` the UI reads the error text the cautious way: anything about a key,
-signature, hash or verification is drawn as a refused index. In the inventory an imported
-skill is `origin: "imported"` with `registry`*: `{author, version, content_hash, review,
-first_run_pending}`. The mock agent (`scripts/mock-registry.js`) implements all of this,
-and a typed `registry offline` / `tampered` / `nokey` / `full` / `badshare` / `ok` switches
-its state.
+In the inventory an imported skill is `origin: "imported"` (agent-side it is a generated
+skill with a registry record), `deletable: true`, with `registry`: the record
+(`name, content_hash, version, author, summary, review, has_run_command, published_at,
+installed_at, first_run_done`) and `author_description`. A typed `registry offline` /
+`stale` / `tampered` / `nokey` / `full` / `badshare` / `ok` switches the mock's state.
 
 **The Voice view.** Edits collect in a draft; **Save changes** sends one
 `set_voice_settings` carrying only the keys you changed, and **Revert** drops the draft.
@@ -1981,10 +1970,14 @@ Rules and trust chain: "Shared skills (the public registry)" above.
 #     "installed": [{name, content_hash, version, author, summary, review, has_run_command,
 #                    published_at, installed_at, first_run_done,
 #                    "withdrawn": bool, "in_index": bool, "update_available": bool}, ...],
-#     "stale": true, "error": "..."}   # only when the fetch failed and the last verified
-#                                      # index (re-verified from cache) was used instead
-# no verified index at all: {"ok": false, "index_ok": false, "error": "...", "skills": [],
-#                            "installed": [...]}  -- e.g. no signing key configured
+#     "key_id": "<signing key id>", "checked_at": "<iso of this verification>",
+#     "stale": true, "error_code": "unavailable", "error": "..."}
+#       # stale/error_code/error only when the registry couldn't be REACHED and the last
+#       # verified index (re-verified from cache) was used instead
+# refused or nothing verified: {"ok": false, "index_ok": false, "error_code": "...",
+#   "error": "...", "skills": [], "installed": [...], "imported_max": 20}
+#   error_code: verification_failed | no_signing_key | unavailable. A verification
+#   failure is never answered from the cache (BUGS.md #69).
 {"type": "registry_preview", "name": "tidy_downloads", "content_hash": "<sha256>", "request_id": "2"}
 # -> {..., "ok": true, name, version, content_hash, author, summary, review, has_run_command,
 #     "steps": [{tool, args, safety, "run_command": bool}, ...], input_schema,
@@ -1994,10 +1987,12 @@ Rules and trust chain: "Shared skills (the public registry)" above.
 # send only after the user approved the card for exactly this content_hash; an installed
 # older version of the same name is replaced (that card is the update's approval)
 # -> {..., "ok": true, "name", "id", "content_hash", "version", "replaced": bool}
-#    or ok:false: cap reached, yanked, name taken, any verification failure
+#    or {"ok": false, "error_code": cap_reached | yanked | not_found | refused (name taken)
+#        | verification_failed | no_signing_key | unavailable | bad_request, "error"}
 {"type": "registry_share_preview", "skill": "my_learned_skill", "parameterize": ["f2"], "request_id": "4"}
 # -> {..., "ok": true, "skill", "path": "skills/<name>/<hash>.json", "content_hash",
-#     "definition": {...the file...}, "json": "<file text>", "has_run_command",
+#     "repo": "AnuragK-O/leutheria-skills", "too_long": bool (registry_share will use
+#     the clipboard), "definition": {...the file...}, "json": "<file text>", "has_run_command",
 #     "changes": [{where, before, after, why}], "diff": "<unified diff>",
 #     "flags": [{id, where, value, kind, arg, param?}]}
 #    kind: email | url | ip_address | phone_number | token_or_id | someone_elses_home |
@@ -2009,7 +2004,8 @@ Rules and trust chain: "Shared skills (the public registry)" above.
 #     "copy_to_clipboard": false}
 #    URL over 8000 chars: "url" has only the filename, "copy_to_clipboard": true and
 #    "clipboard_text" is the JSON. The agent opens and copies nothing; main.js does both
-#    (https://github.com/ only). Only learned skills can be shared.
+#    (only https://github.com/AnuragK-O/leutheria-skills/new/main?...). Only learned
+#    skills can be shared (else error_code not_shareable).
 ```
 
 #### Overlay panels (`panel`)

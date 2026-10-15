@@ -1078,12 +1078,16 @@ ipcMain.handle("registry-share-preview", (_event, skill) =>
   sendControlRequest({ type: "registry_share_preview", skill }, REGISTRY_TIMEOUT_MS)
 );
 
-/** True only for an https URL on github.com itself: the one place a share opens. */
+/** True only for the registry repo's "new file" page on github.com: the one
+ *  place a share opens (core/registry_client.py SHARE_REPO + /new/main). */
+const SHARE_NEW_PATH = "/AnuragK-O/leutheria-skills/new/main";
 function isGithubUrl(text) {
-  if (typeof text !== "string" || !text.startsWith("https://github.com/")) return false;
+  if (typeof text !== "string" || !text.startsWith(`https://github.com${SHARE_NEW_PATH}?`)) return false;
   try {
     const url = new URL(text);
-    return url.protocol === "https:" && url.hostname === "github.com" && !url.username && !url.password && !url.port;
+    return (
+      url.protocol === "https:" && url.hostname === "github.com" && !url.username && !url.password && !url.port && url.pathname === SHARE_NEW_PATH && !url.hash
+    );
   } catch (_err) {
     return false;
   }
@@ -1092,8 +1096,8 @@ function isGithubUrl(text) {
 // Share: the agent builds the URL of GitHub's "new file" page, prefilled. This
 // process opens it -- never a URL from a renderer, and never anything but
 // https://github.com/. When the file is too long to go in the URL, the agent
-// says so and sends the JSON: it goes on the clipboard and the page opens
-// without it, for the user to paste. Under LEUTHERIA_TEST_HOOKS neither the
+// says so (copy_to_clipboard) and sends the JSON (clipboard_text): it goes on
+// the clipboard and the page opens without it, for the user to paste. Under LEUTHERIA_TEST_HOOKS neither the
 // browser nor the clipboard is touched; the capture script reads what would
 // have happened from __leutheriaTest.shared().
 const sharedRecord = [];
@@ -1102,18 +1106,18 @@ ipcMain.handle("registry-share", async (_event, skill) => {
   if (!result.ok) return { ok: false, error: result.error || "The agent couldn't prepare the share.", error_code: result.error_code };
   if (!isGithubUrl(result.url)) {
     log(`[share] refused to open a URL that isn't https://github.com/: ${String(result.url).slice(0, 80)}`);
-    return { ok: false, error: "The share link didn't point at github.com, so it wasn't opened.", error_code: "bad_url" };
+    return { ok: false, error: "The share link didn't point at github.com/AnuragK-O/leutheria-skills, so it wasn't opened.", error_code: "bad_url" };
   }
-  const copy = Boolean(result.too_long) && typeof result.json === "string";
-  if (result.too_long && !copy) return { ok: false, error: "The file is too long for a link and the agent sent no copy of it." };
+  const copy = Boolean(result.copy_to_clipboard) && typeof result.clipboard_text === "string";
+  if (result.copy_to_clipboard && !copy) return { ok: false, error: "The file is too long for a link and the agent sent no copy of it." };
   if (TEST_HOOKS) {
-    sharedRecord.push({ url: result.url, copied: copy ? result.json.length : 0 });
+    sharedRecord.push({ url: result.url, copied: copy ? result.clipboard_text.length : 0 });
   } else {
-    if (copy) clipboard.writeText(result.json);
+    if (copy) clipboard.writeText(result.clipboard_text);
     await shell.openExternal(result.url);
   }
   log(`[share] opened GitHub for ${skill}${copy ? " (file copied to the clipboard: too long for the link)" : ""}`);
-  return { ok: true, copied: copy, target_path: result.target_path || null };
+  return { ok: true, copied: copy, path: result.path || null };
 });
 // "Open in Library" from a panel: an explicit click, so bringing the main
 // window forward is what was asked for.

@@ -82,11 +82,20 @@ _PATH_RE = re.compile(r"index\.json|index\.json\.sig|skills/[a-z][a-z0-9_]{0,63}
 _ISO_RE = re.compile(r"\d{4}-\d\d-\d\dT[0-9:.]+(Z|[+-]\d\d:\d\d)?")
 _tls = ssl.create_default_context()
 _lock = threading.Lock()
-_memory = {"index": None, "verified_at": 0.0}
+_memory = {"index": None, "verified_at": 0.0, "key_id": None, "checked_at": None}
 
 
 class RegistryError(Exception):
-    pass
+    """`code` is the stable, machine-readable reason the UI keys on (README,
+    "Shared skills" shapes): unavailable (network, HTTP, size, deadline --
+    a cached verified index may still be shown), verification_failed (a
+    signature, hash, content_hash, structure or rollback check failed: a
+    security state, never papered over with the cache), no_signing_key,
+    not_found, yanked, cap_reached, bad_request, not_shareable, refused."""
+
+    def __init__(self, message: str, code: str = "unavailable"):
+        super().__init__(message)
+        self.code = code
 
 
 # --- configuration ------------------------------------------------------------
@@ -148,7 +157,7 @@ def _fetch(path: str, cap: int) -> bytes:
     watchdog shuts the socket when it passes, so a server dripping bytes
     can't hold the call open (the fetch_url pattern, review M2)."""
     if not _PATH_RE.fullmatch(path):
-        raise RegistryError(f"refusing to fetch {path!r}")
+        raise RegistryError(f"refusing to fetch {path!r}", "bad_request")
     base = urllib.parse.urlsplit(registry_base())
     https = base.scheme == "https"
     port = base.port or (443 if https else 80)
@@ -218,34 +227,40 @@ def _reject_constant(constant):
 
 def verify_index(index_bytes: bytes, sig_bytes: bytes) -> dict:
     """Signature first, then structure. Returns the parsed index."""
+    return _verify(index_bytes, sig_bytes)[0]
+
+
+def _verify(index_bytes: bytes, sig_bytes: bytes):
+    """(index, key_id): verify_index, plus which key signed it."""
     from cryptography.exceptions import InvalidSignature
 
     keys = accepted_keys()
     if not keys:
-        raise RegistryError("no registry signing key is configured, so shared skills are unavailable")
+        raise RegistryError("no registry signing key is configured, so shared skills are unavailable", "no_signing_key")
+    bad = "verification_failed"
     try:
         sig = json.loads(sig_bytes.decode("utf-8"))
         key_id, signature = sig["key_id"], base64.b64decode(sig["sig"], validate=True)
     except (ValueError, KeyError, TypeError, UnicodeDecodeError, binascii.Error):
-        raise RegistryError("index signature file is malformed") from None
+        raise RegistryError("index signature file is malformed", bad) from None
     key = keys.get(str(key_id))
     if key is None:
-        raise RegistryError(f"index is signed with an unknown key ({str(key_id)[:40]})")
+        raise RegistryError(f"index is signed with an unknown key ({str(key_id)[:40]})", bad)
     try:
         key.verify(signature, index_bytes)
     except InvalidSignature:
-        raise RegistryError("index signature does not verify") from None
+        raise RegistryError("index signature does not verify", bad) from None
     try:
         index = json.loads(index_bytes.decode("utf-8"), parse_constant=_reject_constant)
     except (ValueError, UnicodeDecodeError):
-        raise RegistryError("index is not valid JSON") from None
+        raise RegistryError("index is not valid JSON", bad) from None
     _check_index(index)
-    return index
+    return index, str(key_id)
 
 
 def _check_index(index) -> None:
     def bad(why):
-        raise RegistryError(f"index is malformed: {why}")
+        raise RegistryError(f"index is malformed: {why}", "verification_failed")
 
     if not isinstance(index, dict) or index.get("format") != 1 or not isinstance(index.get("skills"), list):
         bad("not a format 1 index")
@@ -303,9 +318,14 @@ def _read_cache():
 
 def get_index(refresh: bool = False):
     """(index, stale_error). A fresh fetch unless one was verified in the
-    last INDEX_FRESH_SECONDS; if fetching fails, the last verified index
-    with the error, so the Library still shows what's installed.
-    Raises RegistryError when there is nothing verified to show."""
+    last INDEX_FRESH_SECONDS. If the registry can't be reached (code
+    "unavailable"), the last verified index with the error, so the Library
+    still shows what's installed. A verification failure (signature, key,
+    structure, rollback) is never answered from the cache: what the
+    registry serves right now failed its check, and that is what the UI
+    must show (BUGS.md #69). The previous index is kept only to catch a
+    later rollback, and the next call fetches again. Raises RegistryError
+    when there is nothing verified to show."""
     with _lock:
         if not refresh and _memory["index"] is not None and time.monotonic() - _memory["verified_at"] < INDEX_FRESH_SECONDS:
             return _memory["index"], None
@@ -313,15 +333,17 @@ def get_index(refresh: bool = False):
         try:
             index_bytes = _fetch("index.json", MAX_INDEX_BYTES)
             sig_bytes = _fetch("index.json.sig", MAX_SIG_BYTES)
-            index = verify_index(index_bytes, sig_bytes)
+            index, key_id = _verify(index_bytes, sig_bytes)
             if previous is not None and _when(index["generated_at"]) < _when(previous["generated_at"]):
-                raise RegistryError("the registry served an index older than one already seen here")
+                raise RegistryError("the registry served an index older than one already seen here", "verification_failed")
         except RegistryError as e:
-            log_event("registry_index_failed", error=str(e))
-            if previous is None or not accepted_keys():
+            log_event("registry_index_failed", error=str(e), code=e.code)
+            if previous is None or e.code != "unavailable" or not accepted_keys():
+                _memory.update(index=previous, verified_at=0.0, key_id=None, checked_at=None)
                 raise
             return previous, str(e)
-        _memory.update(index=index, verified_at=time.monotonic())
+        _memory.update(index=index, verified_at=time.monotonic(), key_id=key_id,
+                       checked_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
         try:
             path = _cache_path()
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -337,7 +359,7 @@ def get_index(refresh: bool = False):
 def reset_cache() -> None:
     """For checks: forget the in-memory index (the file cache stays)."""
     with _lock:
-        _memory.update(index=None, verified_at=0.0)
+        _memory.update(index=None, verified_at=0.0, key_id=None, checked_at=None)
 
 
 def find_entry(index: dict, name: str, content_hash: str = None):
@@ -355,19 +377,19 @@ def fetch_verified_skill(entry: dict) -> dict:
     source set to imported:<hash>. Raises RegistryError."""
     data = _fetch(entry["path"], MAX_SKILL_BYTES)
     if len(data) != entry["size"]:
-        raise RegistryError(f"{entry['name']}: file size does not match the index")
+        raise RegistryError(f"{entry['name']}: file size does not match the index", "verification_failed")
     if hashlib.sha256(data).hexdigest() != entry["sha256"]:
-        raise RegistryError(f"{entry['name']}: file does not match the index's sha256")
+        raise RegistryError(f"{entry['name']}: file does not match the index's sha256", "verification_failed")
     try:
         definition = json.loads(data.decode("utf-8"), parse_constant=_reject_constant)
     except (ValueError, UnicodeDecodeError):
-        raise RegistryError(f"{entry['name']}: file is not valid JSON") from None
+        raise RegistryError(f"{entry['name']}: file is not valid JSON", "verification_failed") from None
     if not isinstance(definition, dict):
-        raise RegistryError(f"{entry['name']}: file is not a skill")
+        raise RegistryError(f"{entry['name']}: file is not a skill", "verification_failed")
     if "source" in definition or "source_signature" in definition:
-        raise RegistryError(f"{entry['name']}: a registry file may not carry source fields")
+        raise RegistryError(f"{entry['name']}: a registry file may not carry source fields", "verification_failed")
     if definition.get("name") != entry["name"] or definition.get("content_hash") != entry["content_hash"]:
-        raise RegistryError(f"{entry['name']}: file name or content_hash does not match the index")
+        raise RegistryError(f"{entry['name']}: file name or content_hash does not match the index", "verification_failed")
     try:
         # The registry's own contract for a shared file (refuses source
         # fields, content_hash must recompute), from the registry engineer's
@@ -378,12 +400,12 @@ def fetch_verified_skill(entry: dict) -> dict:
         definition["source"] = f"imported:{entry['content_hash']}"
         validate.validate(definition, **registry.validation_kwargs())
     except (SkillValidationError, KeyError, TypeError, AttributeError) as e:
-        raise RegistryError(f"{entry['name']}: not a valid skill here: {e}") from None
+        raise RegistryError(f"{entry['name']}: not a valid skill here: {e}", "verification_failed") from None
     if sorted(set(entry["requires"])) != definition["requires"]:
-        raise RegistryError(f"{entry['name']}: index requires does not match the steps")
+        raise RegistryError(f"{entry['name']}: index requires does not match the steps", "verification_failed")
     has_rc = any(s["tool"] == "run_command" for s in definition["steps"])
     if bool(entry.get("has_run_command")) != has_rc:
-        raise RegistryError(f"{entry['name']}: index has_run_command does not match the steps")
+        raise RegistryError(f"{entry['name']}: index has_run_command does not match the steps", "verification_failed")
     return definition
 
 
@@ -393,9 +415,9 @@ def resolve(name: str, content_hash: str = None):
     index, _ = get_index(refresh=False)
     entry = find_entry(index, name, content_hash)
     if entry is None:
-        raise RegistryError(f"no shared skill {name!r}" + (" with that content_hash" if content_hash else ""))
+        raise RegistryError(f"no shared skill {name!r}" + (" with that content_hash" if content_hash else ""), "not_found")
     if entry.get("yanked"):
-        raise RegistryError(f"{name} version {entry['version']} was withdrawn from the registry")
+        raise RegistryError(f"{name} version {entry['version']} was withdrawn from the registry", "yanked")
     return entry, fetch_verified_skill(entry)
 
 
@@ -450,7 +472,7 @@ def commit_install(entry: dict, definition: dict) -> dict:
     user just approved); anything else of that name is refused."""
     current = installed()
     if entry["name"] not in current and len(current) >= max_imported():
-        return {"ok": False, "error": f"at most {max_imported()} shared skills can be installed; remove one first"}
+        return {"ok": False, "error_code": "cap_reached", "error": f"at most {max_imported()} shared skills can be installed; remove one first"}
     record = {
         "name": entry["name"],
         "content_hash": entry["content_hash"],
@@ -464,6 +486,8 @@ def commit_install(entry: dict, definition: dict) -> dict:
         "first_run_done": False,
     }
     result = registry.register_skill(definition, record=record, replace=entry["name"] in current)
+    if not result.get("ok"):
+        result.setdefault("error_code", "refused")
     if result.get("ok") and not result.get("unchanged"):
         log_event("shared_skill_installed", name=entry["name"], content_hash=entry["content_hash"],
                   version=entry["version"], replaced=bool(result.get("replaced")))
@@ -500,9 +524,10 @@ def _list_result(index, stale_error) -> dict:
             and newest[name]["version"] > (rec.get("version") or 0),
         })
     result = {"ok": True, "index_ok": True, "skills": skills, "installed": installed_list,
-              "imported_max": max_imported(), "generated_at": index.get("generated_at")}
+              "imported_max": max_imported(), "generated_at": index.get("generated_at"),
+              "key_id": _memory["key_id"], "checked_at": _memory["checked_at"]}
     if stale_error:
-        result.update(stale=True, error=stale_error)
+        result.update(stale=True, error_code="unavailable", error=stale_error)
     return result
 
 
@@ -517,7 +542,7 @@ async def handle_control(payload: dict) -> dict:
             try:
                 index, stale = await loop.run_in_executor(None, get_index, bool(payload.get("refresh")))
             except RegistryError as e:
-                return {"ok": False, "index_ok": False, "error": str(e), "skills": [],
+                return {"ok": False, "index_ok": False, "error_code": e.code, "error": str(e), "skills": [],
                         "installed": [{**rec, "withdrawn": False, "in_index": False, "update_available": False}
                                       for _, rec in sorted(installed().items())],
                         "imported_max": max_imported()}
@@ -526,7 +551,7 @@ async def handle_control(payload: dict) -> dict:
         if kind in ("registry_preview", "registry_install"):
             name, content_hash = payload.get("name"), payload.get("content_hash")
             if not isinstance(name, str) or not isinstance(content_hash, str) or not HASH_RE.fullmatch(content_hash):
-                return {"ok": False, "error": "name and content_hash are required"}
+                return {"ok": False, "error_code": "bad_request", "error": "name and content_hash are required"}
             entry, definition = await loop.run_in_executor(None, resolve, name, content_hash)
             if kind == "registry_preview":
                 return {"ok": True, **approval_card(entry, definition)}
@@ -539,9 +564,9 @@ async def handle_control(payload: dict) -> dict:
                 return preview
             return share_link(preview)
     except RegistryError as e:
-        log_event("registry_refused", type=kind, name=str(payload.get("name") or payload.get("skill")), error=str(e))
-        return {"ok": False, "error": str(e)}
-    return {"ok": False, "error": f"unknown registry message: {kind}"}
+        log_event("registry_refused", type=kind, name=str(payload.get("name") or payload.get("skill")), error=str(e), code=e.code)
+        return {"ok": False, "error_code": e.code, "error": str(e)}
+    return {"ok": False, "error_code": "bad_request", "error": f"unknown registry message: {kind}"}
 
 
 # --- search (worker-thread tool) -------------------------------------------------
@@ -597,13 +622,13 @@ def share_preview(skill_name, parameterize=()) -> dict:
     diff of what changed, flagged personal constants, and its target path."""
     skill = registry.SKILLS.get(skill_name) if isinstance(skill_name, str) else None
     if skill is None:
-        return {"ok": False, "error": f"no such skill: {skill_name}"}
+        return {"ok": False, "error_code": "not_found", "error": f"no such skill: {skill_name}"}
     if skill.get("origin") != "generated":
-        return {"ok": False, "error": f"{skill_name} is built in; only skills Leutheria learned can be shared"}
+        return {"ok": False, "error_code": "not_shareable", "error": f"{skill_name} is built in; only skills Leutheria learned can be shared"}
     if skill.get("registry") is not None:
-        return {"ok": False, "error": f"{skill_name} came from the registry already"}
+        return {"ok": False, "error_code": "not_shareable", "error": f"{skill_name} came from the registry already"}
     if not isinstance(parameterize, list) or not all(isinstance(p, str) for p in parameterize):
-        return {"ok": False, "error": "parameterize must be a list of flag ids"}
+        return {"ok": False, "error_code": "bad_request", "error": "parameterize must be a list of flag ids"}
     try:
         on_disk = json.loads(Path(skill["path"]).read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -626,13 +651,18 @@ def share_preview(skill_name, parameterize=()) -> dict:
         }
         validate.validate({**shared, "source": f"imported:{h}"}, **registry.validation_kwargs())
     except (SkillValidationError, KeyError, TypeError, ValueError) as e:
-        return {"ok": False, "error": f"the shared copy would not be valid: {e}"}
+        return {"ok": False, "error_code": "not_shareable", "error": f"the shared copy would not be valid: {e}"}
     text = json.dumps(shared, indent=2, ensure_ascii=False) + "\n"
+    path = f"skills/{content['name']}/{h}.json"
     return {
         "ok": True,
         "skill": skill_name,
-        "path": f"skills/{content['name']}/{h}.json",
+        "path": path,
         "content_hash": h,
+        "repo": SHARE_REPO.removeprefix("https://github.com/"),
+        # Whether registry_share will have to put the file on the clipboard
+        # (the same test share_link makes), so the UI can say so up front.
+        "too_long": len(_share_url(path, text)) > MAX_SHARE_URL,
         "definition": shared,
         "json": text,
         "changes": out["changes"],
@@ -642,13 +672,17 @@ def share_preview(skill_name, parameterize=()) -> dict:
     }
 
 
+def _share_url(path: str, text: str) -> str:
+    return f"{SHARE_REPO}/new/{SHARE_BRANCH}?" + urllib.parse.urlencode({"filename": path, "value": text}, quote_via=urllib.parse.quote)
+
+
 def share_link(preview: dict) -> dict:
     """A github.com "new file" URL prefilled with the path and JSON. The
     agent opens nothing; main.js opens it (https://github.com/ only). Too
     long for a URL: the page without the content, and the JSON for the UI
     to put on the clipboard."""
     base = f"{SHARE_REPO}/new/{SHARE_BRANCH}"
-    full = base + "?" + urllib.parse.urlencode({"filename": preview["path"], "value": preview["json"]}, quote_via=urllib.parse.quote)
+    full = _share_url(preview["path"], preview["json"])
     result = {"ok": True, "skill": preview["skill"], "path": preview["path"], "content_hash": preview["content_hash"]}
     if len(full) <= MAX_SHARE_URL:
         result.update(url=full, copy_to_clipboard=False)

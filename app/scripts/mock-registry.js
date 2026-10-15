@@ -1,18 +1,19 @@
 /* The public skill registry, as scripts/mock-agent.js plays it: a signed
    index of shared skills, their full definitions, installs, and the share
-   export of a learned skill. Shapes follow plans/skill-registry-spec.md
-   ("Index", "UI (D)"); where the spec leaves a field open, the shape used here
-   is the one documented in README.md ("Shared skills"). Values are made up.
+   export of a learned skill. Shapes are exactly what core/registry_client.py
+   sends (README.md, "Shared skills": the message shapes table); keep the two
+   in step. Values are made up.
 
    What's installed is read from the mock inventory (skills with
    origin "imported"), so delete_skill, install and the Library list agree.
 
    Typed commands switch its state, the way "break settings" does:
-     registry offline   index unavailable (network)
+     registry offline   index unavailable (network), nothing cached
+     registry stale     unreachable, the last verified index shown (stale)
      registry tampered  the index signature doesn't verify
      registry nokey     no registry public key configured
      registry full      the imported-skill cap is reached
-     registry badshare  registry_share returns a non-GitHub URL (main.js must refuse it)
+     registry badshare  registry_share returns a github.com URL outside the registry repo (main.js must refuse it)
      registry ok        back to normal */
 
 const crypto = require("crypto");
@@ -49,8 +50,8 @@ const FILES = [
     description: "Fetch and fast-forward a git project, then list the commits since yesterday.",
     input_schema: { type: "object", properties: { project: { type: "string", description: "Project folder name under Projects." } }, required: ["project"] },
     steps: [
-      { tool: "run_command", args: { cmd: "git pull --ff-only", cwd: "~/Projects/{project}" } },
-      { tool: "run_command", args: { cmd: "git log --since=yesterday --oneline", cwd: "~/Projects/{project}" } },
+      { tool: "run_command", args: { cmd: "git -C ~/Projects/{project} pull --ff-only" } },
+      { tool: "run_command", args: { cmd: "git -C ~/Projects/{project} log --since=yesterday --oneline" } },
       { tool: "show_notification", args: { title: "{project} is up to date", message: "Pulled the latest changes." } },
     ],
   },
@@ -119,7 +120,7 @@ const FILES = [
     summary: "Convert every HEIC photo in a folder to JPEG.",
     description: "Convert HEIC photos to JPEG with sips.",
     input_schema: { type: "object", properties: { folder: { type: "string", description: "Folder with the photos." } }, required: ["folder"] },
-    steps: [{ tool: "run_command", args: { cmd: "sips -s format jpeg *.heic --out jpeg", cwd: "{folder}" } }],
+    steps: [{ tool: "run_command", args: { cmd: "sips -s format jpeg {folder}/*.heic --out {folder}/jpeg" } }],
   },
   {
     name: "daily_standup_notes",
@@ -212,14 +213,26 @@ function importedSkill(file) {
     last_used: null,
     created_at: fixtures.now() - 86400 * 2,
     deletable: true,
-    registry: {
-      author: file.author,
-      version: file.version,
-      content_hash: file.content_hash,
-      review: { ...file.review },
-      // Until one clean run, every step asks (enforced by the agent).
-      first_run_pending: true,
-    },
+    requires: file.requires,
+    author_description: file.description,
+    // The agent's registry record (skills/registry.py RECORD_KEYS).
+    registry: recordOf(file),
+  };
+}
+
+function recordOf(file) {
+  return {
+    name: file.name,
+    content_hash: file.content_hash,
+    version: file.version,
+    author: file.author,
+    summary: file.summary,
+    review: { ...file.review, screened_by: "claude-opus-5-5", screen_version: 1 },
+    has_run_command: file.requires.includes("run_command"),
+    published_at: iso(file.published),
+    installed_at: fixtures.now() - 86400 * 2,
+    // Until one clean run, every step asks (enforced by the agent).
+    first_run_done: false,
   };
 }
 
@@ -234,7 +247,7 @@ for (const [name, version, runs] of [
   const skill = importedSkill(find(name, version));
   skill.runs = runs;
   skill.last_used = fixtures.now() - 86400 * runs;
-  skill.registry.first_run_pending = false;
+  skill.registry.first_run_done = true;
   fixtures.inventory.skills.push(skill);
 }
 
@@ -242,7 +255,7 @@ const installed = () => fixtures.inventory.skills.filter((skill) => skill.origin
 
 // --- state ------------------------------------------------------------------------
 
-let mode = "ok"; // ok | unavailable | verification_failed | no_signing_key
+let mode = "ok"; // ok | unavailable | verification_failed | no_signing_key | stale
 let cap = 20;
 let badShare = false;
 
@@ -255,10 +268,11 @@ const ERRORS = {
 
 /** Handles a typed "registry ..." command; returns the reply text, or null. */
 function command(text) {
-  const match = /^registry (offline|tampered|nokey|full|badshare|ok)\b/i.exec(text.trim());
+  const match = /^registry (offline|stale|tampered|nokey|full|badshare|ok)\b/i.exec(text.trim());
   if (!match) return null;
   const word = match[1].toLowerCase();
   if (word === "offline") mode = "unavailable";
+  else if (word === "stale") mode = "stale";
   else if (word === "tampered") mode = "verification_failed";
   else if (word === "nokey") mode = "no_signing_key";
   else if (word === "full") cap = installed().length;
@@ -273,62 +287,117 @@ function command(text) {
 
 // --- control messages --------------------------------------------------------------
 
-function list() {
-  const base = { installed_count: installed().length, cap };
-  if (mode !== "ok") return { ok: true, index_ok: false, error_code: mode, error: ERRORS[mode], skills: [], ...base };
-  const mine = new Map(installed().map((skill) => [skill.name, skill.registry.version]));
+// skills: the newest non-withdrawn version of each name (+ installed_version,
+// update_available); installed: one record per installed name, with
+// withdrawn / in_index / update_available decided against the index.
+function newest() {
   const latest = new Map();
   for (const file of FILES) {
     if (file.yanked) continue;
-    if (!latest.has(file.name) || latest.get(file.name) < file.version) latest.set(file.name, file.version);
+    if (!latest.has(file.name) || latest.get(file.name).version < file.version) latest.set(file.name, file);
   }
-  return {
+  return latest;
+}
+
+function installedRecords(withIndex) {
+  const latest = newest();
+  return installed().map((skill) => {
+    const rec = skill.registry;
+    const file = FILES.find((item) => item.name === rec.name && item.content_hash === rec.content_hash);
+    const top = latest.get(rec.name);
+    return {
+      ...rec,
+      withdrawn: Boolean(withIndex && file && file.yanked),
+      in_index: Boolean(withIndex && file),
+      update_available: Boolean(withIndex && top && top.content_hash !== rec.content_hash && top.version > rec.version),
+    };
+  });
+}
+
+function list() {
+  if (mode !== "ok" && mode !== "stale") {
+    return { ok: false, index_ok: false, error_code: mode, error: ERRORS[mode], skills: [], installed: installedRecords(false), imported_max: cap };
+  }
+  const mine = new Map(installed().map((skill) => [skill.name, skill.registry]));
+  const result = {
     ok: true,
     index_ok: true,
+    skills: [...newest().values()]
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((file) => {
+        const entry = entryOf(file);
+        const rec = mine.get(file.name);
+        entry.installed_version = rec ? rec.version : null;
+        entry.update_available = Boolean(rec) && rec.content_hash !== file.content_hash && file.version > rec.version;
+        return entry;
+      }),
+    installed: installedRecords(true),
+    imported_max: cap,
     generated_at: iso(0.2),
-    key_id: "reg-2026-10",
+    key_id: "4f1c2a9e7d3b6a50",
     checked_at: new Date().toISOString(),
-    ...base,
-    skills: FILES.map((file) => {
-      const entry = entryOf(file);
-      if (mine.has(file.name)) {
-        entry.installed_version = mine.get(file.name);
-        entry.update_available = (latest.get(file.name) || 0) > mine.get(file.name);
-      }
-      return entry;
-    }),
   };
+  if (mode === "stale") Object.assign(result, { stale: true, error_code: "unavailable", error: ERRORS.unavailable, checked_at: null, key_id: null });
+  return result;
 }
 
 function refusal(code) {
   return { ok: false, error_code: code, error: ERRORS[code] };
 }
 
+const lookup = (message) => FILES.find((item) => item.name === message.name && item.content_hash === message.content_hash);
+
+// The approval card: registry_client.approval_card().
 function preview(message) {
-  if (mode !== "ok") return refusal(mode);
-  const file = FILES.find((item) => item.name === message.name && item.content_hash === message.content_hash);
-  if (!file) return { ok: false, error: "That version isn't in the index." };
-  return { ok: true, skill: definitionOf(file), entry: entryOf(file), model_description: modelDescription(file) };
+  if (mode !== "ok") return refusal(mode === "stale" ? "unavailable" : mode);
+  const file = lookup(message);
+  if (!file) return { ok: false, error_code: "not_found", error: "That version isn't in the index." };
+  if (file.yanked) return { ok: false, error_code: "yanked", error: `${file.name} version ${file.version} was withdrawn from the registry` };
+  const entry = entryOf(file);
+  const current = installed().find((skill) => skill.name === file.name);
+  return {
+    ok: true,
+    name: file.name,
+    version: file.version,
+    content_hash: file.content_hash,
+    author: file.author,
+    summary: file.summary,
+    review: entry.review,
+    has_run_command: entry.has_run_command,
+    steps: file.steps.map((step) => ({
+      tool: step.tool,
+      args: step.args,
+      safety: step.tool === "run_command" ? "destructive" : "safe",
+      run_command: step.tool === "run_command",
+    })),
+    input_schema: file.input_schema,
+    author_description: file.description,
+    model_description: modelDescription(file),
+    installed_version: current ? current.registry.version : null,
+    replaces: current ? current.registry.content_hash : null,
+    imported_count: installed().length,
+    imported_max: cap,
+  };
 }
 
 function install(message) {
-  if (mode !== "ok") return refusal(mode);
-  const file = FILES.find((item) => item.name === message.name && item.content_hash === message.content_hash);
-  if (!file) return { ok: false, error: "That version isn't in the index." };
-  if (file.yanked) return { ok: false, error_code: "yanked", error: "That version was withdrawn from the registry." };
+  if (mode !== "ok") return refusal(mode === "stale" ? "unavailable" : mode);
+  const file = lookup(message);
+  if (!file) return { ok: false, error_code: "not_found", error: "That version isn't in the index." };
+  if (file.yanked) return { ok: false, error_code: "yanked", error: `${file.name} version ${file.version} was withdrawn from the registry` };
   const current = installed().find((skill) => skill.name === file.name);
   if (!current && installed().length >= cap) {
     return {
       ok: false,
       error_code: "cap_reached",
-      error: `You have ${installed().length} shared skills, the most this app allows (${cap}). Remove one to install another.`,
+      error: `at most ${cap} shared skills can be installed; remove one first`,
     };
   }
   const skill = importedSkill(file);
   if (current) Object.assign(current, skill);
   else fixtures.inventory.skills.push(skill);
   fixtures.inventory.history.unshift({ event: "installed", name: file.name, ts: fixtures.now() });
-  return { ok: true, name: file.name, version: file.version, updated: Boolean(current) };
+  return { ok: true, name: file.name, id: `${file.name}-${file.version}`, content_hash: file.content_hash, replaced: Boolean(current), version: file.version };
 }
 
 // --- sharing a learned skill ----------------------------------------------------------
@@ -337,13 +406,13 @@ const HOME = "/Users/anurag";
 
 function shareable(name) {
   const skill = fixtures.inventory.skills.find((entry) => entry.name === name);
-  if (!skill) return { error: { ok: false, error: `There's no skill named ${name}.` } };
+  if (!skill) return { error: { ok: false, error_code: "not_found", error: `no such skill: ${name}` } };
   if (skill.origin !== "generated") {
     return {
       error: {
         ok: false,
         error_code: "not_shareable",
-        error: skill.origin === "imported" ? "This skill came from the registry; only skills Leutheria learned here can be shared." : "Built-in skills can't be shared.",
+        error: skill.origin === "imported" ? `${name} came from the registry already` : `${name} is built in; only skills Leutheria learned can be shared`,
       },
     };
   }
@@ -359,69 +428,62 @@ function shareDefinition(skill) {
     id: `${skill.name}-1`,
     version: 1,
     requires: [...new Set(skill.steps.map((step) => step.tool))],
-    created_at: new Date((skill.created_at || fixtures.now()) * 1000).toISOString(),
+    created_at: Math.floor((skill.created_at || fixtures.now()) / 86400) * 86400,
   };
   definition.content_hash = hashOf(JSON.stringify(definition.steps) + JSON.stringify(definition.input_schema));
   return definition;
 }
 
+// registry_client.share_preview(): {skill, path, content_hash, repo,
+// too_long, definition, json, changes[{where, before, after, why}],
+// flags[{id, where, value, kind, arg}], diff, has_run_command}.
 function sharePreview(message) {
   const { skill, error } = shareable(message.skill);
   if (error) return error;
   const definition = shareDefinition(skill);
-  const changes = [
-    { field: "source", before: "learned", after: null, note: "Removed. The registry marks where a skill came from itself." },
-    { field: "runs, last_used", before: `${skill.runs} runs`, after: null, note: "Removed. Your usage stays on this Mac." },
-  ];
-  const flagged = [];
+  const changes = [];
+  const flags = [];
   skill.steps.forEach((step, index) => {
     for (const [key, value] of Object.entries(step.args || {})) {
       if (typeof value !== "string") continue;
+      const where = `steps[${index}].args.${key}`;
       if (value.startsWith("~/") && changes.length < 4) {
-        changes.push({
-          field: `steps[${index}].args.${key}`,
-          before: value.replace(/^~/, HOME),
-          after: value,
-          note: "Your home folder became ~.",
-        });
+        changes.push({ where, before: value.replace(/^~/, HOME), after: value, why: "your home folder is written as ~" });
       }
-      if (/^\/Volumes\//.test(value) && !flagged.some((item) => item.value === value)) {
-        flagged.push({
-          field: `steps[${index}].args.${key}`,
-          value,
-          reason: "A drive name from this Mac. Other people won't have it: make it a parameter, or leave it if that's intended.",
-        });
+      if (/^\/Volumes\//.test(value) || /^~\/(Archive)\b/.test(value)) {
+        const match = /^(\/Volumes\/[^/]+|~\/Archive)/.exec(value)[0];
+        if (!flags.some((item) => item.value === match)) flags.push({ id: `f${flags.length + 1}`, where, value: match, kind: "personal_path", arg: key });
       }
     }
   });
-  if (skill.name === "archive_downloads") {
-    flagged.push({
-      field: "steps[1].args.cmd",
-      value: "mkdir -p ~/Archive/{folder}",
-      reason: "Runs a shell command. Shared skills may, but it will ask on every run for everyone who installs it.",
-    });
-  }
+  const json = JSON.stringify(definition, null, 2) + "\n";
+  const path = `skills/${definition.name}/${definition.content_hash}.json`;
   return {
     ok: true,
-    definition,
-    changes,
-    flagged,
-    target_path: `skills/${definition.name}/${definition.content_hash}.json`,
+    skill: skill.name,
+    path,
+    content_hash: definition.content_hash,
     repo: "AnuragK-O/leutheria-skills",
     too_long: skill.steps.length > 20,
+    definition,
+    json,
+    changes,
+    flags,
+    diff: changes.length ? `--- your skill\n+++ shared copy\n` : "",
+    has_run_command: definition.requires.includes("run_command"),
   };
 }
 
+// registry_client.share_link(): {skill, path, content_hash, url,
+// copy_to_clipboard, clipboard_text?}.
 function share(message) {
-  const { skill, error } = shareable(message.skill);
-  if (error) return error;
-  const definition = shareDefinition(skill);
-  const target = `skills/${definition.name}/${definition.content_hash}.json`;
-  const json = JSON.stringify(definition, null, 2);
-  if (badShare) return { ok: true, url: `https://github.com.evil.example/new?filename=${target}`, target_path: target };
-  const base = `https://github.com/AnuragK-O/leutheria-skills/new/main?filename=${encodeURIComponent(target)}`;
-  if (skill.steps.length > 20) return { ok: true, url: base, too_long: true, json, target_path: target };
-  return { ok: true, url: `${base}&value=${encodeURIComponent(json)}`, target_path: target };
+  const preview = sharePreview(message);
+  if (!preview.ok) return preview;
+  const base = `https://github.com/AnuragK-O/leutheria-skills/new/main?filename=${encodeURIComponent(preview.path)}`;
+  const common = { ok: true, skill: preview.skill, path: preview.path, content_hash: preview.content_hash };
+  if (badShare) return { ...common, url: `https://github.com/someone-else/leutheria-skills/new/main?filename=${preview.path}`, copy_to_clipboard: false };
+  if (preview.too_long) return { ...common, url: base, copy_to_clipboard: true, clipboard_text: preview.json };
+  return { ...common, url: `${base}&value=${encodeURIComponent(preview.json)}`, copy_to_clipboard: false };
 }
 
 module.exports = { command, list, preview, install, sharePreview, share };

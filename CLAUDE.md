@@ -89,6 +89,7 @@ pkill -if "python -m agent"; pkill -f "Electron.app"
 ./.venv/bin/python scripts/skills_routing_check.py --report # routing table from the committed cache, no model
 ./.venv/bin/python scripts/export_tool_catalog.py --check  # is agent/tool_catalog.json current? (no flag: re-export)
 ./.venv/bin/python scripts/registry_pipeline_check.py   # skill registry: catalog, submission checks, index sign/verify, yank
+./.venv/bin/python scripts/registry_e2e_check.py        # registry full loop: pipeline + signed index + real server; install/run/update/yank/tamper/share
 
 # These two call the REAL MODEL and cost money: every request carries the whole tool list (~22,700 input tokens)
 ./.venv/bin/python scripts/skills_routing_check.py      # phrase -> which capability; nothing dispatched; answers cached
@@ -108,6 +109,7 @@ cd app && node scripts/auth-check.js
 cd app && node scripts/mock-agent.js
 # UI regression pass: own mock + own Electron, every view/state, both themes, 1180 and 940 px
 cd app && node scripts/ui-capture.js --out <dir>     # then LOOK at the PNGs
+cd app && node scripts/ui-capture.js --out <dir> --registry   # Shared area against the REAL agent + a local signed registry
 cd app && env -u ELECTRON_RUN_AS_NODE LEUTHERIA_AGENT_URL=ws://127.0.0.1:8799 LEUTHERIA_NO_SPAWN=1 npx electron .
 ```
 

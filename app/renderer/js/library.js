@@ -920,8 +920,8 @@
           : status && status.update
             ? `Version ${status.latest.version} is available; updating is a new approval. `
             : "",
-        info.first_run_pending ? "Every step asks first until it has run once. " : "",
-        "Its run_command steps ask on every run. ",
+        info.first_run_done === false ? "Every step asks first until it has run once. " : "",
+        info.has_run_command ? "Its run_command steps ask on every run. " : "",
         el("button.link-button", { text: "Show in Shared", "data-focus": "show-shared", onclick: () => reveal(`shared:${entry.name}`) })
       )
     );
