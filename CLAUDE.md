@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Leutheria: a macOS voice-controlled assistant. An **Electron shell** (`app/`) spawns a
 **Python sidecar** (`agent/`) and talks to it over `ws://127.0.0.1:8765` with JSON messages.
 All agent work — wake word (openWakeWord), STT (Whisper), TTS (ElevenLabs by default,
-Piper as the local fallback), LLM tool-calling (Anthropic `claude-opus-5`), tool/skill
+macOS `say` as the local fallback, Piper optional), LLM tool-calling (Anthropic `claude-opus-5`), tool/skill
 execution — happens Python-side; Electron is UI + process supervision only.
 `overlay-qt/` is a third piece: a native C++/Qt Quick build of the activation overlay, a
 second client of the same WebSocket (off by default; `LEUTHERIA_OVERLAY=qt`). It has its
@@ -73,7 +73,7 @@ pkill -if "python -m agent"; pkill -f "Electron.app"
 ./.venv/bin/python scripts/voice_sim.py                 # voice session state machine, all scenarios
 ./.venv/bin/python scripts/voice_sim.py dismiss confirm # just the named scenarios (--list shows them)
 ./.venv/bin/python scripts/skill_format_check.py        # generated-skill validation
-./.venv/bin/python scripts/tts_check.py                 # TTS backends + fallbacks, fake ElevenLabs server
+./.venv/bin/python scripts/tts_check.py                 # TTS backends + fallbacks, fake ElevenLabs + stubbed say
 ./.venv/bin/python scripts/overlay_protocol_check.py    # overlay role, real server on a spare port
 ./.venv/bin/python scripts/ws_auth_check.py             # socket authentication, real server on a spare port
 ./.venv/bin/python scripts/skills_check_system.py       # system tools + skills; volume/media/banners/speech stubbed
@@ -289,10 +289,17 @@ exist (Electron's `app/renderer/overlay/`, Qt's `overlay-qt/`) with the same sta
 and the same asset `manifest.json`; change a rule in one and change it in the other.
 
 **TTS engines sit behind `core/tts_backends.py:TTSBackend`**, mirroring `LLMBackend`. The
-selected backend and voice are read from voice settings per utterance; any failure of a
-non-Piper backend (no key, network, HTTP error, timeout) falls back to Piper for that
-utterance and logs `tts_error` — a reply is never silent because of the cloud voice. API
-keys are environment-only and never written to `voice_settings.json`.
+selected backend and voice are read from voice settings per utterance; any failure of the
+selected one (no key, network, HTTP error, timeout, Piper not installed, unknown voice)
+falls back to macOS `say` in the system voice for that utterance and logs `tts_error` — a
+reply is never silent because of the chosen voice. `say` only ever renders to a temp file
+(`-o`, fixed argv, text on stdin); playback stays in `speak()`. **Piper is optional because
+it is GPL-3.0**: it lives in `requirements-piper.txt`, is imported only inside
+`PiperBackend` (never at module level — a build without it must start), and the Voice view
+lists it only when `tts_available.piper` is true. Don't add a GPL dependency to
+`requirements.txt` or `app/package.json`; `THIRD_PARTY_LICENSES.md` is the inventory
+(regenerate its tables with `agent/scripts/licenses_report.py`). API keys are
+environment-only and never written to `voice_settings.json`.
 
 **Timers are the one thing that acts with no request in flight.** `core/timers.py` runs each
 as an asyncio task and, when it ends, goes through the same two doors as everything else:

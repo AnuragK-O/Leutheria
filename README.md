@@ -91,7 +91,7 @@ server.py
   once agent_loop gets a final text reply (no more tool calls):
     |
     v
-  tts.py (Piper, or ElevenLabs if selected) -> played through the speakers by the agent itself,
+  tts.py (ElevenLabs, macOS say, or Piper if installed) -> played through the speakers by the agent itself,
                     bracketed by "speaking" started/ended messages
 
   meanwhile, if the trace had >= 2 tool calls and no skill covers it yet
@@ -163,7 +163,7 @@ agent/                Python sidecar
     skill_format_check.py  Generated-skill format: metadata, validation rules, load /
                        migrate / reject, placeholder substitution (temp dirs only)
     tts_check.py       TTS backends against a fake ElevenLabs server: request shape, PCM
-                       decoding, every fallback to Piper, settings validation (no key needed)
+                       decoding, every fallback to say, the say backend (stubbed + one file render), settings validation (no key needed)
     overlay_protocol_check.py  The overlay client role: real server on a side port,
                        a UI and an overlay client in both orders -- never primary,
                        mirrored messages, confirming from the overlay (no API key needed)
@@ -227,12 +227,13 @@ agent/                Python sidecar
       audio_input.py    Decodes a base64 audio payload to a temp file, hands off to stt.py
       stt.py            Local Whisper ("base" model) transcription
       tts.py            Speaks replies: picks the TTS backend from the voice settings
-                        (falling back to Piper if it fails) and plays the audio through
+                        (falling back to macOS `say` if it fails) and plays the audio through
                         the Mac's speakers from the sidecar itself; speak() is shared by
                         server.py (final replies) and dispatcher.py (spoken confirmation
                         prompts)
       tts_backends.py   TTSBackend interface -- swappable engine seam, like llm.py.
-                        PiperBackend (local, "en_US-amy-medium" by default) and
+                        MacSayBackend (macOS `say` rendered to a temp WAV; the fallback),
+                        PiperBackend (optional, GPL, imported lazily) and
                         ElevenLabsBackend (cloud REST API, needs ELEVENLABS_API_KEY)
       skill_learning.py Checks logs/events.jsonl for a matching past run, then asks
                         Claude to generalize into a skill definition -- confidently
@@ -287,7 +288,7 @@ agent/                Python sidecar
                         Dev / web / clipboard skills -- see "Skills" for the table
       generated/         Agent-proposed, user-approved skills as JSON (gitignored --
                         local learned state, not source code)
-    assets/voices/       Piper voice model (gitignored, auto-downloaded on first use)
+    assets/voices/       Piper voice model, if Piper is installed (gitignored, downloaded on first use)
   logs/                 events.jsonl (gitignored) -- see "Logs" section below
 ```
 
@@ -305,7 +306,8 @@ brew install ffmpeg
 # Python side
 cd agent
 /opt/homebrew/bin/python3.12 -m venv .venv
-./.venv/bin/pip install -r requirements.txt   # includes openai-whisper (~1GB w/ torch) and piper-tts
+./.venv/bin/pip install -r requirements.txt   # includes openai-whisper (~1GB w/ torch)
+./.venv/bin/pip install -r requirements-piper.txt   # optional: the Piper voice (GPL-3.0, not shipped)
 
 # Node side
 cd ../app
@@ -318,7 +320,8 @@ Privacy & Security > Accessibility) for whatever launched the agent — Electron
 
 Both STT and TTS auto-download their models on first use, no manual steps needed:
 - Whisper's `"base"` model (~140MB) goes to `~/.cache/whisper`.
-- Piper's `"en_US-amy-medium"` voice (~60MB) goes to `agent/agent/assets/voices/` (gitignored).
+- If Piper is installed, its `"en_US-amy-medium"` voice (~60MB) goes to `agent/agent/assets/voices/` (gitignored).
+  The default local voice, macOS `say`, needs no download.
 
 Expect a one-time delay the first time each is actually used (first voice command in,
 first spoken reply out).
@@ -539,11 +542,12 @@ listening off closes the mic and the header pill goes to Off.
   outside a session, and is refused during one.
 - **Silence timeout** has a **Never** box: the session then ends only on a dismiss phrase
   or Stop listening.
-- **Voice output** picks the engine replies are spoken with (Piper or ElevenLabs) and an
+- **Voice output** picks the engine replies are spoken with (ElevenLabs, macOS voice, or
+  Piper — listed only when the agent reports it installed) and an
   optional voice id; switching engines clears the voice id, since one engine's id means
   nothing to the other. With ElevenLabs selected, it warns when the agent reports no
   `ELEVENLABS_API_KEY` (`tts_available` in `get_voice_settings`), since replies would
-  still come out in Piper's voice.
+  still come out in the macOS voice.
 
 ### Testing the agentic loop
 
@@ -581,7 +585,7 @@ feed the same transcript handling in `server.py`.
 ### Voice output (TTS)
 
 Every final text reply is also spoken out loud automatically — no toggle needed. The
-agent synthesizes it locally with Piper right after sending the text response and plays
+agent synthesizes it with the selected engine right after sending the text response and plays
 it through the Mac's speakers **itself** — the renderer never touches the audio. This
 applies to typed, spoken, and tool-triggered replies alike, since it's wired in at the
 point where the final response is sent, not per input method. If synthesis or playback
@@ -589,30 +593,45 @@ fails for any reason, it's logged (`tts_error` in `agent/logs/events.jsonl`) but
 blocks or delays the text reply itself — TTS is additive, not a dependency of the core
 loop.
 
-**Two voice engines** behind one `TTSBackend` interface (`agent/core/tts_backends.py`,
+**Three voice engines** behind one `TTSBackend` interface (`agent/core/tts_backends.py`,
 mirroring `llm.py`'s `LLMBackend`): each returns int16 samples plus a sample rate, so
 playback, the `speaking` messages and the half-duplex mic muting don't know which one ran.
 
-- **Piper** (the fallback): local, free, offline. Voice `en_US-amy-medium` unless `tts_voice`
-  names another Piper voice (e.g. `en_GB-alan-medium`), which downloads on first use.
+- **macOS voice** (`say`, the fallback): built into every Mac — local, free, offline, no
+  download and no GPL component. `MacSayBackend` runs `/usr/bin/say` with a fixed argv
+  (text on stdin, a 60 s timeout) to *render a WAV file* in a private temp directory, reads
+  it back and deletes it; `say` never plays anything itself, so playback stays in
+  `tts.speak()` and the half-duplex muting is unchanged. `tts_voice` is a `say -v` voice
+  name (e.g. `Samantha`, `Eddy (English (US))`), checked against the `say -v '?'` listing
+  (cached per process); empty means the system voice (System Settings > Accessibility >
+  Spoken Content).
+- **Piper** (optional): local, free, offline, but **GPL-3.0** (and its wheel bundles
+  espeak-ng, also GPL), so it is not in `requirements.txt` and not part of a distributed
+  build. Install it yourself with `./.venv/bin/pip install -r requirements-piper.txt`.
+  Nothing imports it at startup: without it the backend reports unavailable, the Voice view
+  hides it, and a stored `tts_backend: "piper"` falls back to `say` with a `tts_error`.
+  Voice `en_US-amy-medium` unless `tts_voice` names another Piper voice (e.g.
+  `en_GB-alan-medium`), which downloads on first use.
 - **ElevenLabs** (default): noticeably more natural, but it's a cloud call — the reply text
   leaves the Mac, it needs internet, and it's billed per character on your own ElevenLabs
   plan. It uses the `eleven_flash_v2_5` model (lowest latency, half the per-character price
   of the multilingual models; override with `ELEVENLABS_MODEL_ID`) and adds a network round
-  trip before speech starts (the whole reply is synthesized before playback, as with Piper).
+  trip before speech starts (the whole reply is synthesized before playback, as with the others).
   Needs `ELEVENLABS_API_KEY` in the repo-root `.env`; `tts_voice` is an ElevenLabs voice ID,
   default `JBFqnCBsd6RMkjVDRZzb` ("George", a premade voice). **Without a key, every reply
-  is spoken by Piper** (and logs a `tts_error` saying the key is missing) — pick Piper in
-  the Voice view to stay fully local and silence that.
+  is spoken by the macOS voice** (and logs a `tts_error` saying the key is missing) — pick
+  "macOS voice" in the Voice view to stay fully local and silence that.
 
 Pick one in the Voice view's **Voice output** card, or with `set_voice_settings`
 (`tts_backend`, `tts_voice`). The settings are read per utterance, so the next reply uses
 them — no restart. **Fallback:** if the selected backend fails — no key, network error,
 HTTP error (a bad key is a 401), a timeout (5 s connect, 20 s read) — that utterance is
-spoken by Piper's default voice instead and a `tts_error` is logged with the `backend`
-that failed and why. A reply is never silent because of the premium voice. The same goes
-for a Piper voice name that doesn't exist. (Piper's GPL licensing question is in
-`plans/NOTES.md` #1.)
+spoken by `say` in the system voice instead and a `tts_error` is logged with the `backend`
+that failed and why (`fallback: "say"`). A reply is never silent because of the chosen
+voice. The same goes for Piper not being installed, a Piper voice name that doesn't exist,
+or a `say` voice that isn't installed. Only if `say` itself fails in the system voice is the
+reply silent (logged as `tts_error`). Licences of everything shipped are in
+`THIRD_PARTY_LICENSES.md`.
 
 `agent/scripts/tts_check.py` checks all of this without a real key, against a fake
 ElevenLabs server on localhost: the request shape, PCM decoding, the `speak()` path, each
@@ -683,7 +702,7 @@ below, applied live):
 | `endpoint_silence_ms` | `800` | trailing silence that ends an utterance |
 | `dismiss_phrases` | thanks, thank you, that's all, that's it, we're done, goodbye | |
 | `input_device` | `null` | sounddevice index or name; `null` is the system default |
-| `tts_backend` | `"elevenlabs"` | `"piper"` or `"elevenlabs"` — the engine replies are spoken with (see "Voice output") |
+| `tts_backend` | `"elevenlabs"` | `"elevenlabs"`, `"say"` (macOS voice) or `"piper"` (optional) — the engine replies are spoken with (see "Voice output") |
 | `tts_voice` | `null` | the selected engine's voice id (letters, digits, `-`, `_`); `null` is its default |
 
 **Testing it without a microphone.** Two scripts in `agent/scripts/`, neither of which
@@ -696,7 +715,7 @@ cd agent
 ./.venv/bin/python scripts/voice_server_check.py   # the real server on port 8781
 ```
 
-`voice_sim.py` stitches Piper utterances ("Hey Jarvis." … "What time is it?" …
+`voice_sim.py` stitches Piper (or, without it, say) utterances ("Hey Jarvis." … "What time is it?" …
 "Thanks.") with silence and feeds them through the session's injectable frame source at
 real speed, wired to the real server hooks, and checks the exact `voice_state` sequence
 per scenario: dismissal, a long sentence containing "thanks" (not a dismissal), silence
@@ -709,8 +728,9 @@ exercises the control messages, a live session through the real agent loop (need
 API key; the reply *is* played aloud), push-to-talk, and settings surviving a restart.
 It backs up and restores `voice_settings.json`.
 
-Note: `piper-tts` is GPL-3.0-or-later licensed. Fine for local development; worth
-revisiting the licensing implications before any public release/distribution.
+Note: `piper-tts` is GPL-3.0-or-later licensed, which is why it is optional
+(`requirements-piper.txt`). `voice_sim.py` stitches its clips with Piper when it's
+installed and with `say` otherwise.
 
 ### Voice sessions: the overlay, menu bar and shortcut
 
@@ -1667,13 +1687,13 @@ brackets the playback with `speaking` messages so the UI can animate while it ta
 
 ```python
 {"type": "response", "text": "12 × 7 = **84**", "trace": []}
-{"type": "speaking", "state": "started", "text": "12 × 7 = **84**", "duration_ms": 2140, "backend": "piper"}
+{"type": "speaking", "state": "started", "text": "12 × 7 = **84**", "duration_ms": 2140, "backend": "say"}
 {"type": "speaking", "state": "ended"}
 ```
 
 There's no request for this — it follows every non-empty text reply, for every input
-method. `backend` is the engine that actually produced the audio — `"piper"` when an
-ElevenLabs request failed or had no key and fell back to Piper, which runs fully locally. The old `{"type": "speech", "data":
+method. `backend` is the engine that actually produced the audio — `"say"` when the
+selected engine failed (an ElevenLabs request with no key, Piper not installed...) and fell back to macOS `say`, which runs fully locally. The old `{"type": "speech", "data":
 <base64 WAV>}` message is **gone** — nothing sends audio over the socket any more.
 
 ### Voice session protocol
@@ -1714,7 +1734,7 @@ Control messages, answered with `control_result` like the management ones below:
 
 {"type": "get_voice_settings", "request_id": "2"}
 # -> {..., "ok": true, "settings": {"enabled": true, "wake_models": ["hey_jarvis"], ...},
-#          "tts_available": {"piper": true, "elevenlabs": false}}
+#          "tts_available": {"say": true, "piper": false, "elevenlabs": false}}
 # tts_available says whether each TTS engine is configured (for ElevenLabs: whether
 # ELEVENLABS_API_KEY is set) -- a boolean, never the key.
 
@@ -1904,8 +1924,8 @@ line to `agent/logs/events.jsonl` (gitignored). Event types: `message_in`, `mess
 (a refused handshake, by reason, rate-limited), `manual_dispatch_refused`,
 `llm_turn` (what Claude decided that turn), `tool_call` (which tool ran, with what args
 and result), `stt_transcript` (what Whisper heard), `tts_error` (a synthesis failure --
-non-fatal; `backend` says which engine failed, and `fallback: "piper"` means the reply was
-still spoken by Piper), `confirmation_requested`/`tool_declined` (the destructive-tool
+non-fatal; `backend` says which engine failed, and `fallback: "say"` means the reply was
+still spoken by macOS `say`), `confirmation_requested`/`tool_declined` (the destructive-tool
 confirmation flow), `confirmation_answered_by_voice`, `confirmation_timed_out`,
 `tool_error` (a tool function raised; the traceback is in the record),
 `shutdown_killed_commands`, `preference_changed`/

@@ -28,8 +28,6 @@ onnxruntime==1.29.0
 openai-whisper==20250625
 openwakeword==0.6.0
 packaging==26.3
-pathvalidate==3.3.1
-piper-tts==1.7.0
 protobuf==7.36.1
 pycparser==3.0
 pydantic==2.13.5

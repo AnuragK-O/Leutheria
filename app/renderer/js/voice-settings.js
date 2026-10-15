@@ -34,13 +34,24 @@
       voiceHint: "A voice ID from your ElevenLabs voice library. Empty uses the default voice (George).",
     },
     {
+      name: "say",
+      label: "macOS voice — on this Mac, free",
+      defaultVoice: "system voice",
+      voiceHint: "A voice name from System Settings › Accessibility › Spoken Content, e.g. Samantha. Empty uses the system voice.",
+    },
+    {
+      // Optional and GPL, so not part of a distributed build: listed only
+      // when the agent reports it installed (or it's already the setting).
       name: "piper",
       label: "Piper — on this Mac, free",
+      optional: true,
       defaultVoice: "en_US-amy-medium",
       voiceHint: "A Piper voice name, e.g. en_GB-alan-medium. A voice not yet on this Mac downloads the first time it speaks.",
     },
   ];
-  const VOICE_ID = /^[A-Za-z0-9_-]{1,100}$/;
+  // The agent's own rule (voice_settings._VOICE_ID): macOS voice names add
+  // spaces, parentheses and accented letters, never a slash or a dot.
+  const VOICE_ID = /^[\p{L}\p{N}_][\p{L}\p{N}_() -]{0,99}$/u;
 
   // Two of openWakeWord's pretrained models aren't wake words at all -- they
   // fire on a whole request -- which is worth saying before someone picks one.
@@ -79,7 +90,7 @@
   let customStatus = {}; // custom model path -> exists on the agent's disk
   let addModelError = null;
   let voice = { state: "off", session: false, connected: false };
-  let ttsAvailable = null; // { piper: true, elevenlabs: bool }, or null if the agent doesn't say
+  let ttsAvailable = null; // { say, piper, elevenlabs: bool }, or null if the agent doesn't say
 
   const copy = (value) => JSON.parse(JSON.stringify(value));
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -166,7 +177,7 @@
     }
     if (!draft.wake_models.length) errors.wake_models = "Pick at least one wake word.";
     if (draft.tts_voice !== null && !VOICE_ID.test(draft.tts_voice)) {
-      errors.tts_voice = "Letters, digits, - and _ only (no spaces or slashes).";
+      errors.tts_voice = "Letters, digits, spaces, ( ), - and _ only.";
     }
     if (!draft.dismiss_phrases.length) errors.dismiss_phrases = "Keep at least one phrase, or a session only ends on the timeout.";
     return errors;
@@ -600,6 +611,11 @@
       },
     });
     for (const backend of TTS_BACKENDS) {
+      const shown =
+        !backend.optional ||
+        (ttsAvailable && ttsAvailable[backend.name]) ||
+        backend.name === draft.tts_backend;
+      if (!shown) continue;
       const option = el("option", { value: backend.name, text: backend.label });
       if (backend.name === draft.tts_backend) option.selected = true;
       select.appendChild(option);
@@ -614,15 +630,22 @@
         icon(missing ? "warning" : "info"),
         el("span", {
           text: missing
-            ? "No ElevenLabs API key is configured, so replies are still spoken by Piper. Add ELEVENLABS_API_KEY to the .env file in the Leutheria folder and restart Leutheria."
-            : "Replies are sent to ElevenLabs to be spoken, which is billed per character on your ElevenLabs plan. If a request fails, that reply is spoken by Piper instead.",
+            ? "No ElevenLabs API key is configured, so replies are still spoken by the macOS voice. Add ELEVENLABS_API_KEY to the .env file in the Leutheria folder and restart Leutheria."
+            : "Replies are sent to ElevenLabs to be spoken, which is billed per character on your ElevenLabs plan. If a request fails, that reply is spoken by the macOS voice instead.",
         })
+      );
+    } else if (draft.tts_backend === "piper" && ttsAvailable && ttsAvailable.piper === false) {
+      note = el(
+        "div.callout.callout-warning",
+        {},
+        icon("warning"),
+        el("span", { text: "Piper isn't installed on this Mac, so replies are spoken by the macOS voice. Choose another engine, or install Piper." })
       );
     }
     return row(
       "tts_backend",
       "Voice engine",
-      "Piper runs offline on this Mac. ElevenLabs sounds more natural but needs internet and your own API key.",
+      "The macOS voice runs offline on this Mac. ElevenLabs sounds more natural but needs internet and your own API key.",
       el("div.select-wrap", {}, select),
       note
     );

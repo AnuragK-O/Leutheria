@@ -1,0 +1,14 @@
+# Optional: the Piper offline voice. NOT part of a distributed build.
+#
+# piper-tts is GPL-3.0-or-later (and its wheel bundles espeak-ng, also GPL-3.0).
+# Shipping it inside the app would put the whole bundle under GPL obligations,
+# so it is kept out of requirements.txt: the agent's local voice is macOS `say`,
+# and Piper is an extra a user can install for themselves:
+#
+#   ./.venv/bin/pip install -r requirements-piper.txt
+#
+# Without it the "piper" backend reports unavailable and is hidden in the Voice
+# view; nothing imports it at startup. onnxruntime, its other dependency, stays
+# in requirements.txt because openWakeWord needs it too.
+piper-tts==1.7.0
+pathvalidate==3.3.1

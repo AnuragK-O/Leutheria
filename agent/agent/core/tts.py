@@ -6,15 +6,23 @@ from websockets.exceptions import ConnectionClosed
 from agent.core import audio_io, tts_backends, voice_settings
 from agent.core.logging_util import log_event
 
-_piper = tts_backends.BACKENDS[tts_backends.PiperBackend.name]
+
+def _backend(name: str):
+    # Looked up per call, not bound at import, so scripts/tts_check.py can
+    # swap a backend in BACKENDS and have every path here see the stand-in.
+    return tts_backends.BACKENDS[name]
 
 
 def synthesize(text: str) -> bytes:
-    """Return WAV audio bytes for the given text, synthesized locally with
-    Piper's default voice. Not the reply path (that's _synthesize_reply, which
-    honours the selected backend); kept for scripts/voice_sim.py, which
-    stitches its test utterances from the project's own voice."""
-    return _piper.synthesize_wav(text)
+    """Return WAV audio bytes for the given text in a local voice: Piper's
+    default voice if Piper is installed (the voice the simulator's clips were
+    tuned against), otherwise macOS `say`. Not the reply path (that's
+    _synthesize_reply, which honours the selected backend); kept for
+    scripts/voice_sim.py, which stitches its test utterances from it."""
+    piper = _backend(tts_backends.PiperBackend.name)
+    if piper.available():
+        return piper.synthesize_wav(text)
+    return _backend(tts_backends.FALLBACK_BACKEND).synthesize_wav(text)
 
 
 def availability() -> dict:
@@ -26,29 +34,31 @@ def _synthesize_reply(text: str) -> tuple:
     """(samples, rate, backend name) using the backend and voice the voice
     settings name, read per utterance so a change applies to the next reply.
 
-    If a non-Piper backend fails -- no key, network down, an HTTP error, a
-    timeout -- the failure is logged and this utterance falls back to Piper's
-    default voice: a premium voice must never be the reason a reply is
-    silent. A Piper failure propagates; speak() logs it and stays silent.
+    If the selected backend fails -- no key, network down, an HTTP error, a
+    timeout, Piper not installed, a voice that doesn't exist -- the failure
+    is logged and this utterance falls back to macOS `say` in the system
+    voice: a chosen voice must never be the reason a reply is silent. A
+    failure of that fallback propagates; speak() logs it and stays silent.
     """
+    fallback = _backend(tts_backends.FALLBACK_BACKEND)
     settings = voice_settings.load()
     name = settings.get("tts_backend") or tts_backends.DEFAULT_BACKEND
     voice = settings.get("tts_voice")
     backend = tts_backends.BACKENDS.get(name)
     if backend is None:
-        log_event("tts_error", backend=name, error="unknown backend", fallback="piper")
-        backend, voice = _piper, None
+        log_event("tts_error", backend=name, error="unknown backend", fallback=fallback.name)
+        backend, voice = fallback, None
     try:
         audio, rate = backend.synthesize(text, voice)
         return audio, rate, backend.name
     except Exception as e:
-        # A Piper voice that isn't the default gets the same treatment: the
-        # default voice is the floor every other choice falls back to.
-        if backend is _piper and not voice:
+        # The fallback's own default voice is the floor; anything above it
+        # (another engine, or a named `say` voice) drops to that floor.
+        if backend is fallback and not voice:
             raise
-        log_event("tts_error", backend=backend.name, voice=voice, error=str(e), fallback="piper")
-    audio, rate = _piper.synthesize(text)
-    return audio, rate, _piper.name
+        log_event("tts_error", backend=backend.name, voice=voice, error=str(e), fallback=fallback.name)
+    audio, rate = fallback.synthesize(text)
+    return audio, rate, fallback.name
 
 
 # Playback is swappable so a test harness (scripts/voice_sim.py) can drive the
