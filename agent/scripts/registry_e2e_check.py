@@ -141,13 +141,13 @@ def make_skill(name, description, steps, properties=None, required=None):
 REPO_STATUS = make_skill(
     "repo_status", "Show the time, then the git status of the demo project.",
     [{"tool": "get_current_datetime", "args": {}},
-     {"tool": "run_command", "args": {"cmd": "git -C ~/Projects/demo status --short"}}],
+     {"tool": "run_command", "args": {"cmd": "git status --short"}}],
 )
 REPO_STATUS_V2 = make_skill(
     "repo_status", "Show the time, the git status of the demo project, and its last commit.",
     [{"tool": "get_current_datetime", "args": {}},
-     {"tool": "run_command", "args": {"cmd": "git -C ~/Projects/demo status --short"}},
-     {"tool": "run_command", "args": {"cmd": "git -C ~/Projects/demo log -1 --oneline"}}],
+     {"tool": "run_command", "args": {"cmd": "git status --short"}},
+     {"tool": "run_command", "args": {"cmd": "git log -1 --oneline"}}],
 )
 NOTES_LIST = make_skill(
     "list_notes_folder", "List what is in a folder under Notes.",
@@ -286,6 +286,10 @@ class Setup:
             "LEUTHERIA_REGISTRY_URL": self.registry_url,
             "LEUTHERIA_REGISTRY_TEST_KEY": f"{self.key_entry['key_id']}:{self.key_entry['public_key']}",
         })
+        # The shared skill runs `git status` in the agent's working directory
+        # (run_command has no cwd argument, and `git -C` isn't on the registry's
+        # auto-approve allowlist), so that directory must be a repository.
+        subprocess.run(["git", "init", "-q", str(self.tmp)], check=True, timeout=30)
         proc = subprocess.Popen([PY, "-c", BOOTSTRAP], cwd=self.tmp, env={**env, "PYTHONPATH": str(AGENT_DIR)},
                                 stdout=subprocess.PIPE, stderr=open(self.tmp / "agent.stderr", "w"), text=True)
         self.procs.append(proc)
@@ -392,7 +396,7 @@ async def _full_loop(s: Setup):
               and rs["installed_version"] is None, "index entry: run_command, author, review")
         card = await c.control({"type": "registry_preview", "name": "repo_status", "content_hash": rs["content_hash"]})
         check(card["ok"] and [st["tool"] for st in card["steps"]] == ["get_current_datetime", "run_command"]
-              and card["steps"][1]["run_command"] and card["steps"][1]["args"]["cmd"] == "git -C ~/Projects/demo status --short"
+              and card["steps"][1]["run_command"] and card["steps"][1]["args"]["cmd"] == "git status --short"
               and card["model_description"].startswith("Shared skill by octo-cat")
               and card["author_description"] == REPO_STATUS["description"], "preview: every step with args, run_command flagged, both descriptions")
         inv = await c.control({"type": "inventory"})

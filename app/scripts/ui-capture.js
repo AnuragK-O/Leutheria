@@ -1415,7 +1415,7 @@ async function runRegistryReal(theme) {
     check(
       `${T} the install card shows every step from the agent's preview, run_command flagged`,
       await main.waitFor(
-        `${card} && ${card}.querySelectorAll(".install-steps .step").length === 2 && ${card}.querySelectorAll(".step-command").length === 1 && /git -C ~\\/Projects\\/demo status --short/.test(${card}.textContent) && ${card}.querySelector(".shared-cmd-warning")`,
+        `${card} && ${card}.querySelectorAll(".install-steps .step").length === 2 && ${card}.querySelectorAll(".step-command").length === 1 && /git status --short/.test(${card}.textContent) && ${card}.querySelector(".shared-cmd-warning")`,
         15000
       )
     );
