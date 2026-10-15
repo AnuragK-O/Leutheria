@@ -513,6 +513,7 @@ def commit_install(entry: dict, definition: dict) -> dict:
         "published_at": entry.get("published_at"),
         "installed_at": time.time(),
         "first_run_done": False,
+        "withdrawn": False,
     }
     result = registry.register_skill(definition, record=record, replace=entry["name"] in current)
     if not result.get("ok"):
@@ -524,6 +525,35 @@ def commit_install(entry: dict, definition: dict) -> dict:
 
 
 # --- control messages -----------------------------------------------------------
+
+
+def apply_withdrawals(index) -> list:
+    """Loop thread. For every installed imported skill whose exact version a
+    verified index marks yanked: set the record's `withdrawn` and reset
+    `first_run_done`, so from now on every step of it asks on every run
+    (review M2: before, a yank after its first run changed nothing). Sticky
+    until the skill is deleted or an approved update replaces it. Returns
+    the names newly marked."""
+    if not index:
+        return []
+    yanked = {(e["name"], e["content_hash"]) for e in index["skills"] if e.get("yanked")}
+    marked = []
+    for name, rec in list(registry.IMPORTED.items()):
+        if (name, rec.get("content_hash")) in yanked and not rec.get("withdrawn"):
+            rec["withdrawn"] = True
+            rec["first_run_done"] = False
+            try:
+                registry.write_record(rec)
+            except OSError as e:
+                log_event("imported_record_write_failed", name=name, error=str(e))
+            log_event("shared_skill_withdrawn", name=name, content_hash=rec.get("content_hash"), version=rec.get("version"))
+            marked.append(name)
+    return marked
+
+
+def _current_index():
+    with _lock:
+        return _memory["index"]
 
 
 def _list_result(index, stale_error) -> dict:
@@ -548,7 +578,7 @@ def _list_result(index, stale_error) -> dict:
         entry = by_key.get((name, rec.get("content_hash")))
         installed_list.append({
             **rec,
-            "withdrawn": bool(entry and entry.get("yanked")),
+            "withdrawn": bool(entry and entry.get("yanked")) or bool(rec.get("withdrawn")),
             "in_index": entry is not None,
             "update_available": bool(newest.get(name)) and newest[name]["content_hash"] != rec.get("content_hash")
             and newest[name]["version"] > (rec.get("version") or 0) and author_conflict(newest[name]) is None,
@@ -573,16 +603,20 @@ async def handle_control(payload: dict) -> dict:
                 index, stale = await loop.run_in_executor(None, get_index, bool(payload.get("refresh")))
             except RegistryError as e:
                 return {"ok": False, "index_ok": False, "error_code": e.code, "error": str(e), "skills": [],
-                        "installed": [{**rec, "withdrawn": False, "in_index": False, "update_available": False}
+                        "installed": [{**rec, "withdrawn": bool(rec.get("withdrawn")), "in_index": False, "update_available": False}
                                       for _, rec in sorted(installed().items())],
                         "imported_max": max_imported()}
+            apply_withdrawals(index)
             return _list_result(index, stale)
 
         if kind in ("registry_preview", "registry_install"):
             name, content_hash = payload.get("name"), payload.get("content_hash")
             if not isinstance(name, str) or not isinstance(content_hash, str) or not HASH_RE.fullmatch(content_hash):
                 return {"ok": False, "error_code": "bad_request", "error": "name and content_hash are required"}
-            entry, definition = await loop.run_in_executor(None, resolve, name, content_hash)
+            try:
+                entry, definition = await loop.run_in_executor(None, resolve, name, content_hash)
+            finally:
+                apply_withdrawals(_current_index())
             conflict = author_conflict(entry)
             if conflict:
                 return conflict

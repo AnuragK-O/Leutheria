@@ -28,6 +28,8 @@ async def run(args: dict, websocket, pending: dict) -> dict:
         entry, definition = await loop.run_in_executor(None, registry_client.resolve, name, None)
     except registry_client.RegistryError as e:
         return {"ok": False, "error": str(e)}
+    finally:
+        registry_client.apply_withdrawals(registry_client._current_index())
     conflict = registry_client.author_conflict(entry)
     if conflict:
         return conflict

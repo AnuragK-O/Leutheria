@@ -546,10 +546,23 @@ async def main():
     result = await dispatcher.dispatch("install_shared_skill", {"name": "tidy_stamp"}, FakeSocket(pending), pending)
     check(not result["ok"] and result.get("error_code") == "author_changed"
           and registry.SKILLS["tidy_stamp"]["content_hash"] == tidy_v2["content_hash"], "voice install refuses it too, v2 stays")
+    first = FakeSocket(pending)
+    result = await dispatcher.dispatch("tidy_stamp", {"word": "v2"}, first, pending)
+    check(result["ok"] and registry.IMPORTED["tidy_stamp"]["first_run_done"], "v2 completed its first run")
     publish([(TIDY, {}, None), (tidy_v2, {"yanked": True}, None), (PLAIN, {}, None)])
     listing = await ctl({"type": "registry_list", "refresh": True})
     mine = {r["name"]: r for r in listing["installed"]}
     check(mine["tidy_stamp"]["withdrawn"] and "tidy_stamp" in registry.SKILLS, "yanked: shown withdrawn, not removed")
+    # Yank after the first run (review M2): every step asks again, on every run.
+    record = json.loads((registry.imported_dir() / "tidy_stamp.json").read_text())
+    check(record["withdrawn"] is True and record["first_run_done"] is False and mine["tidy_stamp"]["first_run_done"] is False
+          and events("shared_skill_withdrawn"), "yank of the installed hash: record withdrawn, first_run_done reset, logged")
+    for attempt in (1, 2):
+        sock = FakeSocket(pending)
+        result = await dispatcher.dispatch("tidy_stamp", {"word": "again"}, sock, pending)
+        check(result["ok"] and [c["tool"] for c in sock.cards()] == ["get_current_datetime", "run_command"]
+              and "withdrawn" in sock.cards()[0].get("reason", ""), f"withdrawn skill, run {attempt}: every step asks, saying why")
+    check(registry.IMPORTED["tidy_stamp"]["first_run_done"] is False, "a clean run doesn't clear a withdrawn skill's asking")
     check(next(s for s in listing["skills"] if s["name"] == "tidy_stamp")["version"] == 1, "yanked version hidden from Discover")
     result = await ctl({"type": "registry_preview", "name": "tidy_stamp", "content_hash": tidy_v2["content_hash"]})
     check(not result["ok"] and "withdrawn" in result["error"] and result["error_code"] == "yanked",

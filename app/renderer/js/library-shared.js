@@ -458,7 +458,7 @@
         {},
         el("strong", { text: "Withdrawn from the registry" }),
         el("span", {
-          text: `Version ${item.installedVersion ?? ""} was pulled after it was published. Your copy still works and still asks before its steps; nothing removes it for you.`,
+          text: `Version ${item.installedVersion ?? ""} was pulled after it was published. Your copy still works, but every step now asks first on every run; nothing removes it for you.`,
         }),
         item.skill &&
           item.skill.deletable &&

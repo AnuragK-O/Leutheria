@@ -579,7 +579,7 @@ never on error text:
 In the inventory an imported skill is `origin: "imported"` (agent-side it is a generated
 skill with a registry record), `deletable: true`, with `registry`: the record
 (`name, content_hash, version, author, summary, review, has_run_command, published_at,
-installed_at, first_run_done`) and `author_description`. A typed `registry offline` /
+installed_at, first_run_done, withdrawn`) and `author_description`. A typed `registry offline` /
 `stale` / `tampered` / `nokey` / `full` / `badshare` / `ok` switches the mock's state.
 
 **The Voice view.** Edits collect in a draft; **Save changes** sends one
@@ -1499,7 +1499,11 @@ nothing is listed, previewed or installed.** The production key is added at go-l
   the same name is never offered (`update_available` false) and its preview, install and
   voice install are refused with `author_changed` (delete the installed one first). A
   yanked version stays installed and is listed `withdrawn: true`; it can't be previewed or
-  installed.
+  installed. When a verified index (on `registry_list`, `registry_preview`/`install` or a
+  voice install) marks the installed version yanked, its record gets `withdrawn: true` and
+  `first_run_done: false` (logged `shared_skill_withdrawn`): from then on **every step asks
+  on every run**, with a "withdrawn from the registry" reason, until it is deleted or an
+  approved update replaces it. Sticky: a later index can't clear it.
 - At most 20 imported skills (each one is on every request's tool list);
   `LEUTHERIA_MAX_IMPORTED_SKILLS` changes it (0-50). Uninstall is `delete_skill`, which
   also removes the record.

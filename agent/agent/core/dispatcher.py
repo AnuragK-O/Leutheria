@@ -62,6 +62,11 @@ async def dispatch(
                 f"a command in the shared skill {imported.name} (commands from shared skills always ask)",
                 f"this command comes from the shared skill {imported.name}, and those always ask",
             ))
+        elif imported.withdrawn:
+            imported_reasons.append((
+                f"the shared skill {imported.name} was withdrawn from the registry: each step asks",
+                f"the shared skill {imported.name} was withdrawn from the registry, so each step asks",
+            ))
         elif imported.first_run:
             imported_reasons.append((
                 f"first run of the shared skill {imported.name}: each step asks once",

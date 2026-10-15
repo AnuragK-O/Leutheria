@@ -1172,6 +1172,11 @@ IMPORTED: dict = {}
 RECORD_KEYS = {
     "name", "content_hash", "version", "author", "summary", "review", "has_run_command",
     "published_at", "installed_at", "first_run_done",
+    # True once a verified index marked this content_hash yanked: from then
+    # on every run is a first run (every step asks), until it is deleted or
+    # replaced by an approved update (review M2). Sticky: an index that no
+    # longer lists the yank doesn't clear it.
+    "withdrawn",
 }
 
 
@@ -1207,20 +1212,23 @@ async def run_imported(definition: dict, args: dict, websocket, pending: dict) -
     skill's identity in session's ContextVar so dispatch() applies the
     imported-skill rules to each step (every step asks until one run has
     completed; run_command asks every time and is never trusted). Marks the
-    first run complete only on a clean success."""
+    first run complete only on a clean success, and never for a skill whose
+    version was withdrawn from the registry: that one asks at every step on
+    every run."""
     from agent.core import session
 
     name = definition["name"]
     record = IMPORTED.get(name)
     if record is None or record.get("content_hash") != definition["content_hash"]:
         return {"ok": False, "error": f"{name} has no matching registry record; reinstall it", "steps": []}
-    first_run = not record.get("first_run_done")
-    token = session.begin_imported(name, definition["content_hash"], first_run)
+    withdrawn = bool(record.get("withdrawn"))
+    first_run = withdrawn or not record.get("first_run_done")
+    token = session.begin_imported(name, definition["content_hash"], first_run, withdrawn)
     try:
         result = await run_template(definition, args, websocket, pending)
     finally:
         session.end_imported(token)
-    if first_run and isinstance(result, dict) and result.get("ok") and IMPORTED.get(name) is record:
+    if first_run and not withdrawn and isinstance(result, dict) and result.get("ok") and IMPORTED.get(name) is record:
         record["first_run_done"] = True
         try:
             write_record(record)

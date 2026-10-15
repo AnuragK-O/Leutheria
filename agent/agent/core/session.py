@@ -309,19 +309,20 @@ def outbound_reason(url) -> str:
 
 
 class ImportedRun:
-    __slots__ = ("name", "content_hash", "first_run")
+    __slots__ = ("name", "content_hash", "first_run", "withdrawn")
 
-    def __init__(self, name: str, content_hash: str, first_run: bool):
+    def __init__(self, name: str, content_hash: str, first_run: bool, withdrawn: bool = False):
         self.name = name
         self.content_hash = content_hash
         self.first_run = first_run
+        self.withdrawn = withdrawn
 
 
 _imported: contextvars.ContextVar = contextvars.ContextVar("leutheria_imported_skill", default=None)
 
 
-def begin_imported(name: str, content_hash: str, first_run: bool):
-    return _imported.set(ImportedRun(name, content_hash, first_run))
+def begin_imported(name: str, content_hash: str, first_run: bool, withdrawn: bool = False):
+    return _imported.set(ImportedRun(name, content_hash, first_run, withdrawn))
 
 
 def end_imported(token) -> None:
