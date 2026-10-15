@@ -473,10 +473,32 @@ def approval_card(entry: dict, definition: dict) -> dict:
     }
 
 
+def author_conflict(entry: dict):
+    """The refusal for a version of an installed shared skill published by
+    someone other than the installed version's author, else None (review
+    M1). The registry's CI refuses a second author for a name, but the
+    client doesn't rely on that: under one name, another author's file is a
+    different skill, never an update. Loop thread (reads SKILLS)."""
+    rec = installed().get(entry["name"])
+    if rec is None:
+        return None
+    new_author = registry_text.safe_author(entry.get("author"))
+    if new_author == rec.get("author"):
+        return None
+    return {"ok": False, "error_code": "author_changed",
+            "error": f"{entry['name']} version {entry['version']} is published by {new_author}, but the one installed here "
+                     f"is by {rec.get('author')}: it's a different skill, not an update. Delete the installed one to install it."}
+
+
 def commit_install(entry: dict, definition: dict) -> dict:
     """Write and register an approved, verified skill. Loop thread only.
-    An installed older version of the same name is replaced (an update the
-    user just approved); anything else of that name is refused."""
+    An installed older version of the same name by the same author is
+    replaced (an update the user just approved); anything else of that
+    name is refused."""
+    conflict = author_conflict(entry)
+    if conflict:
+        log_event("shared_skill_author_changed", name=entry["name"], content_hash=entry["content_hash"])
+        return conflict
     current = installed()
     if entry["name"] not in current and len(current) >= max_imported():
         return {"ok": False, "error_code": "cap_reached", "error": f"at most {max_imported()} shared skills can be installed; remove one first"}
@@ -518,7 +540,8 @@ def _list_result(index, stale_error) -> dict:
         e["author"] = registry_text.safe_author(e.get("author"))
         rec = mine.get(name)
         e["installed_version"] = rec.get("version") if rec else None
-        e["update_available"] = bool(rec) and rec.get("content_hash") != e["content_hash"] and e["version"] > (rec.get("version") or 0)
+        e["update_available"] = (bool(rec) and rec.get("content_hash") != e["content_hash"] and e["version"] > (rec.get("version") or 0)
+                                 and author_conflict(e) is None)
         skills.append(e)
     installed_list = []
     for name, rec in sorted(mine.items()):
@@ -528,7 +551,7 @@ def _list_result(index, stale_error) -> dict:
             "withdrawn": bool(entry and entry.get("yanked")),
             "in_index": entry is not None,
             "update_available": bool(newest.get(name)) and newest[name]["content_hash"] != rec.get("content_hash")
-            and newest[name]["version"] > (rec.get("version") or 0),
+            and newest[name]["version"] > (rec.get("version") or 0) and author_conflict(newest[name]) is None,
         })
     result = {"ok": True, "index_ok": True, "skills": skills, "installed": installed_list,
               "imported_max": max_imported(), "generated_at": index.get("generated_at"),
@@ -560,6 +583,9 @@ async def handle_control(payload: dict) -> dict:
             if not isinstance(name, str) or not isinstance(content_hash, str) or not HASH_RE.fullmatch(content_hash):
                 return {"ok": False, "error_code": "bad_request", "error": "name and content_hash are required"}
             entry, definition = await loop.run_in_executor(None, resolve, name, content_hash)
+            conflict = author_conflict(entry)
+            if conflict:
+                return conflict
             if kind == "registry_preview":
                 return {"ok": True, **approval_card(entry, definition)}
             result = commit_install(entry, definition)

@@ -528,6 +528,24 @@ async def main():
     check(result["ok"] and result.get("replaced") and record["version"] == 2 and record["first_run_done"] is False
           and registry.SKILLS["tidy_stamp"]["content_hash"] == tidy_v2["content_hash"],
           "approved update replaces it and starts a new first run")
+    # Another author's "v3" under the same name is not an update (review M1).
+    tidy_v3 = make_skill(
+        "tidy_stamp",
+        [{"tool": "get_current_datetime", "args": {}}, {"tool": "run_command", "args": {"cmd": "echo v3 {word}"}}],
+        description="v3", properties={"word": {"type": "string"}}, required=["word"], version=3,
+    )
+    publish([(TIDY, {}, None), (tidy_v2, {}, None), (tidy_v3, {"author": "mallory"}, None), (PLAIN, {}, None)])
+    listing = await ctl({"type": "registry_list", "refresh": True})
+    row = next(s for s in listing["skills"] if s["name"] == "tidy_stamp")
+    mine = {r["name"]: r for r in listing["installed"]}
+    check(row["version"] == 3 and not row["update_available"] and not mine["tidy_stamp"]["update_available"],
+          "another author's newer version is not offered as an update")
+    for kind in ("registry_preview", "registry_install"):
+        result = await ctl({"type": kind, "name": "tidy_stamp", "content_hash": tidy_v3["content_hash"]})
+        check(not result["ok"] and result["error_code"] == "author_changed", f"{kind} of another author's version: author_changed")
+    result = await dispatcher.dispatch("install_shared_skill", {"name": "tidy_stamp"}, FakeSocket(pending), pending)
+    check(not result["ok"] and result.get("error_code") == "author_changed"
+          and registry.SKILLS["tidy_stamp"]["content_hash"] == tidy_v2["content_hash"], "voice install refuses it too, v2 stays")
     publish([(TIDY, {}, None), (tidy_v2, {"yanked": True}, None), (PLAIN, {}, None)])
     listing = await ctl({"type": "registry_list", "refresh": True})
     mine = {r["name"]: r for r in listing["installed"]}

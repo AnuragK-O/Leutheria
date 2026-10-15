@@ -28,8 +28,11 @@ async def run(args: dict, websocket, pending: dict) -> dict:
         entry, definition = await loop.run_in_executor(None, registry_client.resolve, name, None)
     except registry_client.RegistryError as e:
         return {"ok": False, "error": str(e)}
+    conflict = registry_client.author_conflict(entry)
+    if conflict:
+        return conflict
 
-    card = registry_client.approval_card(entry, definition)
+    card =registry_client.approval_card(entry, definition)
     steps = len(card["steps"])
     intro = (
         f"Install the shared skill {card['name']}, version {card['version']}, by {card['author']}? "

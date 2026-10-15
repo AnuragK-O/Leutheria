@@ -572,7 +572,7 @@ never on error text:
 | `verification_failed` | any (signature, unknown key, malformed or older index, file sha256/size/content_hash, validate.py) | red "Index refused"; nothing installable |
 | `no_signing_key` | any | red "no registry key configured" |
 | `unavailable` | list (ok:false = nothing cached; ok:true + `stale` = last verified index shown), preview, install | neutral notice |
-| `cap_reached` / `yanked` / `not_found` / `refused` | install, preview | the card's "Not installed" callout |
+| `cap_reached` / `yanked` / `not_found` / `refused` / `author_changed` | install, preview | the card's "Not installed" callout |
 | `not_shareable` / `not_found` / `bad_request` | share_preview, share | "Can't share this one" |
 | `unacknowledged_flags` | share | the error under the preview (the button is disabled until every flag is ticked, so only a stale preview reaches it) |
 
@@ -1494,7 +1494,10 @@ nothing is listed, previewed or installed.** The production key is added at go-l
   never trusted and never remembered (also refused inside `trust.py`). A GUI step asks per
   step on the first run before its usual app grant.
 - Updates are offered (`update_available`), never applied: installing the newer version is
-  a new approval, and it starts a new first run; the old one keeps working until then. A
+  a new approval, and it starts a new first run; the old one keeps working until then.
+  Only a version by the installed one's author is an update: another author's file under
+  the same name is never offered (`update_available` false) and its preview, install and
+  voice install are refused with `author_changed` (delete the installed one first). A
   yanked version stays installed and is listed `withdrawn: true`; it can't be previewed or
   installed.
 - At most 20 imported skills (each one is on every request's tool list);
@@ -2001,7 +2004,7 @@ Rules and trust chain: "Shared skills (the public registry)" above.
 # send only after the user approved the card for exactly this content_hash; an installed
 # older version of the same name is replaced (that card is the update's approval)
 # -> {..., "ok": true, "name", "id", "content_hash", "version", "replaced": bool}
-#    or {"ok": false, "error_code": cap_reached | yanked | not_found | refused (name taken)
+#    or {"ok": false, "error_code": cap_reached | yanked | not_found | refused (name taken) | author_changed
 #        | verification_failed | no_signing_key | unavailable | bad_request, "error"}
 {"type": "registry_share_preview", "skill": "my_learned_skill", "parameterize": ["f2"], "request_id": "4"}
 # -> {..., "ok": true, "skill", "path": "skills/<name>/<hash>.json", "content_hash",
