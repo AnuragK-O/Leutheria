@@ -3,7 +3,7 @@ import anthropic
 from agent.core.llm import LLMBackend, LLMTurn, ToolCall
 from agent.core.logging_util import log_event
 
-MODEL = "claude-opus-5"
+MODEL = "claude-haiku-5-5"
 MAX_TOKENS = 16000
 
 
