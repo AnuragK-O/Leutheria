@@ -1,0 +1,53 @@
+# Withdraws one published version (manual; needs write access to dispatch).
+# The file stays so installed copies still verify; the index marks it yanked.
+name: yank
+
+on:
+  workflow_dispatch:
+    inputs:
+      name:
+        description: Skill name
+        required: true
+      content_hash:
+        description: content_hash of the version to withdraw
+        required: true
+      reason:
+        description: Why (shown to maintainers; keep it short)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  yank:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: registry-main-writes
+      cancel-in-progress: false
+    env:
+      NAME: ${{ inputs.name }}
+      HASH: ${{ inputs.content_hash }}
+      REASON: ${{ inputs.reason }}
+      ACTOR: ${{ github.actor }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Record the yank
+        run: |
+          python tools/yank.py --repo . --name "$NAME" --content-hash "$HASH" --reason "$REASON" --by "$ACTOR"
+          git config user.name "leutheria-registry[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add yanked.json
+          git commit --quiet -m "Yank $NAME ${HASH:0:12}"
+          git push --quiet origin HEAD:main
+
+  publish:
+    needs: yank
+    uses: ./.github/workflows/publish.yml
+    secrets: inherit

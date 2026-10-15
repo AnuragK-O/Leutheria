@@ -85,6 +85,8 @@ pkill -if "python -m agent"; pkill -f "Electron.app"
 ./.venv/bin/python scripts/skills_e2e_check.py --scripted   # agent_loop + dispatch in a sandbox home, written plans, no model
 ./.venv/bin/python scripts/llm_cache_check.py          # REAL MODEL, ~$0.15: is the tool list being read from the prompt cache?
 ./.venv/bin/python scripts/skills_routing_check.py --report # routing table from the committed cache, no model
+./.venv/bin/python scripts/export_tool_catalog.py --check  # is agent/tool_catalog.json current? (no flag: re-export)
+./.venv/bin/python scripts/registry_pipeline_check.py   # skill registry: catalog, submission checks, index sign/verify, yank
 
 # These two call the REAL MODEL and cost money: every request carries the whole tool list (~22,700 input tokens)
 ./.venv/bin/python scripts/skills_routing_check.py      # phrase -> which capability; nothing dispatched; answers cached
@@ -330,6 +332,15 @@ unparseable: moved aside), never trusted raw. Appearance reaches every window th
 for contrast) but not the state colours: cyan/amber/red/green mean live/waiting/failed/
 succeeded, and an accent that reads as one of them is refused. The hot-edge test hook
 (`LEUTHERIA_TEST_HOOKS=1`) exists only under that variable; keep it out of the normal path.
+
+**The tool catalog is what the public skill registry knows about tools.** `agent/tool_catalog.json`
+(committed) is `tools/registry.py` reduced to name, safety, input_schema, paths, outbound and
+untrusted_output, plus the built-in skill names and a `catalog_version` digest; the registry's CI
+(`skill-registry/`, the future `leutheria-skills` repo) validates submissions against it, at the
+Leutheria commit pinned in `skill-registry/LEUTHERIA_REF`, by importing `skills/validate.py` on
+Linux. So: whenever a tool is added, removed or its schema/paths/safety/outbound/untrusted_output
+change, re-run `scripts/export_tool_catalog.py` and commit the result (`--check` fails until you
+do), and keep `validate.py` (and `template_skill.py`, which it imports) stdlib-only.
 
 TTS, skill learning and the voice session are additive: a failure in any of them is logged
 and skipped (voice goes to `off`), never blocking or delaying the text reply.
