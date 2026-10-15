@@ -238,7 +238,7 @@ def share_sanitize(definition: dict, homes, username: str, standard_folders, par
     for f in chosen.values():
         if not f["where"].startswith("steps["):
             continue  # a description can't take a parameter; the flag stays a warning
-        name = _param_name(f["arg"] or f["kind"], taken)
+        name = _param_name({"personal_path": "folder", "your_username": "username"}.get(f["kind"], f["kind"]), taken)
         taken.add(name)
         step_index = int(f["where"][len("steps[") : f["where"].index("]")])
         step = content["steps"][step_index]

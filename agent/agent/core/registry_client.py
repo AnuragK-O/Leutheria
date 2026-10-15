@@ -120,7 +120,13 @@ def accepted_keys() -> dict:
     for entry in entries:
         try:
             raw = base64.b64decode(entry["public_key"], validate=True)
-            keys[str(entry["key_id"])] = Ed25519PublicKey.from_public_bytes(raw)
+            # key_id is derived from the key (the registry's signer writes
+            # sha256(raw public key)[:16]); a configured id that disagrees
+            # is a mistake in the key list, so the key is not used.
+            key_id = hashlib.sha256(raw).hexdigest()[:16]
+            if str(entry["key_id"]) != key_id:
+                raise ValueError("key_id does not match the key")
+            keys[key_id] = Ed25519PublicKey.from_public_bytes(raw)
         except (KeyError, ValueError, TypeError, binascii.Error):
             log_event("registry_key_invalid", key_id=str(entry.get("key_id")))
     return keys
@@ -152,11 +158,14 @@ def _fetch(path: str, cap: int) -> bytes:
     else:
         conn = http.client.HTTPConnection(base.hostname, port, timeout=TIMEOUT)
     expired = threading.Event()
+    opened = []
 
     def _kill():
+        # The socket captured at connect: http.client drops conn.sock once a
+        # response says the connection will close, while the response
+        # still reads from it (found by the slow-server check).
         expired.set()
-        sock = conn.sock
-        if sock is not None:
+        for sock in opened:
             try:
                 sock.shutdown(socket.SHUT_RDWR)
             except OSError:
@@ -167,6 +176,10 @@ def _fetch(path: str, cap: int) -> bytes:
     watchdog.start()
     started = time.monotonic()
     try:
+        conn.connect()
+        opened.append(conn.sock)
+        if expired.is_set():
+            raise RegistryError(f"{path}: the registry took longer than {DEADLINE:g} s")
         conn.request("GET", request_path, headers={"User-Agent": "Leutheria/1.0 (skill registry)", "Accept-Encoding": "identity"})
         response = conn.getresponse()
         if response.status != 200:
@@ -355,8 +368,14 @@ def fetch_verified_skill(entry: dict) -> dict:
         raise RegistryError(f"{entry['name']}: a registry file may not carry source fields")
     if definition.get("name") != entry["name"] or definition.get("content_hash") != entry["content_hash"]:
         raise RegistryError(f"{entry['name']}: file name or content_hash does not match the index")
-    definition["source"] = f"imported:{entry['content_hash']}"
     try:
+        # The registry's own contract for a shared file (refuses source
+        # fields, content_hash must recompute), from the registry engineer's
+        # validate.py; then the local, full check with the source we stamp.
+        shared_check = getattr(validate, "validate_shared", None)
+        if shared_check is not None:
+            shared_check(definition, **registry.validation_kwargs())
+        definition["source"] = f"imported:{entry['content_hash']}"
         validate.validate(definition, **registry.validation_kwargs())
     except (SkillValidationError, KeyError, TypeError, AttributeError) as e:
         raise RegistryError(f"{entry['name']}: not a valid skill here: {e}") from None
