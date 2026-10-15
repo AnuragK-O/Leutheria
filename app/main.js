@@ -7,6 +7,8 @@ const {
   ipcMain,
   globalShortcut,
   screen,
+  shell,
+  clipboard,
 } = require("electron");
 const { spawn, execSync } = require("child_process");
 const fs = require("fs");
@@ -110,7 +112,7 @@ function isConnected() {
   return Boolean(ws && ws.readyState === WebSocket.OPEN);
 }
 
-function sendControlRequest(payload) {
+function sendControlRequest(payload, timeoutMs = 10000) {
   return new Promise((resolve) => {
     if (!isConnected()) {
       resolve({ ok: false, error: "not connected to agent" });
@@ -122,7 +124,7 @@ function sendControlRequest(payload) {
     // Never leave the UI spinning forever if the agent dies mid-request.
     setTimeout(() => {
       if (controlRequests.delete(requestId)) resolve({ ok: false, error: "agent timed out" });
-    }, 10000);
+    }, timeoutMs);
   });
 }
 
@@ -768,8 +770,16 @@ function logReceived(payload) {
       `[bridge] received: {"type":"control_result","request_id":"${payload.request_id}"} ` +
         `<inventory: ${payload.tools.length} tools, ${payload.skills.length} skills>`
     );
+  } else if (payload.type === "control_result" && Array.isArray(payload.skills) && "index_ok" in payload) {
+    // The shared-skill index: summarized, like the inventory.
+    log(
+      `[bridge] received: {"type":"control_result","request_id":"${payload.request_id}"} ` +
+        `<registry index: ${payload.index_ok ? "verified" : `not usable (${payload.error_code || payload.error || "?"})`}, ${payload.skills.length} entries>`
+    );
   } else {
-    log(`[bridge] received: ${JSON.stringify(payload)}`);
+    const text = JSON.stringify(payload);
+    // A skill definition (registry preview, share preview) can be long.
+    log(`[bridge] received: ${text.length > 1500 ? `${text.slice(0, 1500)}... <${text.length} chars>` : text}`);
   }
 }
 
@@ -1044,6 +1054,67 @@ ipcMain.handle("hide-panel", (_event, id) => Boolean(panels && (id === "all" ? p
 ipcMain.handle("panel-op", (event, op, data) => (panels ? panels.command(event.sender, op, data) : { ok: false }));
 ipcMain.handle("chat-history", () => transcript);
 ipcMain.handle("list-timers", () => sendControlRequest({ type: "list_timers" }));
+
+// --- the shared-skill registry (agent: core/registry_client.py) --------------
+// Fetching and verifying the index is network work on the agent's side, so
+// these get a longer deadline than the inventory reads.
+const REGISTRY_TIMEOUT_MS = 30000;
+
+ipcMain.handle("registry-list", (_event, refresh) =>
+  sendControlRequest({ type: "registry_list", ...(refresh ? { refresh: true } : {}) }, REGISTRY_TIMEOUT_MS)
+);
+// Read-only: the full definition the install card shows. Nothing is installed.
+ipcMain.handle("registry-preview", (_event, { name, contentHash }) =>
+  sendControlRequest({ type: "registry_preview", name, content_hash: contentHash }, REGISTRY_TIMEOUT_MS)
+);
+// Sent only from the install card's own button, after the user has seen every
+// step (renderer/js/library-shared.js). The agent re-checks everything.
+ipcMain.handle("registry-install", async (_event, { name, contentHash }) => {
+  const result = await sendControlRequest({ type: "registry_install", name, content_hash: contentHash }, REGISTRY_TIMEOUT_MS);
+  if (result.ok) invalidateInventory();
+  return result;
+});
+ipcMain.handle("registry-share-preview", (_event, skill) =>
+  sendControlRequest({ type: "registry_share_preview", skill }, REGISTRY_TIMEOUT_MS)
+);
+
+/** True only for an https URL on github.com itself: the one place a share opens. */
+function isGithubUrl(text) {
+  if (typeof text !== "string" || !text.startsWith("https://github.com/")) return false;
+  try {
+    const url = new URL(text);
+    return url.protocol === "https:" && url.hostname === "github.com" && !url.username && !url.password && !url.port;
+  } catch (_err) {
+    return false;
+  }
+}
+
+// Share: the agent builds the URL of GitHub's "new file" page, prefilled. This
+// process opens it -- never a URL from a renderer, and never anything but
+// https://github.com/. When the file is too long to go in the URL, the agent
+// says so and sends the JSON: it goes on the clipboard and the page opens
+// without it, for the user to paste. Under LEUTHERIA_TEST_HOOKS neither the
+// browser nor the clipboard is touched; the capture script reads what would
+// have happened from __leutheriaTest.shared().
+const sharedRecord = [];
+ipcMain.handle("registry-share", async (_event, skill) => {
+  const result = await sendControlRequest({ type: "registry_share", skill }, REGISTRY_TIMEOUT_MS);
+  if (!result.ok) return { ok: false, error: result.error || "The agent couldn't prepare the share.", error_code: result.error_code };
+  if (!isGithubUrl(result.url)) {
+    log(`[share] refused to open a URL that isn't https://github.com/: ${String(result.url).slice(0, 80)}`);
+    return { ok: false, error: "The share link didn't point at github.com, so it wasn't opened.", error_code: "bad_url" };
+  }
+  const copy = Boolean(result.too_long) && typeof result.json === "string";
+  if (result.too_long && !copy) return { ok: false, error: "The file is too long for a link and the agent sent no copy of it." };
+  if (TEST_HOOKS) {
+    sharedRecord.push({ url: result.url, copied: copy ? result.json.length : 0 });
+  } else {
+    if (copy) clipboard.writeText(result.json);
+    await shell.openExternal(result.url);
+  }
+  log(`[share] opened GitHub for ${skill}${copy ? " (file copied to the clipboard: too long for the link)" : ""}`);
+  return { ok: true, copied: copy, target_path: result.target_path || null };
+});
 // "Open in Library" from a panel: an explicit click, so bringing the main
 // window forward is what was asked for.
 ipcMain.on("open-main", (_event, { view, name }) => {
@@ -1124,6 +1195,7 @@ function installTestHooks() {
     positionOverlay: () => alive(overlayWindow) && positionOverlay(),
     settings: () => settings,
     settingsFile: () => settingsFile,
+    shared: () => sharedRecord,
   };
 }
 

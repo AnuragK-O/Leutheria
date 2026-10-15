@@ -2687,6 +2687,473 @@ mark {
 }
 
 /* ==========================================================================
+   Library: shared skills (js/library-shared.js)
+   A stranger's procedure, so the colours carry weight here: amber marks
+   what will ask you (run_command steps, an update, the install card itself),
+   red what failed or was refused (a withdrawn skill, high risk, an index that
+   didn't verify). Low risk is neutral, never green: passing a screening
+   isn't the same as being safe.
+   ========================================================================== */
+
+.micro-key {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+/* a plain notice: no state, so no state colour */
+.callout-neutral {
+  --tone: var(--text-3);
+}
+
+/* the index's state, in the list and the overview */
+.shared-index-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+
+.shared-index-text strong {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.shared-index-detail {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.shared-index-text .link-button,
+.shared-index-text .btn {
+  margin-top: 2px;
+}
+
+/* Refused for a failed signature: a security state, so it's heavier than an
+   ordinary error -- a stronger wash and outline as well as the red rule. */
+.shared-index-refused {
+  background: color-mix(in srgb, var(--red) 11%, var(--surface));
+  border-color: color-mix(in srgb, var(--red) 45%, var(--line));
+}
+
+/* Shared's filter words are longer than the state filters' ("Withdrawn",
+   "Installed") and ran into each other in the 320 px list column, so in the
+   main window they go two by two. The panel's strip is wider: one row. */
+body:not(.panel-page) .library-filters-shared {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+body:not(.panel-page) .library-filters-shared .filter-chip:nth-child(3) {
+  border-left: none;
+}
+
+body:not(.panel-page) .library-filters-shared .filter-chip:nth-child(n + 3) {
+  border-top: var(--hair) solid var(--line);
+}
+
+body:not(.panel-page) .library-filters-shared .filter-chip:first-child,
+body:not(.panel-page) .library-filters-shared .filter-chip:nth-child(3) {
+  padding-left: 18px;
+}
+
+/* in a narrow panel the three screening readouts stay one row */
+.panel-page .shared-review {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.panel-page .shared-review .stat-value {
+  white-space: normal;
+  font-size: var(--fs-md);
+}
+
+.library-rows > .callout {
+  margin: var(--s2);
+}
+
+/* rows */
+.shared-row-meta {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+
+/* has run_command steps: the shell prompt glyph, amber (it will ask) */
+.shared-cmd {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  color: var(--amber);
+  border: var(--hair) solid color-mix(in srgb, var(--amber) 55%, var(--line));
+}
+
+.shared-cmd svg {
+  width: 11px;
+  height: 11px;
+}
+
+/* detail */
+.shared-byline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px var(--s3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+
+.shared-byline b {
+  font-weight: 500;
+  color: var(--text);
+}
+
+.shared-review .stat-value {
+  display: flex;
+  align-items: center;
+  min-height: 30px;
+  font-size: var(--fs-lg);
+}
+
+.shared-cmd-value.is-cmd {
+  color: var(--amber);
+}
+
+.shared-flags {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: var(--s2);
+}
+
+.shared-flags li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: color-mix(in srgb, var(--amber) 8%, var(--surface));
+  border-left: var(--rule) solid var(--amber);
+}
+
+.shared-flags svg {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  color: var(--amber);
+  transform: translateY(1px);
+}
+
+.shared-requires {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: var(--s2);
+}
+
+.shared-tool {
+  padding: 1px 6px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+  border: var(--hair) solid var(--line-strong);
+}
+
+.shared-tool.is-cmd {
+  color: var(--amber);
+  border-color: color-mix(in srgb, var(--amber) 55%, var(--line));
+}
+
+/* The install card: a prompt card in the detail pane, not the transcript. */
+.install-card {
+  margin: 0;
+}
+
+.install-card.resolved .shared-cmd-warning,
+.install-card.resolved .shared-high-risk {
+  display: none;
+}
+
+.install-steps,
+.shared-flags,
+.share-changes,
+.share-flagged {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.step-tool {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+/* a run_command step: amber rule and wash, like a confirmation's needs-click */
+.step-command {
+  background: color-mix(in srgb, var(--amber) 7%, var(--surface));
+  box-shadow: inset var(--rule) 0 0 var(--amber);
+}
+
+.step-command .step-tool {
+  color: var(--amber);
+}
+
+.step-command .step-tool .badge {
+  font-weight: 500;
+}
+
+/* every argument in full, one per line */
+.step-args-full {
+  display: grid;
+  gap: 2px;
+  margin-top: 2px;
+}
+
+.arg-line {
+  display: grid;
+  grid-template-columns: minmax(48px, max-content) minmax(0, 1fr);
+  column-gap: 10px;
+}
+
+.arg-key {
+  color: var(--text-3);
+}
+
+.arg-value {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.step-command .arg-value {
+  color: var(--text);
+}
+
+.shared-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px var(--s3);
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+
+.shared-facts dt {
+  padding-top: 2px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.shared-facts dd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 6px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.shared-facts code {
+  padding: 0 5px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text);
+  border: var(--hair) solid var(--line-strong);
+}
+
+.shared-model-desc {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text);
+}
+
+.shared-author-desc {
+  font-style: italic;
+}
+
+.shared-aside {
+  color: var(--text-3);
+}
+
+.prompt-hint {
+  align-self: center;
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+}
+
+/* the decision, once made: a check and one line, like a settled confirmation */
+.prompt-outcome {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+}
+
+.prompt-outcome svg {
+  width: 12px;
+  height: 12px;
+  color: var(--green);
+}
+
+/* overview readouts */
+.shared-index-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.shared-led {
+  width: var(--led);
+  height: var(--led);
+  flex: none;
+  background: var(--text-3);
+}
+
+.shared-index-state[data-state="verified"] {
+  color: var(--green);
+}
+
+.shared-index-state[data-state="verified"] .shared-led {
+  background: var(--green);
+}
+
+.shared-index-state[data-state="refused"] {
+  color: var(--red);
+}
+
+.shared-index-state[data-state="refused"] .shared-led {
+  background: var(--red);
+}
+
+.stat-at-cap .stat-value {
+  color: var(--amber);
+}
+
+/* share: a learned skill's way out */
+.share-start {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: 11px 14px;
+  background: var(--surface);
+  border: var(--hair) solid var(--line);
+}
+
+.share-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.share-row {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  column-gap: var(--s3);
+  padding: 9px 14px;
+  border-bottom: var(--hair) solid var(--line);
+}
+
+.share-row > .micro-key {
+  padding-top: 3px;
+}
+
+.share-path,
+.share-field,
+.share-value {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.share-path {
+  color: var(--text);
+}
+
+.share-changes,
+.share-flagged {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.share-changes li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+  font-size: var(--fs-sm);
+}
+
+.share-field {
+  color: var(--text-2);
+}
+
+.share-diff {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+
+.share-diff del {
+  color: var(--text-3);
+}
+
+.share-diff ins {
+  text-decoration: none;
+  color: var(--text);
+}
+
+.share-arrow,
+.share-removed {
+  color: var(--text-3);
+}
+
+.share-note {
+  flex-basis: 100%;
+  color: var(--text-3);
+}
+
+.share-flagged .needs-click {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.share-value {
+  color: var(--text);
+}
+
+.share-json {
+  max-height: 280px;
+  overflow: auto;
+  border: none;
+  border-top: var(--hair) solid var(--line);
+}
+
+.share .prompt-actions,
+.share .prompt-outcome,
+.share .callout {
+  margin-top: var(--s3);
+}
+
+/* ==========================================================================
    Activity
    ========================================================================== */
 
