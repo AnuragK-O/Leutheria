@@ -104,6 +104,25 @@ file stays (installed copies must still verify); the next index marks it `yanked
 hides it from Discover and shows installed copies as withdrawn. Installed copies are not
 removed. Yanking a version doesn't free its name.
 
+### Index format and expiry
+
+`index.json` is `{"format": 1, "generated_at", "expires_at", "catalog_version", "skills": [...]}`
+(each skill entry is listed in `tools/build_index.py`). Both timestamps are UTC in exactly the
+form `YYYY-MM-DDTHH:MM:SSZ`, and both are covered by the signature.
+
+**`expires_at`** is `generated_at` + 7 days (`common.INDEX_VALIDITY_DAYS`). A client must refuse
+the index (treat the registry as unavailable, not merely warn) when `expires_at` is missing or
+malformed, is not later than `generated_at`, is more than 8 days after `generated_at`
+(`common.INDEX_MAX_VALIDITY_DAYS`), or is at or before the current time. That caps how long a
+mirror, proxy or attacker replaying an old, validly signed index can hide a yank. `format` stays
+1: the field is required from now on, and no client shipped before it.
+
+`publish` runs on a daily schedule with `build_index.py --refresh`, which rewrites and re-signs
+the index even when no skill changed, so the published index is never more than about a day old.
+If the schedule stops (GitHub disables scheduled workflows after 60 days without repository
+activity), clients start refusing the registry 7 days after the last run: run **publish** by
+hand, and re-enable the workflow.
+
 ### Signing keys and rotation
 
 ```bash

@@ -58,7 +58,8 @@ def publish(args, repo: Path) -> dict:
         return out
     sign = run("sign_index.py", "--index", repo / "index.json", "--out", repo / "index.json.sig",
                "--key-file", args.key_file)
-    verify = run("verify_index.py", "--repo", repo, "--keys", args.keys, *_catalog_args(args))
+    verify = run("verify_index.py", "--repo", repo, "--keys", args.keys, *_catalog_args(args),
+                 *(["--now", args.now] if args.now else []))
     out["verified"] = sign.returncode == 0 and verify.returncode == 0
     if not out["verified"]:
         out["error"] = (sign.stderr + verify.stderr).strip()

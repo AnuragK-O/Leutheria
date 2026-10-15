@@ -14,6 +14,7 @@ subprocesses exactly as CI does, on temp copies, with a stub screener. No
 network, no model, no sound, no sockets.
 """
 
+import datetime
 import json
 import os
 import shutil
@@ -157,6 +158,7 @@ json.dump({"verdict": verdict, "risk": risk, "findings": [{"where": "step 0", "i
   "model": "stub-model", "screen_version": 1}, open(out, "w"))
 ''')
 WORK = TMP / "work"
+NOW = "2026-10-16T00:00:00Z"  # verification clock: after every --now below, before their indexes expire
 
 
 def submit(definition_or_text, author="alice", mode="approve", path=None, human=False, now="2026-10-15T10:00:00Z",
@@ -335,7 +337,8 @@ check(tool("human_approval.py", "candidates", "--reviews", TMP / "reviews.json",
 
 # --- 4. build / sign / verify ----------------------------------------------------
 
-check(tool("verify_index.py", "--repo", repo, "--keys", keys, "--leutheria", REPO).returncode == 0, "published repo verifies")
+check(tool("verify_index.py", "--repo", repo, "--keys", keys, "--leutheria", REPO, "--now", NOW).returncode == 0,
+      "published repo verifies")
 r = tool("build_index.py", "--repo", repo, "--leutheria", REPO)
 check(r.returncode == 0 and "unchanged" in r.stdout, "rebuilding an unchanged registry leaves index.json alone")
 pending = skill(name="pushed_directly")
@@ -381,7 +384,7 @@ def tampered(mutate, label):
     shutil.rmtree(copy, ignore_errors=True)
     shutil.copytree(repo, copy)
     mutate(copy)
-    r = tool("verify_index.py", "--repo", copy, "--keys", keys, "--leutheria", REPO)
+    r = tool("verify_index.py", "--repo", copy, "--keys", keys, "--leutheria", REPO, "--now", NOW)
     check(r.returncode == 1, f"verification fails: {label}: {r.stdout}{r.stderr}")
     return r.stderr
 
@@ -422,8 +425,46 @@ def swap_description(c):
 
 tampered(swap_description, "prose-only edit (content_hash unchanged) still caught by sha256")
 other_keys = write(TMP / "other_keys.json", {"keys": [json.loads(tool("keygen.py", "--private-out", TMP / "c.pem").stdout)]})
-r = tool("verify_index.py", "--repo", repo, "--keys", other_keys)
+r = tool("verify_index.py", "--repo", repo, "--keys", other_keys, "--now", NOW)
 check(r.returncode == 1 and "unknown signing key" in r.stderr, "client with a different key refuses the index")
+
+# M3: a signed expiry, so a frozen copy of an old index stops verifying.
+idx = index()
+_ts = lambda s: datetime.datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ")  # noqa: E731
+check(_ts(idx["expires_at"]) - _ts(idx["generated_at"]) == datetime.timedelta(days=7),
+      f"expires_at is generated_at + 7 days: {idx['generated_at']} -> {idx['expires_at']}")
+r = tool("verify_index.py", "--repo", repo, "--keys", keys, "--leutheria", REPO, "--now", "2026-10-23T00:00:00Z")
+check(r.returncode == 1 and "expired" in r.stderr, f"an index past its expires_at fails verification: {r.stderr}")
+
+
+def resigned(mutate_index):
+    def go(c):
+        d = json.loads((c / "index.json").read_text())
+        mutate_index(d)
+        (c / "index.json").write_text(json.dumps(d, indent=2, sort_keys=True) + "\n")
+        tool("sign_index.py", "--index", c / "index.json", "--out", c / "index.json.sig", "--key-file", key_a)
+    return go
+
+
+tampered(resigned(lambda d: d.pop("expires_at")), "a validly signed index with no expires_at")
+tampered(resigned(lambda d: d.update(expires_at="2027-10-15T10:00:00Z")), "a validly signed index valid for a year")
+tampered(resigned(lambda d: d.update(expires_at=d["generated_at"])), "expires_at not after generated_at")
+tampered(resigned(lambda d: d.update(expires_at=d["expires_at"].replace("Z", "+00:00"))), "expires_at not in the Z form")
+before = (repo / "index.json").read_bytes()
+r = tool("build_index.py", "--repo", repo, "--leutheria", REPO, "--now", "2026-10-17T09:00:00Z")
+check("unchanged" in r.stdout and (repo / "index.json").read_bytes() == before, "a plain rebuild keeps the old timestamps")
+r = tool("build_index.py", "--repo", repo, "--leutheria", REPO, "--now", "2026-10-17T09:00:00Z", "--refresh")
+fresh = json.loads((repo / "index.json").read_text())
+check(r.returncode == 0 and (fresh["generated_at"], fresh["expires_at"]) == ("2026-10-17T09:00:00Z", "2026-10-24T09:00:00Z"),
+      "--refresh (the daily re-sign) moves generated_at and expires_at forward")
+legacy = {k: v for k, v in fresh.items() if k != "expires_at"}
+(repo / "index.json").write_bytes(json.dumps(legacy).encode())
+r = tool("build_index.py", "--repo", repo, "--leutheria", REPO, "--now", "2026-10-17T10:00:00Z")
+check("unchanged" not in r.stdout and json.loads((repo / "index.json").read_text()).get("expires_at"),
+      "an index without expires_at is always rewritten")
+tool("sign_index.py", "--index", repo / "index.json", "--out", repo / "index.json.sig", "--key-file", key_a)
+check(tool("verify_index.py", "--repo", repo, "--keys", keys, "--leutheria", REPO, "--now", "2026-10-18T00:00:00Z")
+      .returncode == 0, "the refreshed index re-signs and verifies")
 
 # --- 5. yank ---------------------------------------------------------------------
 

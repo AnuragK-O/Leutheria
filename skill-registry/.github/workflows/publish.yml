@@ -10,6 +10,11 @@ on:
     paths: ["skills/**", "reviews/**", "yanked.json", "LEUTHERIA_REF", "tools/**"]
   workflow_call:
   workflow_dispatch:
+  # Daily re-sign: the index's signed expires_at is 7 days out, and clients
+  # refuse an expired index, so a frozen copy can hide a yank for at most
+  # that long. A missed day or two is slack, not an outage.
+  schedule:
+    - cron: "17 4 * * *"
 
 permissions:
   contents: write
@@ -51,7 +56,9 @@ jobs:
         run: pip install -r requirements-ci.txt
 
       - name: Build index
-        run: python tools/build_index.py --repo . --leutheria .leutheria --out index.json
+        env:
+          REFRESH: ${{ github.event_name == 'schedule' && '--refresh' || '' }}
+        run: python tools/build_index.py --repo . --leutheria .leutheria --out index.json $REFRESH
 
       - name: Sign index
         env:
