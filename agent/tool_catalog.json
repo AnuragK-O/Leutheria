@@ -23,6 +23,7 @@
     "git_sync",
     "github_open",
     "hide_panel",
+    "install_shared_skill",
     "meeting_prep",
     "morning_briefing",
     "new_node_project",
@@ -48,9 +49,9 @@
     "web_search",
     "wind_down"
   ],
-  "catalog_version": "9929bdf5df83480c0f56697a53b013c04259af54c9599d76484b1ff7162dad9e",
+  "catalog_version": "fdfd2a1736d731c84b03a47ac3d42f7234b048dabf714b61c72a2ec9fdf41d4d",
   "format": 1,
-  "leutheria_ref": "0c69b3a0bdada9808401b20e3a86af8d44a33258",
+  "leutheria_ref": "ae6a10cf074897d2dbf628dd74cb6c39c82a289e",
   "tools": [
     {
       "input_schema": {
@@ -811,6 +812,29 @@
       "paths": {
         "path": "read"
       },
+      "safety": "safe",
+      "untrusted_output": true
+    },
+    {
+      "input_schema": {
+        "properties": {
+          "limit": {
+            "description": "Most results to return. Defaults to 8, at most 20.",
+            "type": "integer"
+          },
+          "query": {
+            "description": "What the skill should do, e.g. 'tidy downloads'.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "search_shared_skills",
+      "outbound": null,
+      "paths": {},
       "safety": "safe",
       "untrusted_output": true
     },
