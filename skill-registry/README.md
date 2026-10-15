@@ -1,0 +1,133 @@
+# Leutheria shared skills
+
+The public registry of skills for [Leutheria](https://github.com/AnuragK-O/Leutheria), a
+voice assistant for macOS. A skill here is a short, readable list of steps, each one a call
+to one of Leutheria's built-in tools. Nothing in this repository is code that runs on
+anyone's Mac: the app reads a skill as data, shows every step before it installs it, and
+asks again on its first run.
+
+## Sharing a skill
+
+1. In Leutheria, open the Library, pick one of your learned skills and choose **Share**. The
+   app removes your home folder and personal values, shows you exactly what will be
+   published, and opens GitHub's "new file" page here with the file filled in.
+2. Submit it as a pull request from your own GitHub account. The app never holds GitHub
+   credentials.
+3. Automated checks run within a few minutes and comment on the PR:
+   - **Structure**: the PR adds exactly one file, `skills/<name>/<content_hash>.json`, and
+     changes nothing else; the file is valid against the tool catalog of the Leutheria
+     version this registry is pinned to (`LEUTHERIA_REF`); it is at most 64 KiB.
+   - **Screening**: a static analyser, then an AI reviewer, read the steps and the
+     description.
+   - Clean submissions are merged and published automatically. Doubtful ones get the
+     `needs-human-review` label and a maintainer looks at them. Clearly bad ones are closed
+     with the reasons.
+
+Rules for a submission:
+
+- One file per PR, never an edit or a deletion of an existing file. A new version of your
+  skill is a new file (its steps changed, so its `content_hash` and file name changed).
+  Changing only the wording keeps the same `content_hash`, so it can't be republished.
+- A name belongs to whoever published it first; other people pick another name.
+- No `source` field (the installing app sets it). `run_command` steps are allowed, and every
+  user is asked before each one runs, every time.
+- Descriptions are not shown to the AI model verbatim; the app writes its own from your
+  summary and the step list. Write it for people.
+
+By submitting you dedicate the skill file to the public domain under CC0 1.0 (see LICENSE).
+
+## Repository layout
+
+| Path | What | Who writes it |
+|---|---|---|
+| `skills/<name>/<content_hash>.json` | one published version | contributors, via PR |
+| `reviews/<name>/<content_hash>.json` | its review record: version, author, published_at, screening result | CI only |
+| `yanked.json` | withdrawn versions | the yank workflow |
+| `index.json`, `index.json.sig` | the signed index the app reads | the publish workflow only; never edit by hand |
+| `keys/public_keys.json` | public signing keys | maintainer, on rotation |
+| `LEUTHERIA_REF` | the Leutheria commit whose `validate.py` and `agent/tool_catalog.json` CI uses | maintainer |
+| `tools/` | the scripts every workflow runs (testable locally) | maintainer |
+| `screen/` | static analyser + AI screener | maintainer |
+
+## For the maintainer
+
+### How publishing works
+
+- **`submission.yml`** (`pull_request_target`): checks out the trusted scripts from the base
+  commit and the PR only as data, then `tools/check_submission.py` (structure),
+  `screen/screen.py` (screening, only if structure passed), `tools/decide.py` (decision
+  table). On merge it squash-merges exactly the screened head (`--match-head-sha`), writes
+  the review record with `tools/record_review.py` (which assigns the version: previous max
+  for the name + 1, fixed forever), and calls `publish.yml`.
+- **`publish.yml`** (push to main, called, or manual): `tools/build_index.py`,
+  `tools/sign_index.py`, `tools/verify_index.py`, and commits `index.json` + `.sig` if
+  they changed. A skill file without a review record is never indexed, so a file that
+  reached main some other way stays unpublished.
+- Pushes made by workflows don't trigger other workflows, so `submission` and `yank` call
+  `publish` themselves.
+
+Repository settings this needs: secrets `ANTHROPIC_API_KEY` and `REGISTRY_SIGNING_KEY`;
+labels `needs-human-review` and `human-approved`; Actions allowed to create and approve
+pull requests and to push to `main` (if `main` is protected, let `github-actions[bot]` bypass
+it).
+
+### Reviewing a flagged submission
+
+Read the PR's comment (static and screener findings) and the file itself. To approve, add the
+`human-approved` label: the workflow re-checks structure, merges the screened head and
+records `verdict: human_approved`. A new push to the PR needs a fresh label. To reject, close
+the PR with a comment.
+
+### Yanking
+
+Actions → **yank** → Run workflow with the skill name, its `content_hash` and a reason. The
+file stays (installed copies must still verify); the next index marks it `yanked: true`, which
+hides it from Discover and shows installed copies as withdrawn. Installed copies are not
+removed. Yanking a version doesn't free its name.
+
+### Signing keys and rotation
+
+```bash
+python tools/keygen.py --private-out new-key.pem --keys keys/public_keys.json
+```
+
+prints `{"key_id", "public_key"}` (Ed25519, raw key in base64; key_id = first 16 hex of its
+sha256) and adds it to `keys/public_keys.json`. Put the PEM text in the
+`REGISTRY_SIGNING_KEY` secret and delete the file.
+
+To rotate: generate the new key; add its public entry to Leutheria's
+`agent/agent/core/registry_keys.py` (the client accepts any listed key) and ship that
+release; once enough users have it, replace the secret with the new key and let `publish`
+re-sign; later remove the old key from the client list and from `keys/public_keys.json`. If
+the key leaked, remove it from the client in an urgent release first: until then a leaked key
+can sign an index the app will accept.
+
+### Changing the pinned Leutheria version
+
+When Leutheria adds or changes tools, it re-exports `agent/tool_catalog.json`. Point
+`LEUTHERIA_REF` at a commit containing the new catalog. The next publish re-validates every
+non-yanked skill against it and fails if one no longer validates (say a tool it uses was
+removed): yank that skill, then publish again.
+
+### Recovering
+
+If a merge's review record couldn't be pushed, the skill is merged but pending. Run, from a
+checkout of main:
+
+```bash
+python tools/record_review.py --repo . --path skills/<name>/<hash>.json --verdict human_approved --author <login> --pr <n>
+```
+
+commit, push, and run **publish** by hand.
+
+### Testing locally
+
+`tools/local_pipeline.py` runs the whole flow on a copy, with the same scripts:
+
+```bash
+python tools/keygen.py --private-out /tmp/k.pem --keys /tmp/keys.json
+python tools/local_pipeline.py submit --work /tmp/reg --leutheria <Leutheria checkout> \
+  --skill my_skill.json --author me --key-file /tmp/k.pem --keys /tmp/keys.json
+```
+
+Leutheria's `agent/scripts/registry_pipeline_check.py` exercises all of it.

@@ -1,0 +1,153 @@
+# Screens a skill submission PR and merges, labels or closes it.
+#
+# pull_request_target, because submissions come from forks and the screener
+# needs ANTHROPIC_API_KEY and the job needs to merge. That trigger runs with
+# secrets, so NOTHING from the PR is executed: the scripts come from the base
+# commit (base/), the PR tree is checked out only as data (pr/, before/), and every
+# PR-derived value reaches a shell through env, never ${{ }} interpolation.
+name: submission
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: submission-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  screen:
+    if: github.event.action != 'labeled' || github.event.label.name == 'human-approved'
+    runs-on: ubuntu-latest
+    outputs:
+      merged: ${{ steps.act.outputs.merged }}
+    env:
+      PR: ${{ github.event.pull_request.number }}
+      PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      GH_TOKEN: ${{ github.token }}
+      HUMAN: ${{ github.event.action == 'labeled' && 'yes' || 'no' }}
+    steps:
+      - name: Checkout base (trusted scripts)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+
+      # GitHub's test merge of the PR into main, so a fork branched from an
+      # older main isn't read as deleting what was published since. Its first
+      # parent is the "before" tree; its second must be the head we screen.
+      - name: Checkout the PR merge (data only)
+        uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          path: pr
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Stage the before tree
+        run: |
+          test "$(git -C pr rev-parse HEAD^2)" = "$HEAD_SHA" || { echo "merge ref is not the PR head yet"; exit 1; }
+          git -C pr worktree add --quiet --detach ../before HEAD^1
+
+      - name: Read pinned Leutheria ref
+        id: pin
+        run: echo "ref=$(tr -cd '0-9a-f' < base/LEUTHERIA_REF)" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout Leutheria at the pinned ref (validate.py + tool catalog)
+        uses: actions/checkout@v4
+        with:
+          repository: AnuragK-O/Leutheria
+          ref: ${{ steps.pin.outputs.ref }}
+          path: leutheria
+          persist-credentials: false
+          sparse-checkout: |
+            agent/agent/__init__.py
+            agent/agent/skills/__init__.py
+            agent/agent/skills/validate.py
+            agent/agent/skills/template_skill.py
+            agent/tool_catalog.json
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install -r base/requirements-ci.txt
+
+      - name: 1. Structural check
+        id: structural
+        run: |
+          set +e
+          python base/tools/check_submission.py --base before --head pr --leutheria leutheria \
+            --author "$PR_AUTHOR" --out structural.json
+          echo "ok=$([ $? -eq 0 ] && echo yes || echo no)" >> "$GITHUB_OUTPUT"
+          python -c "import json; print('path=' + (json.load(open('structural.json'))['path'] or ''))" >> "$GITHUB_OUTPUT"
+
+      - name: 2-3. Static analysis + Claude screener
+        if: steps.structural.outputs.ok == 'yes'
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SKILL_PATH: ${{ steps.structural.outputs.path }}
+        run: |
+          python base/screen/screen.py "pr/$SKILL_PATH" \
+            --catalog leutheria/agent/tool_catalog.json --out screen.json
+
+      - name: 4. Decide
+        run: |
+          args="--structural structural.json --out decision.json"
+          [ -f screen.json ] && args="$args --screen screen.json"
+          [ "$HUMAN" = yes ] && args="$args --human-approved"
+          python base/tools/decide.py $args
+          python -c "import json; d = json.load(open('decision.json')); open('comment.md', 'w').write(d['comment'])"
+
+      - name: Act on the decision
+        id: act
+        env:
+          SKILL_PATH: ${{ steps.structural.outputs.path }}
+        run: |
+          action=$(python -c "import json; print(json.load(open('decision.json'))['action'])")
+          verdict=$(python -c "import json; print(json.load(open('decision.json'))['verdict'] or '')")
+          echo "merged=no" >> "$GITHUB_OUTPUT"
+          gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file comment.md
+          case "$action" in
+            close)
+              gh pr close "$PR" --repo "$GITHUB_REPOSITORY" ;;
+            review)
+              gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label needs-human-review ;;
+            merge)
+              # --match-head-sha: merge exactly the commit that was screened.
+              gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --squash --match-head-sha "$HEAD_SHA"
+              # Versions are assigned from main as it is when the record is
+              # written; if another merge's record lands first the push is
+              # rejected, so start again from the new main (version recomputed).
+              screen_arg=""; [ -f screen.json ] && screen_arg="--screen $PWD/screen.json"
+              for attempt in 1 2 3; do
+                rm -rf main
+                git clone --quiet "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" main
+                git -C main config user.name "leutheria-registry[bot]"
+                git -C main config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+                python base/tools/record_review.py --repo main --path "$SKILL_PATH" --verdict "$verdict" \
+                  --author "$PR_AUTHOR" --pr "$PR" $screen_arg || exit 1
+                git -C main add reviews
+                git -C main commit --quiet -m "Review record for $SKILL_PATH (PR #$PR)"
+                git -C main push --quiet origin HEAD:main && break
+                [ "$attempt" = 3 ] && { echo "could not record the review; see README 'Recovering'"; exit 1; }
+              done
+              echo "merged=yes" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+  # Pushes made with GITHUB_TOKEN don't trigger workflows, so publish is called.
+  publish:
+    needs: screen
+    if: needs.screen.outputs.merged == 'yes'
+    uses: ./.github/workflows/publish.yml
+    secrets: inherit

@@ -1,0 +1,71 @@
+# Rebuilds, signs and verifies index.json from main, and commits it if it
+# changed. Runs on pushes to main, when called by submission/yank (their
+# GITHUB_TOKEN pushes don't trigger it), and by hand. Never edit index.json
+# or index.json.sig by hand: this job overwrites them.
+name: publish
+
+on:
+  push:
+    branches: [main]
+    paths: ["skills/**", "reviews/**", "yanked.json", "LEUTHERIA_REF", "tools/**"]
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: registry-main-writes
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Read pinned Leutheria ref
+        id: pin
+        run: echo "ref=$(tr -cd '0-9a-f' < LEUTHERIA_REF)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          repository: AnuragK-O/Leutheria
+          ref: ${{ steps.pin.outputs.ref }}
+          path: .leutheria
+          persist-credentials: false
+          sparse-checkout: |
+            agent/agent/__init__.py
+            agent/agent/skills/__init__.py
+            agent/agent/skills/validate.py
+            agent/agent/skills/template_skill.py
+            agent/tool_catalog.json
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install -r requirements-ci.txt
+
+      - name: Build index
+        run: python tools/build_index.py --repo . --leutheria .leutheria --out index.json
+
+      - name: Sign index
+        env:
+          REGISTRY_SIGNING_KEY: ${{ secrets.REGISTRY_SIGNING_KEY }}
+        run: python tools/sign_index.py --index index.json --out index.json.sig
+
+      - name: Verify as the client will
+        run: python tools/verify_index.py --repo . --keys keys/public_keys.json --leutheria .leutheria
+
+      - name: Commit index
+        run: |
+          git config user.name "leutheria-registry[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.json index.json.sig
+          if git diff --cached --quiet; then echo "index unchanged"; exit 0; fi
+          git commit --quiet -m "Publish index"
+          git push --quiet origin HEAD:main
