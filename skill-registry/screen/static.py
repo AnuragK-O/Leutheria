@@ -31,7 +31,7 @@ import re
 import unicodedata
 from urllib.parse import urlsplit
 
-ANALYZER_VERSION = 1
+ANALYZER_VERSION = 2  # 2: run_command auto-publish allowlist
 
 BLOCK = "block"
 REVIEW = "needs_review"
@@ -684,6 +684,168 @@ def analyze_prose(text: str, where: str, F: _Findings):
             F.add(where, "confusable_letters", REVIEW, "prose mixes in look-alike letters from other scripts")
 
 
+# --- auto-publish allowlist for run_command ---------------------------------------------------
+#
+# The rules above are a blocklist: they catch what they name. Whole classes
+# get no finding from them -- options of an otherwise harmless program that
+# write a file or name another program to run, subcommands that fetch and
+# evaluate third-party code, a parameter filled in at run time, a second
+# command chained onto the first -- so on their own they would leave the AI
+# screener as the only gate on auto-publishing such a skill. This allowlist
+# closes that: a run_command step can be auto-published only if every
+# command it can become is one simple command (no shell syntax at all), of a
+# listed program, with only listed subcommands and option shapes, and no
+# parameter in it. Anything else is at least needs_review, so a person reads
+# it. It never blocks and never loosens a block; widening it is a reviewed
+# change here, with a case in the eval. Program names are bare words: a path
+# to a program is not the program.
+
+ALLOW_CMD_MAX = 200
+ALLOW_CHARS_RE = re.compile(r"[A-Za-z0-9 _./:=@,+%~-]+")
+ALLOW_OPERAND_RE = re.compile(r"[A-Za-z0-9_.~/:@,+%=-]+")
+BREW_NAME_RE = re.compile(r"[a-z0-9][a-z0-9@._+-]{0,99}")  # no "/": a tap-qualified name fetches a third party's code
+
+# git: read-only subcommands; no global options (they choose the repository,
+# config or programs git runs). Values: exact options, or "prefix=" for an
+# option that takes its value in the same word.
+GIT_ALLOW = {
+    "status": ({"-s", "--short", "-b", "--branch", "-sb", "--porcelain", "--porcelain=v1", "--porcelain=v2"}, False),
+    "log": ({"--oneline", "--graph", "--decorate", "--all", "--stat", "--shortstat", "--name-only", "--name-status",
+             "--reverse", "--no-merges", "--merges", "--first-parent", "--since=", "--until=", "--after=",
+             "--before=", "--author=", "--max-count=", "--date="}, True),
+    "diff": ({"--stat", "--shortstat", "--numstat", "--name-only", "--name-status", "--cached", "--staged"}, True),
+    "show": ({"--stat", "--name-only", "--name-status", "--oneline", "--no-patch", "-s"}, True),
+    "branch": ({"-a", "-r", "-v", "-vv", "--list", "--show-current", "--merged", "--no-merged"}, False),
+    "remote": ({"-v"}, False),
+    "tag": ({"-l", "--list"}, False),
+    "rev-parse": ({"--abbrev-ref", "--short", "--show-toplevel", "--is-inside-work-tree"}, True),
+    "describe": ({"--tags", "--always", "--abbrev="}, True),
+    "shortlog": ({"-s", "-n", "-sn", "-e", "--summary", "--numbered"}, False),
+}
+BREW_ALLOW = {
+    "info": {"--formula", "--cask", "--json=v2", "--installed"},
+    "list": {"--formula", "--cask", "--versions", "-1"},
+    "ls": {"--formula", "--cask", "--versions", "-1"},
+    "outdated": {"--formula", "--cask", "--quiet", "-q", "--verbose", "-v"},
+    "search": {"--formula", "--cask"},
+    "deps": {"--tree", "--installed"},
+    "uses": {"--installed"},
+    "desc": set(),
+    "leaves": set(),
+    "config": set(),
+    "update": set(),
+}
+BREW_NO_OPERANDS = {"leaves", "config", "update"}
+
+
+def _opt_ok(tok: str, allowed: set) -> bool:
+    if tok in allowed:
+        return True
+    return any(a.endswith("=") and tok.startswith(a) and len(tok) > len(a) for a in allowed)
+
+
+def _git_ok(args: list) -> str | None:
+    if not args or args[0] not in GIT_ALLOW:
+        return "git with a subcommand that is not on the read-only list, or with global options"
+    allowed, operands = GIT_ALLOW[args[0]]
+    rest, after_dashes = args[1:], False
+    i = 0
+    while i < len(rest):
+        t = rest[i]
+        if t == "--" and operands and not after_dashes:
+            after_dashes = True
+        elif t.startswith("-") and not after_dashes:
+            if args[0] == "log" and (re.fullmatch(r"-\d{1,6}", t) or re.fullmatch(r"-n\d{1,6}", t)):
+                pass
+            elif args[0] == "log" and t == "-n" and i + 1 < len(rest) and re.fullmatch(r"\d{1,6}", rest[i + 1]):
+                i += 1
+            elif not _opt_ok(t, allowed):
+                return "git with an option that is not on the list for its subcommand"
+        elif not operands:
+            return "git subcommand given an operand it would act on"
+        i += 1
+    return None
+
+
+def _brew_ok(args: list) -> str | None:
+    if args == ["--version"]:
+        return None
+    if not args or args[0] not in BREW_ALLOW:
+        return "brew with a subcommand that is not on the read-only list"
+    for t in args[1:]:
+        if t.startswith("-"):
+            if t not in BREW_ALLOW[args[0]]:
+                return "brew with an option that is not on the list for its subcommand"
+        elif args[0] in BREW_NO_OPERANDS or not BREW_NAME_RE.fullmatch(t):
+            return "brew given a name that is not a plain formula or cask name"
+    return None
+
+
+def _only(opts_re: str, operands: bool):
+    def check(args):
+        for t in args:
+            if t.startswith("-"):
+                if not re.fullmatch(opts_re, t):
+                    return "an option that is not on the list for this program"
+            elif not operands:
+                return "an operand this program would act on"
+        return None
+    return check
+
+
+def _date_ok(args):
+    for t in args:
+        if t in ("-u", "-R") or (t.startswith("+") and len(t) > 1):
+            continue
+        return "date with something other than -u, -R or a +format (an operand sets the clock)"
+    return None
+
+
+def _echo_ok(args):
+    if any(t.startswith("-") and t != "-n" for t in args):
+        return "echo with an option other than -n"
+    return None
+
+
+ALLOWED_PROGRAMS = {
+    "echo": _echo_ok,
+    "date": _date_ok,
+    "pwd": _only(r"(?!)", False),
+    "whoami": _only(r"(?!)", False),
+    "uptime": _only(r"(?!)", False),
+    "sw_vers": _only(r"--?(?:productName|productVersion|buildVersion)", False),
+    "uname": _only(r"-[amnprsv]{1,7}", False),
+    "ls": _only(r"-[A-Za-z1@]{1,12}", True),
+    "df": _only(r"-[hHklPi]{1,6}", True),
+    "du": _only(r"-[schkx]{1,5}", True),
+    "which": _only(r"-a", True),
+    "git": _git_ok,
+    "brew": _brew_ok,
+}
+
+
+def allowlist_problem(cmd: str) -> str | None:
+    """None if `cmd` (one fully substituted command) may be auto-published;
+    otherwise a fixed reason (never the command's own text)."""
+    if not isinstance(cmd, str) or not cmd.strip():
+        return "empty command"
+    if len(cmd) > ALLOW_CMD_MAX:
+        return "longer than the auto-publish limit"
+    if PARAM_MARK.lower() in cmd.lower():
+        return "a parameter supplies part of the command at run time"
+    if not ALLOW_CHARS_RE.fullmatch(cmd):
+        return "uses shell syntax (quoting, variables, redirection, chaining, globs or escapes)"
+    words = cmd.split()
+    program, args = words[0], words[1:]
+    check = ALLOWED_PROGRAMS.get(program)
+    if check is None:
+        return "runs a program that is not on the auto-publish list"
+    for t in args:
+        if not t.startswith("-") and not ALLOW_OPERAND_RE.fullmatch(t):
+            return "an operand with characters outside the allowed set"
+    return check(args)
+
+
 # --- per-step rules for non-shell tools ----------------------------------------------------
 
 SENSITIVE_PATH_RE = re.compile(r"(?:~|\$\{?home\}?|/users/[^/]+)/(?:\.|library\b)|^/(?:system|library|usr|bin|sbin|etc|private|var|applications|opt|cores)\b|^/$")
@@ -716,6 +878,10 @@ def analyze_step(i: int, step: dict, tool: dict, variants: list, F: _Findings, f
 
     if name == "run_command":
         for v in each_value("cmd"):
+            why = allowlist_problem(v)
+            if why:
+                F.add(f"{base}.args.cmd", "not_allowlisted", REVIEW,
+                      f"a person must read this command before it is published: {why}")
             f = analyze_shell(v, f"{base}.args.cmd", F)
             for k in ("fetch", "writes", "exec_file", "deletes", "network"):
                 facts[k] = facts[k] or f[k]

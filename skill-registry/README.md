@@ -30,7 +30,9 @@ Rules for a submission:
   Changing only the wording keeps the same `content_hash`, so it can't be republished.
 - A name belongs to whoever published it first; other people pick another name.
 - No `source` field (the installing app sets it). `run_command` steps are allowed, and every
-  user is asked before each one runs, every time.
+  user is asked before each one runs, every time. A skill with a `run_command` step is
+  published automatically only if each command is one plain command from a short read-only
+  list (below) with no parameter in it; any other command waits for a maintainer.
 - Descriptions are not shown to the AI model verbatim; the app writes its own from your
   summary and the step list. Write it for people.
 
@@ -74,6 +76,31 @@ Repository settings this needs: secrets `ANTHROPIC_API_KEY` and `REGISTRY_SIGNIN
 labels `needs-human-review`, `human-approved` and `human-approved-override`; Actions allowed to create and approve
 pull requests and to push to `main` (if `main` is protected, let `github-actions[bot]` bypass
 it).
+
+### Which commands can be auto-published
+
+`screen/static.py`'s blocking rules are a blocklist: they catch what they name. Some classes
+of harm get no finding from them -- an option of an otherwise harmless program that writes a
+file or names another program to run, a subcommand that fetches and evaluates someone else's
+code (a tap-qualified package name, for one), a value filled into the command at run time, a
+second command chained onto the first. So a `run_command` step is auto-publishable only if
+every command it can become (`ALLOWED_PROGRAMS` / `allowlist_problem`) is:
+
+- one simple command, at most 200 characters, using only letters, digits, space and
+  `_ . / : = @ , + % ~ -` (no quoting, variables, redirection, pipes, chaining, globs or
+  escapes), with no `{parameter}` in it;
+- a bare program name from: `echo` (`-n`), `date` (`-u`, `-R`, `+format`), `pwd`, `whoami`,
+  `uptime`, `sw_vers`, `uname`, `ls`, `df`, `du`, `which`, `git` (only `status`, `log`, `diff`,
+  `show`, `branch`, `remote`, `tag`, `rev-parse`, `describe`, `shortlog`, no global options),
+  `brew` (only `info`, `list`, `outdated`, `search`, `deps`, `uses`, `desc`, `leaves`,
+  `config`, `update`, `--version`; names without `/`);
+- with only the options listed for that program and subcommand.
+
+Anything else gets a `not_allowlisted` finding (needs_review): the skill can still be
+published, by a maintainer. The allowlist never blocks and never loosens a block. Widening
+it is a code change to `static.py` with a case in `screen/screen_check.py`, and should be
+argued per option: ask whether the option can write a file, name a program, change which
+repository or configuration is used, or reach the network.
 
 ### Reviewing a flagged submission
 
