@@ -50,8 +50,8 @@ const FILES = [
     description: "Fetch and fast-forward a git project, then list the commits since yesterday.",
     input_schema: { type: "object", properties: { project: { type: "string", description: "Project folder name under Projects." } }, required: ["project"] },
     steps: [
-      { tool: "run_command", args: { cmd: "git pull --ff-only", cwd: "~/Projects/{project}" } },
-      { tool: "run_command", args: { cmd: "git log --since=yesterday --oneline", cwd: "~/Projects/{project}" } },
+      { tool: "run_command", args: { cmd: "git -C ~/Projects/{project} pull --ff-only" } },
+      { tool: "run_command", args: { cmd: "git -C ~/Projects/{project} log --since=yesterday --oneline" } },
       { tool: "show_notification", args: { title: "{project} is up to date", message: "Pulled the latest changes." } },
     ],
   },
@@ -120,7 +120,7 @@ const FILES = [
     summary: "Convert every HEIC photo in a folder to JPEG.",
     description: "Convert HEIC photos to JPEG with sips.",
     input_schema: { type: "object", properties: { folder: { type: "string", description: "Folder with the photos." } }, required: ["folder"] },
-    steps: [{ tool: "run_command", args: { cmd: "sips -s format jpeg *.heic --out jpeg", cwd: "{folder}" } }],
+    steps: [{ tool: "run_command", args: { cmd: "sips -s format jpeg {folder}/*.heic --out {folder}/jpeg" } }],
   },
   {
     name: "daily_standup_notes",
