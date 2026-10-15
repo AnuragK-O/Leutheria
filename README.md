@@ -444,7 +444,11 @@ pin and the layout file, persistence across a restart, a corrupt and a partly ba
 hot edge (the cursor and mouse button are injected through an env-gated test hook,
 `LEUTHERIA_TEST_HOOKS=1`, that exists only in that run), auto-hide, both alerts anchors,
 and accent/density in every window; and that no panel ever becomes the focused window or
-makes the app frontmost. `--panels-only` / `--no-panels` pick one pass. One
+makes the app frontmost. A third pass covers shared skills: Installed/Discover, the install
+card for a flagged high-risk entry, an install, an update, a withdrawn skill, the cap, the
+three index states, the share preview, Open on GitHub, the too-long copy-and-open path, a
+non-GitHub URL refused by main.js (the test hook records instead of opening a browser), and
+the skills panel. `--panels-only` / `--shared-only` / `--no-panels` / `--no-shared` pick passes. One
 line per check, non-zero exit on a failure. The PNGs are for looking at: a UI change isn't
 verified until someone has. `--real ws://127.0.0.1:<port>` runs a reduced pass against an
 agent that's already running, sending only management messages. The windows appear on
@@ -521,6 +525,67 @@ couldn't read), a red notice heads the Library and Permissions views.
 Both settings live in `agent/preferences.json` and survive restarts. Deleting a learned
 skill also clears its overrides, so a later skill that happens to reuse the name doesn't
 silently inherit the dead one's settings.
+
+**Shared skills (the public registry).** The Library's kind filter has a fourth segment,
+**Shared** (the skills panel has it too). It lists skills other people published to the
+registry in two groups: **Installed** (version, author, and an `update` or `withdrawn` tag)
+and **Discover** (author, version, a `high` risk tag, and a `>_` mark on any skill with a
+`run_command` step); a withdrawn version is never offered. The search matches name,
+summary, author and the tools it uses; the state strip filters available, installed, with
+an update, and withdrawn. Selecting an entry shows its screening (AI screened or human
+reviewed, risk, whether it runs commands, every flag the screener raised, the tools it
+uses) and, for something not installed or with an update, the **install card**: it loads
+the full definition (`registry_preview`) and lists every step with every argument in
+full, never truncated, `run_command` steps marked amber with "asks every run", plus what
+the model will be told about it and the author's own text (labelled as never sent to the
+model). `registry_install` is sent only by that card's Install button. An update shows the
+new version's steps with the changed and new ones marked; the old version keeps working
+until it's approved. At the imported-skill cap the button is disabled and says why.
+An index that failed its signature check, or a registry with no key configured, is drawn
+as a security state (red, `role="alert"`, "Index refused"), not as a network error, and
+nothing from it is listed or installable; an unreachable registry is a neutral notice.
+Installed shared skills stay listed and usable either way.
+
+A learned skill's detail has **Share**: *Preview share* asks the agent for the sanitized
+definition (`registry_share_preview`) and shows the target file path, what changed (home
+paths turned into `~`, usage dropped), the values to check before publishing (a drive
+name, a shell command), and the JSON itself. *Open on GitHub* sends `registry_share`;
+`main.js` opens the returned URL itself, and only if it is `https://github.com/...` (a
+renderer never sees or supplies a URL). If the agent says the file is too long for a link
+(`too_long: true` with `json`), main.js copies the JSON to the clipboard and opens the page
+without it: the button then reads *Copy and open GitHub*. The user submits the pull request
+from their own GitHub account.
+
+Control messages the UI sends (answered as `control_result` with the same `request_id`;
+shapes the spec (`plans/skill-registry-spec.md`) leaves open are the UI's assumptions,
+marked *):
+
+```
+{"type": "registry_list", "refresh"*: true}
+  -> {"ok": true, "index_ok": true, "skills": [<index entry> + "installed_version"?, "update_available"?],
+      "installed_count"*: 3, "cap"*: 20, "key_id"*: "...", "checked_at"*: "<iso>"}
+  -> {"ok": true, "index_ok": false, "error": "...", "error_code"*: "verification_failed" |
+      "no_signing_key" | "unavailable", "skills": []}
+{"type": "registry_preview", "name": "...", "content_hash": "..."}
+  -> {"ok": true, "skill": {name, description, input_schema, steps, ...},
+      "entry"*: <index entry>, "model_description"*: "Shared skill by ..."}
+{"type": "registry_install", "name": "...", "content_hash": "..."}
+  -> {"ok": true}  |  {"ok": false, "error": "...", "error_code"*: "cap_reached" | "yanked" | <index code>}
+{"type": "registry_share_preview", "skill": "<learned skill name>"}
+  -> {"ok": true, "definition": {...}, "target_path": "skills/<name>/<hash>.json",
+      "changes"*: [{"field", "before", "after" (null = removed), "note"}],
+      "flagged"*: [{"field", "value", "reason"}], "repo"*: "...", "too_long"*: false}
+{"type": "registry_share", "skill": "<learned skill name>"}
+  -> {"ok": true, "url": "https://github.com/...", "target_path": "...",
+      "too_long"*: true, "json"*: "<file text, only when too_long>"}
+```
+
+Without `error_code` the UI reads the error text the cautious way: anything about a key,
+signature, hash or verification is drawn as a refused index. In the inventory an imported
+skill is `origin: "imported"` with `registry`*: `{author, version, content_hash, review,
+first_run_pending}`. The mock agent (`scripts/mock-registry.js`) implements all of this,
+and a typed `registry offline` / `tampered` / `nokey` / `full` / `badshare` / `ok` switches
+its state.
 
 **The Voice view.** Edits collect in a draft; **Save changes** sends one
 `set_voice_settings` carrying only the keys you changed, and **Revert** drops the draft.

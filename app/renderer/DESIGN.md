@@ -294,6 +294,34 @@ neutral (`.resolved`: `--tone: --text-3`).
 under the heading bar on Library and Permissions only, since those are the settings it
 affects.
 
+**Shared skills (a stranger's procedure).** `js/library-shared.js`, styles under
+"Library: shared skills" in `styles.css`. The colours carry more weight here than anywhere
+else, so they follow the state rule strictly:
+
+- Amber: what will ask you. A `run_command` step (2 px amber rule and a 7% wash on the
+  step, the tool name amber, an "asks every run" tag), the `>_` mark on a row with such a
+  step, a screener flag, `update`, medium risk, and the cap ("At the limit", the
+  needs-click pattern).
+- Red: refused or withdrawn. High risk, `withdrawn`, and an index that failed its
+  signature check or has no key. A refused index is a *security* state, not an error: the
+  danger callout with an 11% red wash and a red outline (heavier than an ordinary error),
+  a struck shield icon, `role="alert"`, the agent's own words in mono, and a red indicator
+  plus "refused" in the overview readout. An unreachable registry is a neutral callout
+  (`.callout-neutral`, `--text-3` rule): nothing is wrong with what's installed.
+- Green: only "verified" on the index signature readout. Low risk is a neutral tag, never
+  green: passing a screening is not the same as being safe.
+- The install card is a prompt card (amber, cut corner, brackets) because it waits on the
+  user; it goes neutral (`.resolved`) once installed. Arguments are shown one per line,
+  key in `--text-3`, value in full (`.step-args-full`), never truncated. The one action
+  is the amber Install (`.btn-hot`: approving something that was waiting).
+- Share preview: a `.card` with File / Changed / Check rows (64 px micro-label column),
+  removed values struck through in `--text-3`, new ones in `--text`, values to check as
+  needs-click rows, then the JSON in a code well capped at 280 px. Open on GitHub is the
+  view's one violet primary.
+- Rows carry the author and version as a second mono `--fs-xs` line; tags only for what's
+  out of the ordinary (high risk, update, withdrawn, `>_`). The main window's Shared
+  state strip is two by two (its words are longer than the 80 px cells).
+
 ## User customization
 
 What the user can change (the Overlay view), and why only that:
