@@ -370,8 +370,32 @@ async def main():
     publish(GOOD, generated_at="2026-10-15T12:00:00Z")
     registry_client.get_index(refresh=True)
     publish([(PLAIN, {}, None)], generated_at="2026-10-01T00:00:00Z")
-    index, stale = registry_client.get_index(refresh=True)
-    check(stale and "older" in stale and len(index["skills"]) == 2, "an older index is refused; the newer verified one stays")
+    try:
+        registry_client.get_index(refresh=True)
+        check(False, "an older index is refused")
+    except registry_client.RegistryError as e:
+        check(e.code == "verification_failed" and "older" in str(e), "an older index is refused as verification_failed")
+    result = await ctl({"type": "registry_list"})
+    check(not result["ok"] and not result["index_ok"] and result["error_code"] == "verification_failed" and result["skills"] == [],
+          "...and registry_list shows it refused, not the cached newer one (BUGS.md #69)")
+    publish(GOOD, generated_at="2026-10-15T12:00:00Z")
+    index, stale = registry_client.get_index(refresh=False)
+    check(not stale and len(index["skills"]) == 2, "after a refusal the next call fetches again (the good index is back)")
+    # Tampered after a good fetch: refused, not the cached good one (BUGS.md #69).
+    publish(GOOD, generated_at="2026-10-15T12:00:00Z", tamper_index=True)
+    result = await ctl({"type": "registry_list", "refresh": True})
+    check(not result["index_ok"] and result["error_code"] == "verification_failed", "a tampered index after a good one is shown refused")
+    preview = await ctl({"type": "registry_preview", "name": "just_time", "content_hash": PLAIN["content_hash"]})
+    check(not preview["ok"] and preview["error_code"] == "verification_failed", "...and nothing previews from the cached one")
+    # Unreachable after a good fetch: the cached index, marked stale.
+    publish(GOOD, generated_at="2026-10-15T12:00:00Z")
+    registry_client.get_index(refresh=True)
+    saved_url = os.environ["LEUTHERIA_REGISTRY_URL"]
+    os.environ["LEUTHERIA_REGISTRY_URL"] = f"http://127.0.0.1:{spare_port()}/reg/"
+    result = await ctl({"type": "registry_list", "refresh": True})
+    os.environ["LEUTHERIA_REGISTRY_URL"] = saved_url
+    check(result["ok"] and result["index_ok"] and result.get("stale") and result["error_code"] == "unavailable" and len(result["skills"]) == 2,
+          "an unreachable registry shows the cached verified index, marked stale/unavailable")
     # A cache file edited on disk is re-verified, not trusted.
     registry_client.reset_cache()
     cache = json.loads(registry_client._cache_path().read_text())
@@ -414,6 +438,9 @@ async def main():
     inv = {s["name"]: s for s in control.handle({"type": "inventory"})["skills"]}
     check(inv["tidy_stamp"]["registry"]["author"] == "octo-cat" and "Ignore" in inv["tidy_stamp"]["author_description"],
           "inventory carries the record and the author's own description for the Library")
+    check(inv["tidy_stamp"]["origin"] == "imported" and inv["tidy_stamp"]["deletable"]
+          and inv["tidy_stamp"]["registry"]["first_run_done"] is False,
+          "inventory: origin imported, deletable, first_run_done false until a clean run")
 
     # --- first run, run_command, trust ------------------------------------------------
     print("# first-run gating and run_command")
@@ -476,7 +503,8 @@ async def main():
     print("# cap")
     os.environ["LEUTHERIA_MAX_IMPORTED_SKILLS"] = "1"
     result = await ctl({"type": "registry_install", "name": "just_time", "content_hash": PLAIN["content_hash"]})
-    check(not result["ok"] and "at most 1" in result["error"] and installed_names() == ["tidy_stamp"], "cap refuses one more")
+    check(not result["ok"] and "at most 1" in result["error"] and installed_names() == ["tidy_stamp"]
+          and result["error_code"] == "cap_reached", "cap refuses one more (error_code cap_reached)")
     os.environ["LEUTHERIA_MAX_IMPORTED_SKILLS"] = "20"
     result = await ctl({"type": "registry_install", "name": "just_time", "content_hash": PLAIN["content_hash"]})
     check(result["ok"] and installed_names() == ["just_time", "tidy_stamp"], "under the cap it installs")
@@ -506,7 +534,8 @@ async def main():
     check(mine["tidy_stamp"]["withdrawn"] and "tidy_stamp" in registry.SKILLS, "yanked: shown withdrawn, not removed")
     check(next(s for s in listing["skills"] if s["name"] == "tidy_stamp")["version"] == 1, "yanked version hidden from Discover")
     result = await ctl({"type": "registry_preview", "name": "tidy_stamp", "content_hash": tidy_v2["content_hash"]})
-    check(not result["ok"] and "withdrawn" in result["error"], "yanked version can't be previewed or installed")
+    check(not result["ok"] and "withdrawn" in result["error"] and result["error_code"] == "yanked",
+          "yanked version can't be previewed or installed (error_code yanked)")
 
     # --- search tool -------------------------------------------------------------------------
     print("# search")
@@ -546,6 +575,10 @@ async def main():
     check(("email", "bob@example.com") in kinds and any(k == "personal_path" for k, _ in kinds), f"constants flagged: {sorted(kinds)}")
     check(preview["path"] == f"skills/client_mail/{shared['content_hash']}.json" and preview["diff"].startswith("---")
           and preview["changes"], "target path, diff and change list")
+    check(preview["repo"] == "AnuragK-O/leutheria-skills" and preview["too_long"] is False
+          and all({"where", "before", "after", "why"} <= set(c) for c in preview["changes"])
+          and all({"id", "where", "value", "kind"} <= set(f) for f in preview["flags"]),
+          "share preview shape: repo, too_long, changes{where,before,after,why}, flags{id,where,value,kind}")
     email_flag = next(f["id"] for f in preview["flags"] if f["kind"] == "email" and f["where"].startswith("steps"))
     preview2 = await ctl({"type": "registry_share_preview", "skill": "client_mail", "parameterize": [email_flag]})
     cmd = preview2["definition"]["steps"][1]["args"]["cmd"]
