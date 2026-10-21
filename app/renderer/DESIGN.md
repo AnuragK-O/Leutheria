@@ -178,11 +178,15 @@ real layout bounds and shown (`showInactive`) before anything moves; the frame t
 slides inside the window (`panels.css`, "slide"), so it is clipped by the window's edge,
 which for a docked panel is the screen's edge. Docked: in from fully past its docked edge
 (100% plus the 12 px inset and the shadow's reach), opaque, `--t-slow --ease`. Free: an
-`--s5` nudge in from the nearest screen edge with a fade, same timing -- a full slide from
+`--s2` nudge in from the nearest screen edge with a fade, same timing (kept under the
+frame's 12 px inset, or the window's invisible edge would cut it mid-screen) -- a full slide from
 a mid-screen window's own edge would look like it came from nowhere. Out is the reverse at
 `--t-base ease-in`, and the window is hidden only once the page reports the slide finished
 (`motion-done`; `panels.js` gives up waiting after 600 ms). A show or hide that arrives
-mid-slide flips the class and the transition reverses from where the frame is. The window
+mid-slide flips the class and the transition reverses from where the frame is -- unless
+the panel is coming back at other bounds (the hot edge on the other side): then the slide
+out ends at once and the window is hidden, placed, and shown transparent until the page
+has drawn the frame off its new edge, so a visible window never jumps. The window
 is never stepped with `setBounds`: macOS clamps a window above the menu bar (a top-docked
 panel couldn't start off-screen), a window off one display's edge appears on its
 neighbour, and every reader of the bounds (drag, resize, auto-hide, the saved layout)

@@ -42,6 +42,10 @@ const MAX_STRIP_W = 1600;
 // ("motion-done"); this is the most it waits, so a page that is hung or never
 // reports still gets hidden. Comfortably over --t-base (the slide out).
 const HIDE_FALLBACK_MS = 600;
+// A slide out cut short by a show somewhere else (see show()): the window is
+// re-shown fully transparent until the page says its frame is off the new
+// edge ("motion-started"), at most this long.
+const REVEAL_FALLBACK_MS = 200;
 
 function createPanelManager({ rendererDir, preload, log, getSettings, updateSettings, captureTheme, testHooks }) {
   const entries = new Map(); // id -> entry (see ensure())
@@ -184,6 +188,8 @@ function createPanelManager({ rendererDir, preload, log, getSettings, updateSett
       motionSeq: 0, // bumped on every change, echoed back by "motion-done"
       hiding: false, // sliding out: logically hidden, window still up
       hideTimer: null,
+      revealTimer: null, // shown transparent until the page has snapped its frame
+      trace: [], // test hooks only: show / hide / bounds, newest last
     };
     entries.set(id, entry);
     win.on("closed", () => {
@@ -248,12 +254,30 @@ function createPanelManager({ rendererDir, preload, log, getSettings, updateSett
     if (alive(entry.win)) entry.win.webContents.send("panel-config", configFor(entry));
   }
 
+  /** Test hooks only: what happened to the window, so a check can prove
+      it never moved while it was on screen mid-slide. */
+  function note(entry, op, extra = {}) {
+    if (!testHooks) return;
+    entry.trace.push({ op, visible: entry.win.isVisible(), bounds: entry.win.getBounds(), ...extra });
+    if (entry.trace.length > 50) entry.trace.shift();
+  }
+
   function place(entry) {
     if (!alive(entry.win)) return;
     const { bounds } = placement(entry.id, entry.dockOverride);
+    const from = testHooks ? entry.win.getBounds() : null;
     entry.win.setBounds(bounds);
+    note(entry, "bounds", { from });
     entry.win.setOpacity(opacityOf(entry.id));
     sendConfig(entry);
+  }
+
+  /** The end of a transparent re-show (show(), cut-short slide out). */
+  function reveal(entry) {
+    if (!entry.revealTimer) return;
+    clearTimeout(entry.revealTimer);
+    entry.revealTimer = null;
+    if (alive(entry.win)) entry.win.setOpacity(opacityOf(entry.id));
   }
 
   const isVisible = (entry) => Boolean(entry && alive(entry.win) && !entry.hiding && (entry.win.isVisible() || entry.showWhenReady));
@@ -275,7 +299,10 @@ function createPanelManager({ rendererDir, preload, log, getSettings, updateSett
   function finishHide(entry, seq) {
     if (!entry.hiding || seq !== entry.motionSeq) return;
     cancelHide(entry);
-    if (alive(entry.win)) entry.win.hide();
+    if (alive(entry.win)) {
+      entry.win.hide();
+      note(entry, "hide");
+    }
     entry.dockOverride = null;
   }
 
@@ -294,22 +321,45 @@ function createPanelManager({ rendererDir, preload, log, getSettings, updateSett
     }
     // Mid slide out: reversed from wherever the frame is (the page's
     // transition retargets), as long as the bounds below come out the same.
-    const reversing = entry.hiding;
+    const dockOverride = dock && dock !== layoutOf(id).dock ? dock : null;
+    let reversing = entry.hiding;
+    let cutShort = false;
+    if (reversing) {
+      const next = placement(id, dockOverride).bounds;
+      if (JSON.stringify(next) !== JSON.stringify(entry.win.getBounds())) {
+        // Coming back somewhere else (the hot edge on the other side, the
+        // layout changed meanwhile): the window must not jump while it is on
+        // screen, so the slide out ends here -- hidden, then placed, then
+        // shown. Its last frame is the half-slid one, which macOS would show
+        // for a frame at the new place, so it comes back transparent until
+        // the page has moved the frame off the new edge (reveal()).
+        finishHide(entry, entry.motionSeq);
+        reversing = false;
+        cutShort = true;
+      }
+    }
     cancelHide(entry);
-    entry.dockOverride = dock && dock !== layoutOf(id).dock ? dock : null;
+    entry.dockOverride = dockOverride;
     entry.visited = false;
     entry.outSince = null;
     setMotion(entry, "in");
-    // The real layout bounds, set while the window is still hidden; the
-    // slide happens inside them (place() sends the "in" with the config).
+    // The real layout bounds, set while the window is hidden (or, reversing,
+    // unchanged); the slide happens inside them (place() sends the "in").
     place(entry);
+    if (cutShort) {
+      entry.win.setOpacity(0);
+      clearTimeout(entry.revealTimer);
+      entry.revealTimer = setTimeout(() => reveal(entry), REVEAL_FALLBACK_MS);
+    }
     // showInactive: opened by voice or the hot edge while the user is in
     // another app -- appearing must never take their focus.
     if (reversing && entry.win.isVisible()) {
-      // still up from the slide out: nothing to show
-    } else if (entry.ready || entry.win.webContents.isLoading() === false) entry.win.showInactive();
-    else entry.showWhenReady = true;
-    log(`[panels] ${id} shown (${source}${entry.dockOverride ? `, docked ${entry.dockOverride} for now` : ""}${reversing ? ", reversing a hide" : ""})`);
+      // still up from the slide out, at the same bounds: nothing to show
+    } else if (entry.ready || entry.win.webContents.isLoading() === false) {
+      entry.win.showInactive();
+      note(entry, "show");
+    } else entry.showWhenReady = true;
+    log(`[panels] ${id} shown (${source}${entry.dockOverride ? `, docked ${entry.dockOverride} for now` : ""}${reversing ? ", reversing a hide" : cutShort ? ", cut a hide short" : ""})`);
     syncPolling();
     return true;
   }
@@ -320,6 +370,7 @@ function createPanelManager({ rendererDir, preload, log, getSettings, updateSett
     const neverShown = entry.showWhenReady && !entry.win.isVisible();
     entry.showWhenReady = false;
     entry.gesture = null;
+    reveal(entry);
     setMotion(entry, "out");
     entry.hiding = true;
     if (neverShown || !entry.ready) {
@@ -444,6 +495,10 @@ function createPanelManager({ rendererDir, preload, log, getSettings, updateSett
       case "resize":
       case "resize-end":
         gesture(entry, op, data);
+        return { ok: true };
+      case "motion-started":
+        // The page has drawn the frame where this slide in starts.
+        if (data && Number(data.seq) === entry.motionSeq) reveal(entry);
         return { ok: true };
       case "motion-done":
         // The page finished a slide. Only a slide out needs anything done.
@@ -659,6 +714,7 @@ function createPanelManager({ rendererDir, preload, log, getSettings, updateSett
     restorePinned,
     syncPolling,
     windows,
+    trace: (id) => (entries.get(id) ? entries.get(id).trace.splice(0) : []),
     isPanel: (webContents) => Boolean(entryFor(webContents)),
     debugState,
   };

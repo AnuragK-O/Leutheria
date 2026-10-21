@@ -47,14 +47,15 @@ body.panel-page {
    The window never moves; the frame slides inside it, so it is clipped at the
    window's edge -- which, docked, is the screen's edge. Arriving uses the
    overlay's: --t-slow, --ease. Docked ("edge"): from fully past the docked
-   edge, opaque. Free ("nudge"): --s5 in from the nearest screen edge, fading
-   in -- sliding a mid-screen panel from its own window edge would look like
+   edge, opaque. Free ("nudge"): --s2 in from the nearest screen edge, fading
+   in (less than the 12 px the frame sits inside the window, so its leading
+   edge is never cut by the window's invisible edge mid-screen) -- sliding a mid-screen panel from its own window edge would look like
    it came out of nowhere. Under reduced motion styles.css collapses both
    transitions to 1 ms, so it simply appears (transitionend still fires,
    which is what lets main.js hide the window). */
 
 .panel-frame {
-  --panel-out: translateX(var(--s5));
+  --panel-out: translateX(var(--s2));
 }
 
 /* 100% of the frame plus 40 px: the 12 px the frame sits inside the window
@@ -72,13 +73,13 @@ body[data-slide-kind="edge"][data-slide="bottom"] .panel-frame {
   --panel-out: translateY(calc(100% + 40px));
 }
 body[data-slide-kind="nudge"][data-slide="left"] .panel-frame {
-  --panel-out: translateX(calc(-1 * var(--s5)));
+  --panel-out: translateX(calc(-1 * var(--s2)));
 }
 body[data-slide-kind="nudge"][data-slide="top"] .panel-frame {
-  --panel-out: translateY(calc(-1 * var(--s5)));
+  --panel-out: translateY(calc(-1 * var(--s2)));
 }
 body[data-slide-kind="nudge"][data-slide="bottom"] .panel-frame {
-  --panel-out: translateY(var(--s5));
+  --panel-out: translateY(var(--s2));
 }
 
 /* Docked, the frame is out of sight by position alone: no fade. */

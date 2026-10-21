@@ -1054,6 +1054,29 @@ async function runPanels(theme) {
     s = await panelState(hooks, "chat");
     samples = await stopSampling();
     check(`${T} hide, show inside the slide out: reversed, window never hidden or moved`, s.visible && s.windowVisible && s.motion === "in" && samples.length === 1, samples.join(" "));
+    // Hide, then the hot edge on the other side inside the slide out: the
+    // window must not jump sides while on screen. It is hidden, placed on the
+    // left, and shown transparent until the page has snapped its frame.
+    const chatOpacity = s.opacity;
+    await sleep(500);
+    await hooks.eval(`__leutheriaTest.trace("chat")`); // clear it
+    await hooks.eval(`__leutheriaTest.hide("chat")`);
+    await sleep(60);
+    await hooks.eval(`__leutheriaTest.show("chat", null, "left")`);
+    const revealOpacity = (await panelState(hooks, "chat")).opacity;
+    await chatPage.waitFor(`document.body.dataset.motion === "in"`, 3000);
+    await sleep(300);
+    s = await panelState(hooks, "chat");
+    const trace = await hooks.eval(`__leutheriaTest.trace("chat")`);
+    const movedOnScreen = trace.filter((t) => t.op === "bounds" && t.visible && JSON.stringify(t.from) !== JSON.stringify(t.bounds));
+    check(
+      `${T} hot edge on the other side mid slide-out: ends docked left at its layout bounds, opaque again`,
+      s.visible && s.windowVisible && !s.hiding && s.dock === "left" && s.bounds.x === area.x && s.bounds.height === area.height && Math.abs(s.opacity - chatOpacity) < 0.01,
+      JSON.stringify(s)
+    );
+    check(`${T} ...the window was hidden before it moved, never moved on screen`, movedOnScreen.length === 0 && trace.map((t) => t.op).join(",") === "hide,bounds,show", JSON.stringify(trace.map((t) => [t.op, t.visible, t.bounds.x])));
+    check(`${T} ...and came back transparent until the frame was off its new edge`, revealOpacity === 0, String(revealOpacity));
+    check(`${T} ...from the left edge`, (await chatPage.eval(`document.body.dataset.slide`)) === "left");
     await hooks.eval(`__leutheriaTest.hide("chat")`);
     await hooks.waitFor(`!__leutheriaTest.panels().find((e) => e.id === "chat").windowVisible`, 2000);
 
@@ -1082,7 +1105,7 @@ async function runPanels(theme) {
       const mid = await seek(pages.skills, 0.3);
       const kind = await pages.skills.eval(`[document.body.dataset.slideKind, document.body.dataset.slide]`);
       const offset = nearest === "left" || nearest === "right" ? Math.abs(mid.x) : Math.abs(mid.y);
-      check(`${T} slide: a free panel nudges in from the nearest edge (${nearest}) and fades`, kind[0] === "nudge" && kind[1] === nearest && offset > 0 && offset <= 24 && mid.opacity < 1, JSON.stringify({ kind, mid }));
+      check(`${T} slide: a free panel nudges in from the nearest edge (${nearest}) and fades`, kind[0] === "nudge" && kind[1] === nearest && offset > 0 && offset <= 8 && mid.opacity < 1, JSON.stringify({ kind, mid }));
       await release(pages.skills);
     } else check(`${T} slide: a free panel slides`, false);
     await pages.skills.waitFor(`document.body.dataset.motion === "in"`, 3000);

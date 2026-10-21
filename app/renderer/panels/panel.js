@@ -348,6 +348,10 @@
       if (changed) {
         body.classList.add("panel-in");
         body.dataset.motion = "entering";
+        // Two frames on, the frame has been drawn where the slide starts:
+        // main.js may be holding the window transparent until then.
+        const seq = next.seq;
+        requestAnimationFrame(() => requestAnimationFrame(() => api.panelOp("motion-started", { seq })));
       }
     } else if (changed) {
       body.classList.remove("panel-in");

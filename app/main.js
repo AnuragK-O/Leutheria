@@ -1192,7 +1192,8 @@ function installTestHooks() {
       if (win === overlayWindow) return "overlay";
       return panels.debugState().find((entry) => entry.focused)?.id || "other";
     },
-    show: (id, query) => panels.show(id, { query, source: "test" }),
+    show: (id, query, dock) => panels.show(id, { query, source: "test", dock }),
+    trace: (id) => panels.trace(id),
     hideAll: () => panels.hideAll("test"),
     hide: (id) => panels.hide(id, "test"),
     toggle: (id) => panels.toggle(id, { source: "test" }),
