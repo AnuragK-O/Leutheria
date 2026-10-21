@@ -31,7 +31,7 @@ import re
 import unicodedata
 from urllib.parse import urlsplit
 
-ANALYZER_VERSION = 2  # 2: run_command auto-publish allowlist
+ANALYZER_VERSION = 3  # 2: run_command auto-publish allowlist; 3: param_is_program exempt for a bare {param} text / display-only text
 
 BLOCK = "block"
 REVIEW = "needs_review"
@@ -856,6 +856,22 @@ def _path_mode(spec) -> str:
     return spec.get("mode", "") if isinstance(spec, dict) else str(spec)
 
 
+# Tools whose text is only shown to the user (a banner, a timer's label and
+# spoken line): nothing in it can be pasted, typed, opened or run.
+DISPLAY_ONLY_TEXT = {"show_notification", "set_timer"}
+
+
+def _param_only_commands(text: str) -> bool:
+    """True if every simple command that a parameter leads is that parameter
+    alone, with nothing after it ("{x}", "- {x}", "{x}\n{y}"). "{x} -rf ~" is
+    not: the author wrote the arguments, and the parameter picks the program."""
+    for seg in SEP_RE.split(shell_views(text)["dequoted"]):
+        toks = seg.split()
+        if toks and toks[0].startswith(PARAM_MARK.lower()) and len(toks) > 1:
+            return False
+    return True
+
+
 def analyze_step(i: int, step: dict, tool: dict, variants: list, F: _Findings, facts: dict):
     name = step.get("tool")
     args = step.get("args") if isinstance(step.get("args"), dict) else {}
@@ -963,7 +979,14 @@ def analyze_step(i: int, step: dict, tool: dict, variants: list, F: _Findings, f
             where = f"{base}.args.{arg}"
             sub = _Findings()
             analyze_shell(v, where, sub)
-            serious = [f for f in sub.items if f["severity"] == BLOCK]
+            # param_is_program is a rule about commands. In a text that is only shown
+            # (DISPLAY_ONLY_TEXT) it never applies. In one that is written, typed or
+            # copied it applies unless every parameter-led command is the bare
+            # parameter: "{text}" is the user's value, but "{tool} -rf ~" is an
+            # author-written command whose program is left to fill in.
+            exempt = name in DISPLAY_ONLY_TEXT or _param_only_commands(v)
+            serious = [f for f in sub.items if f["severity"] == BLOCK
+                       and not (f["rule"] == "param_is_program" and exempt)]
             if serious:
                 facts["staged_payload"] = True
                 sev = BLOCK if name in ("type_text", "set_clipboard") else REVIEW

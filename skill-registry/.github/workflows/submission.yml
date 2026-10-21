@@ -16,8 +16,21 @@ permissions:
   pull-requests: write
   issues: write
 
+# A run that would do nothing gets a group of its own ("-solo-<run id>"), so it
+# can't cancel a run that is merging or still writing the review record (which
+# can take minutes under a burst; a cancelled run there strands the merge):
+#   - any event on a closed PR -- once a run has merged, every later event
+#     (an approval label re-added, say) sees the PR closed;
+#   - a label the job ignores (any but the two approval labels).
+# The one window left, an event that arrives just before the merge, is caught
+# by "Report a merge without a review record" below, which also runs when the
+# run is cancelled.
 concurrency:
-  group: submission-${{ github.event.pull_request.number }}
+  group: >-
+    submission-${{ github.event.pull_request.number }}${{
+    (github.event.pull_request.state == 'closed' || (github.event.action == 'labeled' &&
+    github.event.label.name != 'human-approved' && github.event.label.name != 'human-approved-override'))
+    && format('-solo-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 
 jobs:
@@ -25,10 +38,12 @@ jobs:
     # A label is only a request to check for an approval (human_approval.py
     # binds it to an approving review of this exact head commit); the label
     # itself never approves anything.
+    # A closed (or merged) PR is never screened or merged again.
     if: >-
+      github.event.pull_request.state != 'closed' && (
       github.event.action != 'labeled' ||
       github.event.label.name == 'human-approved' ||
-      github.event.label.name == 'human-approved-override'
+      github.event.label.name == 'human-approved-override')
     runs-on: ubuntu-latest
     outputs:
       merged: ${{ steps.act.outputs.merged }}
@@ -181,28 +196,61 @@ jobs:
                 gh pr close "$PR" --repo "$GITHUB_REPOSITORY"
                 exit 0
               fi
+              # From here until the record is on main, record_report.md exists
+              # (record_push.py keeps it, with the recovery command, and removes
+              # it only on success), so a failed or cancelled run is reported.
+              echo "This submission may have been merged, but the run stopped before its review record was written, so it is not published. See README \"Recovering\"." > record_report.md
               # --match-head-sha: merge exactly the commit that was screened.
-              gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --squash --match-head-sha "$HEAD_SHA"
-              # Versions are assigned from main as it is when the record is
-              # written; if another merge's record lands first the push is
-              # rejected, so start again from the new main (version recomputed).
+              gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --squash --match-head-sha "$HEAD_SHA" || { rm -f record_report.md; exit 1; }
+              # The version (and the owner re-check) come from main as it is
+              # when the record is written; the push is a fast-forward, so it
+              # lands only on the exact main they were computed from. A burst
+              # of merges makes most pushes lose that race: record_push.py
+              # starts again from the new main with jittered exponential
+              # backoff (up to 60 tries / 30 min). Not a concurrency group:
+              # GitHub keeps one pending run per group and cancels the rest,
+              # which would strand exactly the submissions this protects.
               screen_arg=""; [ -f screen.json ] && screen_arg="--screen $PWD/screen.json"
-              for attempt in 1 2 3; do
-                rm -rf main
-                git clone --quiet "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" main
-                git -C main config user.name "leutheria-registry[bot]"
-                git -C main config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-                python base/tools/record_review.py --repo main --path "$SKILL_PATH" --verdict "$verdict" \
-                  --author "$PR_AUTHOR" --pr "$PR" $screen_arg || exit 1
-                git -C main add reviews
-                git -C main commit --quiet -m "Review record for $SKILL_PATH (PR #$PR)"
-                git -C main push --quiet origin HEAD:main && break
-                [ "$attempt" = 3 ] && { echo "could not record the review; see README 'Recovering'"; exit 1; }
-              done
+              rc=0
+              python base/tools/record_push.py \
+                --remote "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+                --work main --path "$SKILL_PATH" --verdict "$verdict" --author "$PR_AUTHOR" --pr "$PR" \
+                --report record_report.md $screen_arg || rc=$?
+              if [ "$rc" != 0 ]; then
+                echo "::error::Merged but no review record for $SKILL_PATH (PR #$PR); see README 'Recovering'"
+                exit 1
+              fi
               echo "merged=yes" >> "$GITHUB_OUTPUT" ;;
           esac
 
+      # Merged but not recorded: never indexed, so say so where a maintainer
+      # will see it -- also when the run was cancelled mid-record, which
+      # failure() alone misses. record_report.md exists only between the merge
+      # attempt and a confirmed record; the PR's state tells a merge that
+      # happened from one that didn't.
+      - name: Report a merge without a review record
+        if: (failure() || cancelled()) && hashFiles('record_report.md') != ''
+        run: |
+          state=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json state --jq .state || echo UNKNOWN)
+          if [ "$state" = OPEN ] || [ "$state" = CLOSED ]; then echo "not merged; nothing to report"; exit 0; fi
+          echo "::error::PR #$PR merged without a review record; see README 'Recovering'"
+          gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file record_report.md || true
+          gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label registry-unrecorded >/dev/null 2>&1 || true
+
+      - name: Keep what recovery needs
+        if: (failure() || cancelled()) && hashFiles('record_report.md') != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: unrecorded-review-${{ github.event.pull_request.number }}
+          path: |
+            record_report.md
+            screen.json
+          if-no-files-found: warn
+          retention-days: 90
+
   # Pushes made with GITHUB_TOKEN don't trigger workflows, so publish is called.
+  # (publish coalesces queued runs; when this call is the one dropped, it shows
+  # as cancelled here, and the newer run it gave way to indexes this skill.)
   publish:
     needs: screen
     if: needs.screen.outputs.merged == 'yes'
