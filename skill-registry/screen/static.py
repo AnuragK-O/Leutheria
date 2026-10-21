@@ -862,13 +862,25 @@ DISPLAY_ONLY_TEXT = {"show_notification", "set_timer"}
 
 
 def _param_only_commands(text: str) -> bool:
-    """True if every simple command that a parameter leads is that parameter
-    alone, with nothing after it ("{x}", "- {x}", "{x}\n{y}"). "{x} -rf ~" is
-    not: the author wrote the arguments, and the parameter picks the program."""
+    """True if every simple command whose program word is a parameter is that
+    parameter alone ("{x}", "- {x}", "{x}\n{y}"). "{x} -rf ~" is not: the author
+    wrote the arguments, and the parameter picks the program. Nor is
+    "env {x} -rf ~" or "A=1 {x}": the program word is found the way
+    command_words() finds it (past wrappers, assignments and flags). Only a
+    list-marker "-" may come before a bare parameter -- and not before one with
+    arguments: "-" is a zsh precommand modifier, so "- {x} -rf ~" runs {x}."""
     for seg in SEP_RE.split(shell_views(text)["dequoted"]):
         toks = seg.split()
-        if toks and toks[0].startswith(PARAM_MARK.lower()) and len(toks) > 1:
-            return False
+        i = 0
+        while i < len(toks):
+            t = toks[i]
+            if re.fullmatch(r"[a-z_][a-z0-9_]*=\S*", t) or t.startswith("-") or t in WRAPPERS or re.fullmatch(r"\d+", t):
+                i += 1
+                continue
+            break
+        if i < len(toks) and toks[i].startswith(PARAM_MARK.lower()):
+            if len(toks) > i + 1 or any(t != "-" for t in toks[:i]):
+                return False
     return True
 
 
