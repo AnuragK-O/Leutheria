@@ -44,10 +44,41 @@ from Quartz import (
 
 # Never drivable, never readable, however the request is phrased and whatever
 # grants are live. Matched case-insensitively against the resolved app name.
+# Every terminal, not just Apple's: typing into any of them is the same bypass
+# (open_with.EXECUTING_APPS has the same list for handing files over). So are
+# apps where typing then Return runs something: script runners, launchers,
+# and virtual machines (a VM's own terminal is out of reach of every check).
 DENIED_APPS = {
+    # terminals
     "terminal",
     "iterm",
     "iterm2",
+    "iterm 2",
+    "warp",
+    "kitty",
+    "alacritty",
+    "ghostty",
+    "hyper",
+    "wezterm",
+    "tabby",
+    "rio",
+    "wave",
+    "cool retro term",
+    "xterm",
+    "xquartz",
+    # script runners and launchers
+    "automator",
+    "shortcuts",
+    "python launcher",
+    "applescript utility",
+    "alfred",
+    "raycast",
+    # virtual machines
+    "utm",
+    "parallels desktop",
+    "virtualbox",
+    "vmware fusion",
+    # secrets and system control
     "keychain access",
     "system settings",
     "system preferences",
