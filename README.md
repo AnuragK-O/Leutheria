@@ -1714,10 +1714,12 @@ arguments; `type_text` goes wherever the cursor is. So:
   again. Grants live in memory only — they die with the agent process, unlike a
   `remember: always` trust — and the Permissions view lists every live one with a Revoke
   button.
-- **Some apps can never be driven or read at all**, grant or no grant: Terminal, iTerm,
+- **Some apps can never be driven or read at all**, grant or no grant: every terminal
+  (Terminal, iTerm, Warp, Ghostty, kitty, Alacritty, WezTerm, ...), script runners and
+  launchers (Script Editor, Automator, Shortcuts, Alfred, Raycast), virtual machines,
   Keychain Access, System Settings, password managers (`DENIED_APPS` in
-  `agent/core/ui_access.py`). Terminal is on that list specifically because typing into a
-  shell would turn `type_text` into `run_command` with no confirmation — the denylist is
+  `agent/core/ui_access.py`). The terminals are on that list specifically because typing into
+  a shell would turn `type_text` into `run_command` with no confirmation — the denylist is
   what stops the GUI tier from being a hole straight through the safety model.
 - **`describe_ui` stays unprompted**, because looking before acting is what makes the loop
   work — the same reason `list_files` doesn't ask. It's safe by construction rather than by

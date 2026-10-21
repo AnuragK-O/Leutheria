@@ -791,6 +791,31 @@ async def check_missing_folder():
     check(result["ok"] is False and "doesn't exist" not in result["error"], f"a file that exists is not called missing: {result['error'][:80]}")
 
 
+# --- GUI control: no terminal is drivable (QA, registry load test) ----------------
+
+async def check_gui_denied():
+    section("GUI control: every terminal, runner, launcher and VM is denied")
+    from agent.core import ui_access
+    from agent.tools import open_with as open_with_mod
+    # Typing into any terminal is run_command with no prompt; the openers already
+    # know every terminal and runner, so the GUI denylist must cover them too.
+    executing = {name for name in open_file_mod.EXECUTING_HANDLERS
+                 if name not in ("javalauncher", "jar launcher", "installer", "automator installer",
+                                 "script menu", "profilehelper", "archive utility", "diskimagemounter")}
+    executing |= {"warp", "kitty", "alacritty", "ghostty", "hyper", "wezterm", "tabby", "rio", "wave",
+                  "cool retro term", "xterm", "xquartz", "automator", "shortcuts", "alfred", "raycast",
+                  "utm", "parallels desktop", "virtualbox", "vmware fusion"}
+    check(executing <= open_with_mod.EXECUTING_APPS | open_file_mod.EXECUTING_HANDLERS,
+          "every app the GUI denylist must cover is one the openers already refuse")
+    missing = sorted(name for name in executing if not ui_access.is_denied(name))
+    check(not missing, f"GUI denylist covers every terminal/runner/launcher/VM (missing: {missing})")
+    for shown in ("Ghostty", " Warp ", "WezTerm", "kitty", "iTerm2", "Raycast", "UTM"):
+        result, asked = await through_dispatch("focus_app", {"name": shown})
+        check(result["ok"] is False and "never be controlled" in result.get("error", "") and not asked,
+              f"focus_app {shown.strip()!r} refused with no prompt")
+    check(not ui_access.is_denied("TextEdit"), "an ordinary app is not denied")
+
+
 SECTIONS = {
     "open_url": check_open_url,
     "open_app": check_open_app,
@@ -799,6 +824,7 @@ SECTIONS = {
     "fetch_url": check_fetch_url,
     "openers": check_openers,
     "missing_folder": check_missing_folder,
+    "gui_denied": check_gui_denied,
 }
 
 
