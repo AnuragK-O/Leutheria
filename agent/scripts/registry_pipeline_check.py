@@ -412,7 +412,8 @@ def g(cwd, *args, check_rc=True):
 
 def fresh_clone(bare_repo, dest):
     # Under 40+ concurrent pushes a local clone occasionally fails (exit 128, seen once,
-    # not reproduced): retry, so the scenario tests the tools, not the harness.
+    # not reproduced): retry, so the scenario tests the tools, not the harness. (The burst's
+    # bare repo also has gc off: see where it is created.)
     for n in range(20):
         shutil.rmtree(dest, ignore_errors=True)
         r = subprocess.run(["git", "clone", "--quiet", "--branch", "main", str(bare_repo), str(dest)],
@@ -467,6 +468,12 @@ g(seed, "add", "-A")
 g(seed, "commit", "--quiet", "-m", "seed")
 bare = BT / "main.git"
 subprocess.run(["git", "clone", "--quiet", "--bare", str(seed), str(bare)], check=True, timeout=60)
+# A plain local clone copies object files one by one, and a push can start a gc here that
+# repacks them mid-copy: the clone then lacks objects for good and every later attempt
+# fails the same way (QA round 2: about 1 burst in 3 stranded a record_push). GitHub's
+# side has no such race, so the harness turns gc off rather than slow every clone down.
+for key, value in (("gc.auto", "0"), ("receive.autogc", "false")):
+    subprocess.run(["git", "-C", str(bare), "config", key, value], check=True, timeout=30)
 
 burst = []  # (i, name, author, definition, rel)
 for i in range(BURST):
