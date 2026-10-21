@@ -247,3 +247,36 @@ python tools/local_pipeline.py submit --work /tmp/reg --leutheria <Leutheria che
 ```
 
 Leutheria's `agent/scripts/registry_pipeline_check.py` exercises all of it.
+
+### Load test: 100 simulated testers
+
+`tools/sim_testers.py` generates one deterministic plan (`--seed`) of about 125 submissions from
+`tester-001`..`tester-100` out of the tool catalog -- mostly valid skills, updates to v2/v3, name
+collisions between authors, every kind of invalid file, `run_command` skills on and off the
+allowlist, static blocks, screener flags, yanks -- each with the outcome it was designed to
+produce. Run it with Leutheria's venv (it needs `cryptography`):
+
+```bash
+python tools/sim_testers.py plan                       # what would be submitted, and the expected outcome of each
+python tools/sim_testers.py local                      # ~1 min; exit 1 on any mismatch
+```
+
+`local` drives `local_pipeline.py` on a temp copy with a throwaway key, the real static analyser
+and a stubbed model (`screen.py --model-stub`; `ANTHROPIC_API_KEY` is removed, nothing is
+called), then runs `verify_index.py`, compares the index with the plan entry by entry, and has
+the real Leutheria client (`registry_client.py`, `LEUTHERIA_REGISTRY_TEST=1`, sandbox HOME)
+list the index over loopback and install, update and refuse a handful of skills. It prints
+submitted / auto-published / needs-review / rejected by reason / collisions / yanked and an
+expected-vs-actual table.
+
+`github` opens the same submissions as real PRs on a **scratch** registry repo (it refuses this
+one), one per ~7 s and within 60 content-creating requests a minute and 450 an hour; every
+merge also costs a real screener call. One `gh` account means one PR author, so collision cases
+are skipped (`--include-collisions` sends them as same-author versions), and outcomes the model
+decides are "soft". Always look at `--dry-run` first; `status` watches the run fill in:
+
+```bash
+python tools/sim_testers.py github --repo you/registry-scratch --dry-run
+python tools/sim_testers.py github --repo you/registry-scratch --workdir ~/sim-gh   # resumable
+python tools/sim_testers.py status --repo you/registry-scratch --watch 60
+```
