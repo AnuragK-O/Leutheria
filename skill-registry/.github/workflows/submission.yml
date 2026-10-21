@@ -16,14 +16,21 @@ permissions:
   pull-requests: write
   issues: write
 
-# A label the job ignores (any but the two approval labels) gets a group of its
-# own, so adding one can't cancel a run that is merging or still writing the
-# review record (which can take minutes under a burst).
+# A run that would do nothing gets a group of its own ("-solo-<run id>"), so it
+# can't cancel a run that is merging or still writing the review record (which
+# can take minutes under a burst; a cancelled run there strands the merge):
+#   - any event on a closed PR -- once a run has merged, every later event
+#     (an approval label re-added, say) sees the PR closed;
+#   - a label the job ignores (any but the two approval labels).
+# The one window left, an event that arrives just before the merge, is caught
+# by "Report a merge without a review record" below, which also runs when the
+# run is cancelled.
 concurrency:
   group: >-
     submission-${{ github.event.pull_request.number }}${{
-    github.event.action == 'labeled' && github.event.label.name != 'human-approved' &&
-    github.event.label.name != 'human-approved-override' && format('-ignored-{0}', github.run_id) || '' }}
+    (github.event.pull_request.state == 'closed' || (github.event.action == 'labeled' &&
+    github.event.label.name != 'human-approved' && github.event.label.name != 'human-approved-override'))
+    && format('-solo-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 
 jobs:
@@ -31,10 +38,12 @@ jobs:
     # A label is only a request to check for an approval (human_approval.py
     # binds it to an approving review of this exact head commit); the label
     # itself never approves anything.
+    # A closed (or merged) PR is never screened or merged again.
     if: >-
+      github.event.pull_request.state != 'closed' && (
       github.event.action != 'labeled' ||
       github.event.label.name == 'human-approved' ||
-      github.event.label.name == 'human-approved-override'
+      github.event.label.name == 'human-approved-override')
     runs-on: ubuntu-latest
     outputs:
       merged: ${{ steps.act.outputs.merged }}
@@ -187,8 +196,12 @@ jobs:
                 gh pr close "$PR" --repo "$GITHUB_REPOSITORY"
                 exit 0
               fi
+              # From here until the record is on main, record_report.md exists
+              # (record_push.py keeps it, with the recovery command, and removes
+              # it only on success), so a failed or cancelled run is reported.
+              echo "This submission may have been merged, but the run stopped before its review record was written, so it is not published. See README \"Recovering\"." > record_report.md
               # --match-head-sha: merge exactly the commit that was screened.
-              gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --squash --match-head-sha "$HEAD_SHA"
+              gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --squash --match-head-sha "$HEAD_SHA" || { rm -f record_report.md; exit 1; }
               # The version (and the owner re-check) come from main as it is
               # when the record is written; the push is a fast-forward, so it
               # lands only on the exact main they were computed from. A burst
@@ -204,20 +217,28 @@ jobs:
                 --work main --path "$SKILL_PATH" --verdict "$verdict" --author "$PR_AUTHOR" --pr "$PR" \
                 --report record_report.md $screen_arg || rc=$?
               if [ "$rc" != 0 ]; then
-                # Merged but not recorded: never indexed, so fail loudly where a
-                # maintainer will see it (PR comment, label, failed run, and the
-                # screen result kept as an artifact for the recovery command).
                 echo "::error::Merged but no review record for $SKILL_PATH (PR #$PR); see README 'Recovering'"
-                [ -f record_report.md ] || echo "The review record step failed; see the run log and README 'Recovering'." > record_report.md
-                gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file record_report.md || true
-                gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label registry-unrecorded >/dev/null 2>&1 || true
                 exit 1
               fi
               echo "merged=yes" >> "$GITHUB_OUTPUT" ;;
           esac
 
+      # Merged but not recorded: never indexed, so say so where a maintainer
+      # will see it -- also when the run was cancelled mid-record, which
+      # failure() alone misses. record_report.md exists only between the merge
+      # attempt and a confirmed record; the PR's state tells a merge that
+      # happened from one that didn't.
+      - name: Report a merge without a review record
+        if: (failure() || cancelled()) && hashFiles('record_report.md') != ''
+        run: |
+          state=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json state --jq .state || echo UNKNOWN)
+          if [ "$state" = OPEN ] || [ "$state" = CLOSED ]; then echo "not merged; nothing to report"; exit 0; fi
+          echo "::error::PR #$PR merged without a review record; see README 'Recovering'"
+          gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file record_report.md || true
+          gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label registry-unrecorded >/dev/null 2>&1 || true
+
       - name: Keep what recovery needs
-        if: failure() && hashFiles('record_report.md') != ''
+        if: (failure() || cancelled()) && hashFiles('record_report.md') != ''
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: unrecorded-review-${{ github.event.pull_request.number }}

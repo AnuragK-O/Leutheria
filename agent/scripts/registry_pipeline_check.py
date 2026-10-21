@@ -23,6 +23,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import uuid
 from pathlib import Path
 
@@ -40,9 +41,16 @@ passed = 0
 
 
 def check(condition, label):
+    """Any FAIL ends the run with exit 1. From a worker thread (section 4b runs a pool)
+    sys.exit would end only that thread and the run could still finish "all passed", so
+    there the process is ended outright. (Reading the exit status through a pipe --
+    `... | tail` -- reports tail's status, not this one; use pipefail or PIPESTATUS.)"""
     global passed
     if not condition:
-        print(f"FAIL  {label}")
+        print(f"FAIL  {label}", flush=True)
+        if threading.current_thread() is not threading.main_thread():
+            sys.stderr.flush()
+            os._exit(1)
         sys.exit(1)
     passed += 1
 
@@ -467,12 +475,32 @@ for i in range(BURST):
     burst.append((i, name, author, d, f"skills/{name}/{d['content_hash']}.json"))
 
 
-import threading  # noqa: E402
+# A version published before the burst, which maintainers yank DURING it: three yank runs at
+# once (the security response, dispatched twice by two maintainers plus a re-run), racing the
+# record pushes. Each must succeed (one yanks, the others find it already yanked).
+YANK_REL_D = skill(name="yank_target", steps=[{"tool": "create_folder", "args": {"path": "{place}/bad"}}])
+YANK_REL = f"skills/yank_target/{YANK_REL_D['content_hash']}.json"
+YANKS = 3
+
+
+def yank_push(bare_repo, work, name, digest, *extra):
+    return py(TOOLS / "yank_push.py", "--remote", bare_repo, "--work", work, "--name", name,
+              "--content-hash", digest, "--reason", "malicious", "--by", "maint", *extra)
+
+
+push_change(bare, BT / "merge" / "yank_target", YANK_REL, YANK_REL_D)
+check(record_push(bare, BT / "rec" / "yank_target", YANK_REL, "Yanky", "500").returncode == 0,
+      "burst: the version to be yanked is published first")
 
 MERGE_LOCK = threading.Lock()  # gh pr merge is atomic on GitHub's side: merges don't race each other
 
 
 def submission_run(item):
+    if item[0] == "yank":
+        time.sleep(random.uniform(0, 1.0))
+        y = yank_push(bare, BT / "yank" / str(item[1]), "yank_target", YANK_REL_D["content_hash"],
+                      "--base-delay", "0.02", "--max-delay", "0.3", "--attempts", "400", "--deadline", "300")
+        return ("yank", item[1]), y, publish_run(bare, BT / "pub" / f"y{item[1]}")  # yank.yml calls publish
     i, name, author, d, rel = item
     time.sleep(random.uniform(0, 0.5))                                  # screening ends at slightly different times
     with MERGE_LOCK:
@@ -483,10 +511,21 @@ def submission_run(item):
 
 
 started = time.monotonic()
-with concurrent.futures.ThreadPoolExecutor(max_workers=BURST) as pool:
-    results = list(pool.map(submission_run, burst))
+with concurrent.futures.ThreadPoolExecutor(max_workers=BURST + YANKS) as pool:
+    results = list(pool.map(submission_run, burst + [("yank", k) for k in range(YANKS)]))
 elapsed = time.monotonic() - started
-bad = [(i, r.returncode, r.stderr[-400:]) for i, r, _ in results if r.returncode != 0 or "Traceback" in r.stderr]
+yank_results = [r for i, r, _ in results if isinstance(i, tuple)]
+bad_y = [(r.returncode, r.stderr[-400:]) for r in yank_results if r.returncode != 0 or "Traceback" in r.stderr]
+check(not bad_y, f"burst: every concurrent yank_push succeeds: {bad_y[:3]}")
+# Usually one says "yanked" and the rest "already yanked"; two that build their commit from
+# the same main in the same second make byte-identical commits (same parent, tree, message,
+# time), so the second push is "up to date" and both say "yanked". Either way main gets the
+# yank exactly once -- asserted on main below, which is what matters.
+check(all(r.stdout.strip().rsplit(" ", 1)[0] in ("yanked", "already yanked") for r in yank_results)
+      and any(r.stdout.startswith("yanked") for r in yank_results),
+      f"burst: the yank lands and the other runs succeed too: {[r.stdout for r in yank_results]}")
+bad = [(i, r.returncode, r.stderr[-400:]) for i, r, _ in results
+       if not isinstance(i, tuple) and (r.returncode != 0 or "Traceback" in r.stderr)]
 check(not bad, f"burst of {BURST}: every record_push succeeds: {bad[:3]}")
 retried = sum(r.stderr.count("retrying") for _, r, _ in results)
 check(retried > 0, f"burst of {BURST}: the scenario really raced (pushes were rejected and retried): {retried}")
@@ -495,7 +534,7 @@ check(not pub_bad, f"burst: every publish run commits, finds nothing new, or ste
 
 final = fresh_clone(bare, BT / "final")
 records = sorted((final / "reviews").glob("*/*.json"))
-check(len(records) == BURST, f"burst: exactly one record per submission ({len(records)} for {BURST})")
+check(len(records) == BURST + 1, f"burst: exactly one record per submission ({len(records)} for {BURST} + 1)")
 by_name = {}
 for i, name, author, d, rel in burst:
     p = final / "reviews" / name / f"{d['content_hash']}.json"
@@ -507,13 +546,20 @@ for name, versions in sorted(by_name.items()):
     check(sorted(versions) == list(range(1, len(versions) + 1)),
           f"burst: {name}'s versions are unique and contiguous: {sorted(versions)}")
 log = g(final, "log", "--format=%s").stdout.splitlines()
-check(sum(1 for s in log if s.startswith("Review record for")) == BURST, "burst: one review-record commit per submission")
+check(sum(1 for s in log if s.startswith("Review record for")) == BURST + 1, "burst: one review-record commit per submission")
+check(sum(1 for s in log if s.startswith("Yank yank_target")) == 1, "burst: one yank commit for three concurrent yanks")
+yanked_doc = json.loads((final / "yanked.json").read_text())
+check([(y["name"], y["content_hash"]) for y in yanked_doc["yanked"]] == [("yank_target", YANK_REL_D["content_hash"])],
+      f"burst: yanked.json on main holds the yank exactly once: {yanked_doc}")
 check((final / "index.json").is_file(), f"burst: an index was published: {sorted({p for _, _, p in results})}")
 idx = json.loads((final / "index.json").read_text())
 check({(e["name"], e["content_hash"], e["version"]) for e in idx["skills"]} ==
       {(n, d["content_hash"], json.loads((final / "reviews" / n / f"{d['content_hash']}.json").read_text())["version"])
-       for _, n, _, d, _ in burst},
+       for _, n, _, d, _ in burst} | {("yank_target", YANK_REL_D["content_hash"], 1)},
       f"burst: the index left on main after the burst lists all {BURST} submissions ({len(idx['skills'])})")
+check([e["yanked"] for e in idx["skills"] if e["name"] == "yank_target"] == [True]
+      and not any(e["yanked"] for e in idx["skills"] if e["name"] != "yank_target"),
+      "burst: that index marks the yanked version, and only it")
 check(tool("verify_index.py", "--repo", final, "--keys", keys, "--leutheria", REPO).returncode == 0,
       "burst: that index verifies")
 r = tool("build_index.py", "--repo", final, "--leutheria", REPO, "--out", BT / "rebuilt.json")
@@ -523,15 +569,15 @@ print(f"      burst of {BURST}: {retried} rejected pushes retried, {elapsed:.1f}
 # Re-running is safe: a record already on main for this file and author is success, not a second record.
 head = g(final, "rev-parse", "HEAD").stdout.strip()
 i0, n0, a0, d0, rel0 = burst[0]
-r = record_push(bare, BT / "rec" / "again", rel0, a0, str(i0))
-check(r.returncode == 0 and "already recorded" in r.stdout and
+report = BT / "report.md"
+r = record_push(bare, BT / "rec" / "again", rel0, a0, str(i0), "--report", report)
+check(r.returncode == 0 and "already recorded" in r.stdout and not report.exists() and
       g(bare, "rev-parse", "main").stdout.strip() == head, f"record_push re-run is a no-op success: {r.stdout}{r.stderr}")
 
 # A name claimed by someone else on main is refused at once, not retried, and says what to do.
 intruder = skill(name=n0, steps=[{"tool": "create_folder", "args": {"path": "{place}/intruder"}}])
 rel_x = f"skills/{n0}/{intruder['content_hash']}.json"
 push_change(bare, BT / "merge" / "x", rel_x, intruder)
-report = BT / "report.md"
 r = record_push(bare, BT / "rec" / "x", rel_x, "mallory", "999", "--report", report)
 check(r.returncode == 2 and "REFUSED" in r.stderr and "retrying" not in r.stderr and "not written" in report.read_text()
       and not (BT / "rec" / "x" / "reviews" / n0 / f"{intruder['content_hash']}.json").exists(),
@@ -548,6 +594,35 @@ text = report.read_text() if report.exists() else ""
 check(r.returncode == 1 and "STRANDED" in r.stderr and "tools/record_push.py" in text and f"--path {rel_x}" in text
       and "--verdict auto_approved" in text and f"--author {a0}" in text and "--pr 998" in text,
       f"record_push gives up loudly with a recovery command: {r.stderr}{text}")
+# Cancelled mid-retry (the job killed while record_push waits for main): the report is
+# already there, with the recovery command, so the workflow's cancelled() step can post it.
+report.unlink()
+proc = subprocess.Popen([sys.executable, str(TOOLS / "record_push.py"), "--remote", str(rejecting), "--work",
+                         str(BT / "rec" / "killed"), "--path", rel_x, "--verdict", "auto_approved", "--author", a0,
+                         "--pr", "997", "--report", str(report), "--base-delay", "0.5", "--max-delay", "1"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+for _ in range(400):  # until it has cloned and is retrying against the rejecting remote
+    if proc.poll() is not None or (report.exists() and (BT / "rec" / "killed" / ".git").is_dir()):
+        break
+    time.sleep(0.05)
+time.sleep(0.3)
+check(proc.poll() is None, "record_push is still retrying when it is killed")
+proc.kill()
+proc.wait(timeout=30)
+text = report.read_text() if report.exists() else ""
+check("stopped" in text and f"--path {rel_x}" in text and "--pr 997" in text,
+      f"a record_push killed mid-retry leaves the report with the recovery command: {text!r}")
+
+# yank_push on its own: unknown version refused for good; already-yanked is success with no new commit.
+r = yank_push(bare, BT / "yank" / "missing", "yank_target", "b" * 64)
+check(r.returncode == 2 and "REFUSED" in r.stderr and "retrying" not in r.stderr, f"yank of an unpublished version refused: {r.stderr}")
+r = yank_push(bare, BT / "yank" / "bad", "../etc", "b" * 64)
+check(r.returncode == 2, "yank_push refuses a path-like name")
+head = g(bare, "rev-parse", "main").stdout.strip()
+r = yank_push(bare, BT / "yank" / "again", "yank_target", YANK_REL_D["content_hash"])
+check(r.returncode == 0 and "already yanked" in r.stdout and g(bare, "rev-parse", "main").stdout.strip() == head,
+      f"re-running a yank is a no-op success: {r.stdout}{r.stderr}")
+
 sys.path.insert(0, str(TOOLS))
 import record_push as _rp  # noqa: E402
 
@@ -739,8 +814,24 @@ check(sub.index("gh pr merge") < sub.index("tools/record_push.py") and "for atte
       "the review record is written by record_push.py after the merge, and a failure is labelled and kept")
 check(all("concurrency" not in j for j in parsed["submission.yml"]["jobs"].values()),
       "no submission job joins a shared concurrency group")
-check("-ignored-" in json.dumps(parsed["submission.yml"]["concurrency"]),
-      "an ignored label can't cancel a run that is merging or recording")
+group = json.dumps(parsed["submission.yml"]["concurrency"])
+check("-solo-" in group and "pull_request.state == 'closed'" in group and "human-approved-override" in group,
+      "an ignored label, or any event once the PR is merged, can't cancel a run that is merging or recording")
+check("pull_request.state != 'closed'" in sub_jobs["if"], "a closed or merged PR is never screened again")
+_steps = {st.get("name"): st for st in sub_jobs["steps"]}
+_rep = _steps.get("Report a merge without a review record", {})
+_keep = _steps.get("Keep what recovery needs", {})
+check("cancelled()" in _rep.get("if", "") and "record_report.md" in _rep.get("if", "")
+      and "registry-unrecorded" in _rep.get("run", "") and "--json state" in _rep.get("run", "")
+      and "cancelled()" in _keep.get("if", ""),
+      "a merge left unrecorded is reported even when the run is cancelled, and only if the PR really merged")
+_act = _steps["Act on the decision"]["run"]
+check(_act.index("> record_report.md") < _act.index("gh pr merge") < _act.index("tools/record_push.py")
+      and "--report record_report.md" in _act,
+      "the unrecorded-merge report exists from just before the merge until record_push confirms the record")
+_yank = json.dumps(parsed["yank.yml"]["jobs"]["yank"])
+check("tools/yank_push.py" in _yank and "git push" not in _yank and "tools/yank.py" not in _yank,
+      "the yank is pushed only through yank_push.py (fresh main, fast-forward, backoff)")
 
 # M5: the signing key meets as little code as possible.
 import re  # noqa: E402
@@ -784,11 +875,17 @@ import commit_index as _ci  # noqa: E402
 check(sorted(p.rstrip("/*") for p in on["push"]["paths"]) == sorted(_ci.INPUTS),
       f"publish's push paths are commit_index.INPUTS: {on['push']['paths']}")
 check("registry-main-writes" not in json.dumps(parsed), "no workflow still uses the old shared group")
-reqs = [l for l in (REGISTRY / "requirements-sign.txt").read_text().splitlines() if l.strip() and not l.startswith("#")]
-check({l.split("==")[0] for l in reqs} == {"cryptography", "cffi", "pycparser"}, "signing requirements are cryptography + its deps")
+_req_text = (REGISTRY / "requirements-sign.txt").read_text()
+# One requirement per logical line: pip-compile writes `name==ver \` then one `--hash=` per line.
+reqs = [l.strip() for l in re.sub(r"[ \t]*\\\n\s*", " ", _req_text).splitlines() if l.strip() and not l.lstrip().startswith("#")]
+check({l.split("==")[0] for l in reqs} == {"cryptography", "cffi", "pycparser"}, f"signing requirements are cryptography + its deps: {[l[:40] for l in reqs]}")
+check(all(re.match(r"[\w-]+==[\w.]+ ", l) for l in reqs), "each signing requirement is pinned to one version")
 if not all("--hash=sha256:" in l for l in reqs):
-    check("TODO(hashes)" in (REGISTRY / "requirements-sign.txt").read_text(), "missing hashes are marked TODO(hashes)")
+    check("TODO(hashes)" in _req_text, "missing hashes are marked TODO(hashes)")
     print("WARN  requirements-sign.txt has no hashes yet (TODO(hashes)): publish fails closed until they are generated")
+else:
+    check(all(re.fullmatch(r"[\w-]+==[\w.]+( --hash=sha256:[0-9a-f]{64})+", l) for l in reqs)
+          and "TODO(hashes)" not in _req_text, "every signing requirement carries only well-formed sha256 hashes")
 
 shutil.rmtree(TMP, ignore_errors=True)
 print(f"\nall {passed} checks passed")

@@ -156,7 +156,10 @@ to review rather than merging. To reject, close the PR with a comment.
 
 ### Yanking
 
-Actions → **yank** → Run workflow with the skill name, its `content_hash` and a reason. The
+Actions → **yank** → Run workflow with the skill name, its `content_hash` and a reason.
+`tools/yank_push.py` applies it to a fresh main and pushes as a fast-forward, retrying with
+backoff (the same loop as review records, `tools/main_push.py`), so a burst of merges can't
+make it fail; re-running it is safe (an already-yanked version counts as done). The
 file stays (installed copies must still verify); the next index marks it `yanked: true`, which
 hides it from Discover and shows installed copies as withdrawn. Installed copies are not
 removed. Yanking a version doesn't free its name.
@@ -212,7 +215,11 @@ file is on main, but it is never indexed. It fails safe (nothing unreviewed is p
 nobody else will notice, so look for it:
 
 - the PR has the `registry-unrecorded` label and a comment from the bot with the exact command
-  below filled in, and its `submission` run failed;
+  below filled in, and its `submission` run failed or was **cancelled**. A run that has
+  merged can't be cancelled by a later event on the PR (once merged, every event sees the
+  PR closed and runs in a group of its own), but one cancelled in the moment around the
+  merge -- or by hand -- still reports from its `cancelled()` step, and only if the PR really
+  merged;
 - every publish build log lists `pending (no review record): skills/<name>/<hash>.json`.
 
 To record it, from a checkout of this repository's main (the tool makes its own clone in
