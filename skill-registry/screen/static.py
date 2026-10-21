@@ -861,6 +861,39 @@ def _path_mode(spec) -> str:
 DISPLAY_ONLY_TEXT = {"show_notification", "set_timer"}
 
 
+def _program_index(toks: list) -> int:
+    """Index of a simple command's program word, found the way command_words()
+    finds it: past assignments, flags, wrappers and fd numbers."""
+    i = 0
+    while i < len(toks):
+        t = toks[i]
+        if re.fullmatch(r"[a-z_][a-z0-9_]*=\S*", t) or t.startswith("-") or t in WRAPPERS or re.fullmatch(r"\d+", t):
+            i += 1
+            continue
+        break
+    return i
+
+
+def _bare_param_receives_pipe(text: str) -> bool:
+    """True if a simple command right after a single "|" has a parameter as its
+    program word ("cat notes.txt | {x}", "echo <b64> | base64 -d | {x}"): the
+    user's value would become the program that reads the piped text. Also what a
+    markdown table row ("| {a} | {b} |") looks like, so callers make it a
+    needs_review finding, never a block."""
+    view = shell_views(text)["dequoted"]
+    prev_sep, pos = None, 0
+    for m in list(SEP_RE.finditer(view)) + [None]:
+        seg = view[pos: m.start()] if m else view[pos:]
+        toks = seg.split()
+        i = _program_index(toks)
+        if prev_sep == "|" and i < len(toks) and toks[i].startswith(PARAM_MARK.lower()):
+            return True
+        if m is None:
+            break
+        prev_sep, pos = m.group(0), m.end()
+    return False
+
+
 def _param_only_commands(text: str) -> bool:
     """True if every simple command whose program word is a parameter is that
     parameter alone ("{x}", "- {x}", "{x}\n{y}"). "{x} -rf ~" is not: the author
@@ -871,13 +904,7 @@ def _param_only_commands(text: str) -> bool:
     arguments: "-" is a zsh precommand modifier, so "- {x} -rf ~" runs {x}."""
     for seg in SEP_RE.split(shell_views(text)["dequoted"]):
         toks = seg.split()
-        i = 0
-        while i < len(toks):
-            t = toks[i]
-            if re.fullmatch(r"[a-z_][a-z0-9_]*=\S*", t) or t.startswith("-") or t in WRAPPERS or re.fullmatch(r"\d+", t):
-                i += 1
-                continue
-            break
+        i = _program_index(toks)
         if i < len(toks) and toks[i].startswith(PARAM_MARK.lower()):
             if len(toks) > i + 1 or any(t != "-" for t in toks[:i]):
                 return False
@@ -1006,6 +1033,12 @@ def analyze_step(i: int, step: dict, tool: dict, variants: list, F: _Findings, f
                       "text this step writes, types or copies contains a dangerous shell command" +
                       (" (it would be typed or pasted, outside any confirmation)" if sev == BLOCK else ""))
                 facts["staged_rules"] |= {f["rule"] for f in serious}
+            elif exempt and name not in DISPLAY_ONLY_TEXT and _bare_param_receives_pipe(v):
+                # A bare parameter is the user's value -- unless something is piped
+                # into it, when it is the program that reads the pipe. Review, not
+                # block: a markdown table row has the same shape.
+                F.add(where, "param_receives_pipe", REVIEW,
+                      "text this step writes, types or copies pipes into a command whose program a parameter names")
             if name in ("show_notification", "set_timer") and re.search(
                     r"\b(?:say|answer|reply)\s+(?:yes|confirm)|\bconfirm\b|\bapprove\b|\bpassword\b|\benter your\b|\bclick (?:allow|ok)\b", v.lower()):
                 F.add(where, "fake_prompt", REVIEW, "a notification or reminder reads like a confirmation or password prompt")
