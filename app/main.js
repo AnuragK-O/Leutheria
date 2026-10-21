@@ -1194,6 +1194,8 @@ function installTestHooks() {
     },
     show: (id, query) => panels.show(id, { query, source: "test" }),
     hideAll: () => panels.hideAll("test"),
+    hide: (id) => panels.hide(id, "test"),
+    toggle: (id) => panels.toggle(id, { source: "test" }),
     display: () => {
       const display = screen.getPrimaryDisplay();
       return { bounds: display.bounds, workArea: display.workArea, count: screen.getAllDisplays().length };

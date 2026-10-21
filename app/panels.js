@@ -8,6 +8,16 @@
    and it is an NSPanel (type "panel"), so clicking into it lets you type
    without bringing the main window forward. Nothing here calls focus().
 
+   Arriving and leaving: the window itself never moves. It is placed at its
+   real layout bounds before it is shown, and the page slides its frame in
+   from the docked edge (CSS transform, renderer/panels/panels.css) -- so
+   getBounds() is always the real layout, a drag or resize starts from it,
+   nothing in flight is ever persisted, and nothing slides across a
+   neighbouring display. Hiding sends "out", waits for the page's
+   "motion-done" (or HIDE_FALLBACK_MS), then hides the window. A panel that
+   is sliding out already counts as hidden (isVisible), so show/toggle
+   reverses it from wherever it is.
+
    main.js owns the settings (it loads, validates, persists and broadcasts
    them); this module asks it for the current ones and hands it patches. */
 
@@ -28,6 +38,10 @@ const LEAVE_GRACE_MS = 700;
 // Horizontal panels docked top/bottom fill the work area's width up to this,
 // centred; past it a strip of cards is mostly empty space.
 const MAX_STRIP_W = 1600;
+// Hiding waits for the page to report that its slide out has finished
+// ("motion-done"); this is the most it waits, so a page that is hung or never
+// reports still gets hidden. Comfortably over --t-base (the slide out).
+const HIDE_FALLBACK_MS = 600;
 
 function createPanelManager({ rendererDir, preload, log, getSettings, updateSettings, captureTheme, testHooks }) {
   const entries = new Map(); // id -> entry (see ensure())
@@ -166,6 +180,10 @@ function createPanelManager({ rendererDir, preload, log, getSettings, updateSett
       outSince: null,
       gesture: null, // { kind: "move"|"resize", edge, start }
       pendingQuery: null,
+      motion: "out", // "in" | "out": where the page should slide its frame
+      motionSeq: 0, // bumped on every change, echoed back by "motion-done"
+      hiding: false, // sliding out: logically hidden, window still up
+      hideTimer: null,
     };
     entries.set(id, entry);
     win.on("closed", () => {
@@ -193,10 +211,28 @@ function createPanelManager({ rendererDir, preload, log, getSettings, updateSett
     return layout.opacity === null ? getSettings().appearance.panelOpacity : layout.opacity;
   }
 
+  /** The screen edge a panel slides from: its dock, or for a free panel
+      the work-area edge nearest to it (the page makes that a short nudge
+      with a fade, not a slide from the edge -- see panels.css). */
+  function slideFrom(entry, dock) {
+    if (dock !== "free") return dock;
+    if (!alive(entry.win)) return "right";
+    const b = entry.win.getBounds();
+    const area = screen.getDisplayMatching(b).workArea;
+    const gaps = {
+      left: b.x - area.x,
+      right: area.x + area.width - (b.x + b.width),
+      top: b.y - area.y,
+      bottom: area.y + area.height - (b.y + b.height),
+    };
+    return Object.keys(gaps).reduce((best, edge) => (gaps[edge] < gaps[best] ? edge : best), "right");
+  }
+
   function configFor(entry) {
     const layout = layoutOf(entry.id);
     const dock = entry.dockOverride || layout.dock;
     return {
+      motion: { state: entry.motion, seq: entry.motionSeq, from: slideFrom(entry, dock) },
       id: entry.id,
       dock,
       savedDock: layout.dock,
@@ -220,7 +256,28 @@ function createPanelManager({ rendererDir, preload, log, getSettings, updateSett
     sendConfig(entry);
   }
 
-  const isVisible = (entry) => Boolean(entry && alive(entry.win) && (entry.win.isVisible() || entry.showWhenReady));
+  const isVisible = (entry) => Boolean(entry && alive(entry.win) && !entry.hiding && (entry.win.isVisible() || entry.showWhenReady));
+
+  function setMotion(entry, state) {
+    entry.motion = state;
+    entry.motionSeq += 1;
+  }
+
+  /** Stop a slide out that is still running (a show arrived first). */
+  function cancelHide(entry) {
+    if (entry.hideTimer) clearTimeout(entry.hideTimer);
+    entry.hideTimer = null;
+    entry.hiding = false;
+  }
+
+  /** The end of a slide out: now really hide the window. Only for the
+      slide out it was started for (seq), and only if nothing reversed it. */
+  function finishHide(entry, seq) {
+    if (!entry.hiding || seq !== entry.motionSeq) return;
+    cancelHide(entry);
+    if (alive(entry.win)) entry.win.hide();
+    entry.dockOverride = null;
+  }
 
   /** Show panel `id`. source: "agent" | "hot-edge" | "ui" | "restore" (logged).
       dock: the hot edge's edge, for this showing only. */
@@ -235,15 +292,24 @@ function createPanelManager({ rendererDir, preload, log, getSettings, updateSett
       sendConfig(entry);
       return true; // already up: don't jump it around
     }
+    // Mid slide out: reversed from wherever the frame is (the page's
+    // transition retargets), as long as the bounds below come out the same.
+    const reversing = entry.hiding;
+    cancelHide(entry);
     entry.dockOverride = dock && dock !== layoutOf(id).dock ? dock : null;
     entry.visited = false;
     entry.outSince = null;
+    setMotion(entry, "in");
+    // The real layout bounds, set while the window is still hidden; the
+    // slide happens inside them (place() sends the "in" with the config).
     place(entry);
     // showInactive: opened by voice or the hot edge while the user is in
     // another app -- appearing must never take their focus.
-    if (entry.ready || entry.win.webContents.isLoading() === false) entry.win.showInactive();
+    if (reversing && entry.win.isVisible()) {
+      // still up from the slide out: nothing to show
+    } else if (entry.ready || entry.win.webContents.isLoading() === false) entry.win.showInactive();
     else entry.showWhenReady = true;
-    log(`[panels] ${id} shown (${source}${entry.dockOverride ? `, docked ${entry.dockOverride} for now` : ""})`);
+    log(`[panels] ${id} shown (${source}${entry.dockOverride ? `, docked ${entry.dockOverride} for now` : ""}${reversing ? ", reversing a hide" : ""})`);
     syncPolling();
     return true;
   }
@@ -251,10 +317,19 @@ function createPanelManager({ rendererDir, preload, log, getSettings, updateSett
   function hide(id, source = "ui") {
     const entry = entries.get(id);
     if (!isVisible(entry)) return false;
+    const neverShown = entry.showWhenReady && !entry.win.isVisible();
     entry.showWhenReady = false;
     entry.gesture = null;
-    entry.win.hide();
-    entry.dockOverride = null;
+    setMotion(entry, "out");
+    entry.hiding = true;
+    if (neverShown || !entry.ready) {
+      // Nothing on screen to slide (or no page yet to slide it): at once.
+      finishHide(entry, entry.motionSeq);
+    } else {
+      sendConfig(entry);
+      const seq = entry.motionSeq;
+      entry.hideTimer = setTimeout(() => finishHide(entry, seq), HIDE_FALLBACK_MS);
+    }
     log(`[panels] ${id} hidden (${source})`);
     syncPolling();
     return true;
@@ -369,6 +444,10 @@ function createPanelManager({ rendererDir, preload, log, getSettings, updateSett
       case "resize":
       case "resize-end":
         gesture(entry, op, data);
+        return { ok: true };
+      case "motion-done":
+        // The page finished a slide. Only a slide out needs anything done.
+        if (data && data.state === "out") finishHide(entry, Number(data.seq));
         return { ok: true };
       case "dock": {
         const patch = { dock: data };
@@ -561,6 +640,9 @@ function createPanelManager({ rendererDir, preload, log, getSettings, updateSett
         focused: entry.win.isFocused(),
         bounds: entry.win.getBounds(),
         opacity: entry.win.getOpacity(),
+        windowVisible: entry.win.isVisible(),
+        motion: entry.motion,
+        hiding: entry.hiding,
         dock: entry.dockOverride || layoutOf(entry.id).dock,
         orientation: layoutOf(entry.id).orientation,
         polling: Boolean(pollTimer),

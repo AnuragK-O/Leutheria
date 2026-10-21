@@ -190,6 +190,14 @@ class Page {
 
   async shot(file) {
     await sleep(350); // let transitions settle
+    // A panel that is still sliding in or out (panel.js data-motion).
+    await this.waitFor(`!["entering", "leaving"].includes(document.body.dataset.motion)`, 2000);
+    const { data } = await this.send("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(file, Buffer.from(data, "base64"));
+  }
+
+  /** A screenshot now: no settling (a paused mid-slide frame). */
+  async snap(file) {
     const { data } = await this.send("Page.captureScreenshot", { format: "png" });
     fs.writeFileSync(file, Buffer.from(data, "base64"));
   }
@@ -956,6 +964,172 @@ async function runPanels(theme) {
     await pages.timers.shot(file("hot-edge-left-timers"));
     await hooks.eval(`__leutheriaTest.setCursor({ x: ${b.x + 600}, y: ${midY} })`);
     await hooks.eval(`__leutheriaTest.hideAll()`);
+
+    // --- slide in / out (panel.js applyMotion, panels.css "slide"). The page's
+    // CSS transition is caught and paused, then seeked, so a mid-slide frame
+    // is a real rendered frame rather than a lucky screenshot.
+    await main.eval(`window.leutheria.setOverlaySettings({ hotEdge: { enabled: false }, panels: { chat: { dock: "right", orientation: "vertical", autoHide: { mode: "never" } }, timers: { dock: "bottom", autoHide: { mode: "never" } } } })`);
+    await sleep(300);
+    const layoutBefore = JSON.stringify(JSON.parse(fs.readFileSync(layoutFile, "utf8")).panels);
+    // Wait in the page for the frame's transform transition to start, and pause it.
+    const catchSlide = (page) =>
+      page.eval(`new Promise((resolve) => {
+        const frame = document.getElementById("panel-frame");
+        const t0 = performance.now();
+        (function tick() {
+          const a = document.getAnimations().find((x) => x.effect && x.effect.target === frame && x.transitionProperty === "transform");
+          if (a) { a.pause(); window.__slide = a; resolve(a.effect.getTiming().duration); }
+          else if (performance.now() - t0 > 3000) resolve(null);
+          else setTimeout(tick, 2);
+        })();
+      })`);
+    const seek = (page, f) =>
+      page.eval(`(() => { const a = window.__slide; a.currentTime = a.effect.getTiming().duration * ${f}; const st = getComputedStyle(document.getElementById("panel-frame")); const m = new DOMMatrix(st.transform); return { x: m.m41, y: m.m42, opacity: Number(st.opacity), width: document.getElementById("panel-frame").offsetWidth, height: document.getElementById("panel-frame").offsetHeight }; })()`);
+    const release = (page) => page.eval(`(window.__slide && window.__slide.play(), true)`);
+    // Sample the window's bounds every few ms in the main process while it slides.
+    const startSampling = (id) => hooks.eval(`(() => { globalThis.__samples = []; clearInterval(globalThis.__sampler); globalThis.__sampler = setInterval(() => { const p = __leutheriaTest.panels().find((e) => e.id === ${JSON.stringify(id)}); if (p && p.windowVisible) __samples.push(JSON.stringify(p.bounds)); }, 4); return true; })()`);
+    const stopSampling = () => hooks.eval(`(() => { clearInterval(globalThis.__sampler); return [...new Set(__samples)]; })()`);
+    const chatPage = pages.chat;
+
+    // In, docked right: from past the right edge.
+    await startSampling("chat");
+    let caught = catchSlide(chatPage);
+    await hooks.eval(`__leutheriaTest.show("chat")`);
+    let duration = await caught;
+    check(`${T} slide: showing a docked panel starts a slide (--t-slow)`, duration === 320, String(duration));
+    if (duration) {
+      const at = [];
+      for (const f of [0, 0.25, 0.5, 0.75]) at.push(await seek(chatPage, f));
+      check(
+        `${T} ...from fully past the right edge, moving left, opaque`,
+        at[0].x >= at[0].width + 12 && at[1].x > at[2].x && at[2].x > at[3].x && at[3].x > 0 && at.every((p) => p.y === 0) && at[1].opacity === 1,
+        JSON.stringify(at.map((p) => Math.round(p.x)))
+      );
+      await release(chatPage);
+    }
+    check(`${T} ...and settles in place`, await chatPage.waitFor(`document.body.dataset.motion === "in" && new DOMMatrix(getComputedStyle(document.getElementById("panel-frame")).transform).isIdentity`, 3000));
+    s = await panelState(hooks, "chat");
+    let samples = await stopSampling();
+    check(`${T} ...at its real layout bounds (right edge, full height)`, s.bounds.x + s.bounds.width === area.x + area.width && s.bounds.height === area.height, JSON.stringify(s.bounds));
+    check(`${T} ...and the window itself never moved while it slid`, samples.length === 1 && samples[0] === JSON.stringify(s.bounds), samples.join(" "));
+    check(`${T} ...without taking focus`, !s.focused && !(await panelFocused()) && !stoleFront());
+    await chatPage.shot(file("slide-in-right-done"));
+
+    // Out: hidden at once as far as everything else is concerned; the window
+    // goes once the slide (--t-base) ends.
+    caught = catchSlide(chatPage);
+    await hooks.eval(`__leutheriaTest.hide("chat")`);
+    s = await panelState(hooks, "chat");
+    check(`${T} slide out: the panel counts as hidden at once, the window stays up for the slide`, !s.visible && s.windowVisible && s.hiding);
+    duration = await caught;
+    check(`${T} ...a --t-base slide`, duration === 160, String(duration));
+    if (duration) {
+      const mid = await seek(chatPage, 0.5);
+      await sleep(120);
+      await chatPage.snap(file("slide-out-right-50"));
+      check(`${T} ...towards the right edge`, mid.x > 0 && mid.x < mid.width + 40, String(mid.x));
+      await release(chatPage);
+    }
+    check(`${T} ...then the window hides`, await hooks.waitFor(`(() => { const p = __leutheriaTest.panels().find((e) => e.id === "chat"); return !p.windowVisible && !p.hiding; })()`, 2000));
+
+    // Show/hide/show mid-slide: reverses, and the stale hide never lands.
+    await hooks.eval(`__leutheriaTest.show("chat")`);
+    await sleep(90);
+    await hooks.eval(`__leutheriaTest.hide("chat")`);
+    await sleep(60);
+    await hooks.eval(`__leutheriaTest.toggle("chat")`);
+    await sleep(900); // past the hide's fallback timer
+    s = await panelState(hooks, "chat");
+    check(
+      `${T} show, hide, show mid-slide: up, settled, at its layout bounds`,
+      s.visible && s.windowVisible && !s.hiding && s.motion === "in" && s.bounds.x + s.bounds.width === area.x + area.width && (await chatPage.eval(`document.body.dataset.motion`)) === "in",
+      JSON.stringify(s)
+    );
+    // Hide then show inside the slide out: the window is never hidden.
+    await startSampling("chat");
+    await hooks.eval(`__leutheriaTest.hide("chat")`);
+    await sleep(70);
+    await hooks.eval(`__leutheriaTest.show("chat")`);
+    await sleep(900);
+    s = await panelState(hooks, "chat");
+    samples = await stopSampling();
+    check(`${T} hide, show inside the slide out: reversed, window never hidden or moved`, s.visible && s.windowVisible && s.motion === "in" && samples.length === 1, samples.join(" "));
+    await hooks.eval(`__leutheriaTest.hide("chat")`);
+    await hooks.waitFor(`!__leutheriaTest.panels().find((e) => e.id === "chat").windowVisible`, 2000);
+
+    // Docked bottom (a horizontal strip): from below.
+    caught = catchSlide(pages.timers);
+    await hooks.eval(`__leutheriaTest.show("timers")`);
+    if (await caught) {
+      const mid = await seek(pages.timers, 0.4);
+      check(`${T} slide: a bottom-docked strip comes up from below`, mid.y > 0 && mid.x === 0, JSON.stringify(mid));
+      await release(pages.timers);
+    } else check(`${T} slide: a bottom-docked strip slides`, false);
+    await pages.timers.waitFor(`document.body.dataset.motion === "in"`, 3000);
+    await pages.timers.shot(file("slide-in-bottom-done"));
+    await hooks.eval(`__leutheriaTest.hide("timers")`);
+
+    // Free (the skills panel, undocked above): a short nudge from the nearest
+    // screen edge, with a fade.
+    const sb = (await panelState(hooks, "skills")).bounds;
+    const gaps = { left: sb.x - area.x, right: area.x + area.width - sb.x - sb.width, top: sb.y - area.y, bottom: area.y + area.height - sb.y - sb.height };
+    const nearest = Object.keys(gaps).reduce((a, k) => (gaps[k] < gaps[a] ? k : a), "right");
+    await hooks.eval(`__leutheriaTest.hide("skills")`);
+    await hooks.waitFor(`!__leutheriaTest.panels().find((e) => e.id === "skills").windowVisible`, 2000);
+    caught = catchSlide(pages.skills);
+    await hooks.eval(`__leutheriaTest.show("skills")`);
+    if (await caught) {
+      const mid = await seek(pages.skills, 0.3);
+      const kind = await pages.skills.eval(`[document.body.dataset.slideKind, document.body.dataset.slide]`);
+      const offset = nearest === "left" || nearest === "right" ? Math.abs(mid.x) : Math.abs(mid.y);
+      check(`${T} slide: a free panel nudges in from the nearest edge (${nearest}) and fades`, kind[0] === "nudge" && kind[1] === nearest && offset > 0 && offset <= 24 && mid.opacity < 1, JSON.stringify({ kind, mid }));
+      await release(pages.skills);
+    } else check(`${T} slide: a free panel slides`, false);
+    await pages.skills.waitFor(`document.body.dataset.motion === "in"`, 3000);
+    check(`${T} ...and stays exactly where it was left`, JSON.stringify((await panelState(hooks, "skills")).bounds) === JSON.stringify(sb));
+
+    // Reduced motion: no slide, it's simply there (and simply gone).
+    await chatPage.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+    let t0 = Date.now();
+    await hooks.eval(`__leutheriaTest.show("chat")`);
+    await chatPage.waitFor(`document.body.dataset.motion === "in"`, 3000);
+    const inMs = Date.now() - t0;
+    check(`${T} reduced motion: shows without a slide`, (await chatPage.eval(`new DOMMatrix(getComputedStyle(document.getElementById("panel-frame")).transform).isIdentity && getComputedStyle(document.getElementById("panel-frame")).transitionDuration.split(",").every((d) => parseFloat(d) <= 0.001)`)) && inMs < 300, `${inMs} ms`);
+    await chatPage.snap(file("reduced-motion-shown"));
+    t0 = Date.now();
+    await hooks.eval(`__leutheriaTest.hide("chat")`);
+    await hooks.waitFor(`!__leutheriaTest.panels().find((e) => e.id === "chat").windowVisible`, 2000);
+    const outMs = Date.now() - t0;
+    check(`${T} ...and hides without waiting out a slide`, outMs < 300, `${outMs} ms`);
+    await chatPage.send("Emulation.setEmulatedMedia", { features: [] });
+
+    // A film of each kind of arrival, for looking at: the same slide run with
+    // --t-slow at 4 s in that page only, captured as it runs. (A seeked, paused
+    // transition reads back right in getComputedStyle but isn't reliably what
+    // a screenshot shows, so the pictures come from a slowed live run.)
+    const film = async (id, name) => {
+      const page = pages[id];
+      await hooks.eval(`__leutheriaTest.hide(${JSON.stringify(id)})`);
+      await hooks.waitFor(`!__leutheriaTest.panels().find((e) => e.id === ${JSON.stringify(id)}).windowVisible`, 2000);
+      await page.eval(`document.documentElement.style.setProperty("--t-slow", "4000ms")`);
+      const t0 = Date.now();
+      await hooks.eval(`__leutheriaTest.show(${JSON.stringify(id)})`);
+      for (const at of [120, 400, 900, 1800]) {
+        await sleep(Math.max(0, at - (Date.now() - t0)));
+        await page.snap(file(`${name}-${String(at).padStart(4, "0")}ms`));
+      }
+      await page.waitFor(`document.body.dataset.motion === "in"`, 6000);
+      await page.eval(`document.documentElement.style.removeProperty("--t-slow")`);
+      await page.shot(file(`${name}-done`));
+    };
+    await film("chat", "film-in-right");
+    await film("timers", "film-in-bottom");
+    await film("skills", "film-in-free");
+
+    const layoutAfter = JSON.stringify(JSON.parse(fs.readFileSync(layoutFile, "utf8")).panels);
+    check(`${T} sliding never wrote to overlay-layout.json`, layoutAfter === layoutBefore);
+    await hooks.eval(`__leutheriaTest.hideAll()`);
+    await main.eval(`window.leutheria.setOverlaySettings({ hotEdge: { enabled: true } })`);
 
     // --- alerts anchor: the overlay window and the toasts
     await main.eval(`window.leutheria.setOverlaySettings({ alerts: { anchor: "bottom-right", toastAnchor: "top-right" } })`);

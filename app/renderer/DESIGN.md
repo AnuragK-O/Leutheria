@@ -167,13 +167,33 @@ sentence case, and anything the machine produced is shown exactly as written.
 |---|---|---|
 | `--t-fast` | 90 ms | hover, press, level-driven overlay movement |
 | `--t-base` | 160 ms | state changes: a switch, a card arriving, a toast |
-| `--t-slow` | 320 ms | the overlay arriving and leaving |
+| `--t-slow` | 320 ms | the overlay arriving and leaving; a floating panel arriving |
 | `--ease` | `cubic-bezier(0.2, 0.8, 0.2, 1)` | everything that moves |
+
+Leaving is faster than arriving and accelerates away: `--t-base` with `ease-in` (a toast
+leaving, a floating panel leaving).
+
+**Floating panels slide; their windows don't move.** A panel's window is placed at its
+real layout bounds and shown (`showInactive`) before anything moves; the frame then
+slides inside the window (`panels.css`, "slide"), so it is clipped by the window's edge,
+which for a docked panel is the screen's edge. Docked: in from fully past its docked edge
+(100% plus the 12 px inset and the shadow's reach), opaque, `--t-slow --ease`. Free: an
+`--s5` nudge in from the nearest screen edge with a fade, same timing -- a full slide from
+a mid-screen window's own edge would look like it came from nowhere. Out is the reverse at
+`--t-base ease-in`, and the window is hidden only once the page reports the slide finished
+(`motion-done`; `panels.js` gives up waiting after 600 ms). A show or hide that arrives
+mid-slide flips the class and the transition reverses from where the frame is. The window
+is never stepped with `setBounds`: macOS clamps a window above the menu bar (a top-docked
+panel couldn't start off-screen), a window off one display's edge appears on its
+neighbour, and every reader of the bounds (drag, resize, auto-hide, the saved layout)
+would see in-between values.
 
 Indicators blink in two steps (`steps(2, jump-none)`, 1 s; 0.5 s while thinking) rather
 than fading: connecting, listening, recording, awaiting approval. Under
 `prefers-reduced-motion: reduce` every animation and transition collapses to 1 ms (not
-`none`: a toast is removed on `animationend`, which still has to fire).
+`none`: a toast is removed on `animationend`, and a panel's window is hidden on
+`transitionend`, both of which still have to fire). Chromium follows macOS's "Reduce motion"
+setting for that media query, so a panel then simply appears and disappears.
 
 ## Icons
 

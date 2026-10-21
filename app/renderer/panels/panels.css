@@ -34,12 +34,69 @@ body.panel-page {
   height: 100%;
   min-width: 0;
   filter: drop-shadow(0 8px 18px rgba(0, 0, 0, 0.4));
+  /* Out: off its edge (see "slide" below), and invisible until the page has
+     drawn. Leaving uses the toast's exit: --t-base, ease-in. */
   opacity: 0;
-  transition: opacity var(--t-base) var(--ease);
+  transform: var(--panel-out);
+  transition:
+    transform var(--t-base) ease-in,
+    opacity var(--t-base) ease-in;
 }
 
-body.ready .panel-frame {
+/* --- slide: arriving and leaving (panel.js applyMotion) ---------------------
+   The window never moves; the frame slides inside it, so it is clipped at the
+   window's edge -- which, docked, is the screen's edge. Arriving uses the
+   overlay's: --t-slow, --ease. Docked ("edge"): from fully past the docked
+   edge, opaque. Free ("nudge"): --s5 in from the nearest screen edge, fading
+   in -- sliding a mid-screen panel from its own window edge would look like
+   it came out of nowhere. Under reduced motion styles.css collapses both
+   transitions to 1 ms, so it simply appears (transitionend still fires,
+   which is what lets main.js hide the window). */
+
+.panel-frame {
+  --panel-out: translateX(var(--s5));
+}
+
+/* 100% of the frame plus 40 px: the 12 px the frame sits inside the window
+   and the drop shadow's reach, so not a sliver of shadow is left showing. */
+body[data-slide-kind="edge"][data-slide="left"] .panel-frame {
+  --panel-out: translateX(calc(-100% - 40px));
+}
+body[data-slide-kind="edge"][data-slide="right"] .panel-frame {
+  --panel-out: translateX(calc(100% + 40px));
+}
+body[data-slide-kind="edge"][data-slide="top"] .panel-frame {
+  --panel-out: translateY(calc(-100% - 40px));
+}
+body[data-slide-kind="edge"][data-slide="bottom"] .panel-frame {
+  --panel-out: translateY(calc(100% + 40px));
+}
+body[data-slide-kind="nudge"][data-slide="left"] .panel-frame {
+  --panel-out: translateX(calc(-1 * var(--s5)));
+}
+body[data-slide-kind="nudge"][data-slide="top"] .panel-frame {
+  --panel-out: translateY(calc(-1 * var(--s5)));
+}
+body[data-slide-kind="nudge"][data-slide="bottom"] .panel-frame {
+  --panel-out: translateY(var(--s5));
+}
+
+/* Docked, the frame is out of sight by position alone: no fade. */
+body.ready[data-slide-kind="edge"] .panel-frame {
   opacity: 1;
+}
+
+body.ready.panel-in .panel-frame {
+  opacity: 1;
+  transform: none;
+  transition:
+    transform var(--t-slow) var(--ease),
+    opacity var(--t-slow) var(--ease);
+}
+
+/* Moving to the edge it is about to arrive from: no transition. */
+body.panel-snap .panel-frame {
+  transition: none;
 }
 
 /* --- the heading strip: drag handle, title, control strip ------------------ */
