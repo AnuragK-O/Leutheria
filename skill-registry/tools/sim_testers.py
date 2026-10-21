@@ -818,6 +818,19 @@ def run_local(args) -> int:
     catalog = common.load_catalog(common.default_catalog_path(leutheria))
     events = build_plan(validate, catalog, args.seed, args.testers)
     L = Local(args, leutheria)
+    try:
+        return _run_local(args, L, leutheria, events)
+    finally:
+        # The temp dir holds a throwaway 0600 private key: never leave it behind
+        # unless asked to (--work names a dir the caller owns; --keep).
+        if not args.work and not args.keep:
+            shutil.rmtree(L.tmp, ignore_errors=True)
+            print(f"work dir removed: {L.tmp} (--keep to keep it)")
+        else:
+            print(f"work dir kept: {L.tmp}")
+
+
+def _run_local(args, L, leutheria, events) -> int:
     print(f"sim_testers local: seed {args.seed}, {args.testers} testers, {len(events)} events; work dir {L.tmp}")
     L.keygen()
     print(f"throwaway signing key {L.key_entry['key_id']} (tools/keygen.py)")
@@ -855,7 +868,6 @@ def run_local(args) -> int:
 
     t = sorted(L.timings)
     print(f"\ntiming: {elapsed:.0f}s for {len(events)} events (median {t[len(t) // 2]:.2f}s, max {t[-1]:.2f}s)")
-    print(f"work dir kept: {L.tmp}")
     print("\nRESULT: " + ("PASS -- every outcome as designed" if not failures else f"FAIL -- {failures} problem(s)"))
     return 1 if failures else 0
 
@@ -1127,9 +1139,13 @@ class GH:
             counted=False):
         """write: changes something on GitHub. local: touches the local clone.
         In a dry run both are printed instead of run; only reads run."""
-        shown = " ".join(c if re.fullmatch(r"[\w@%+=:,./-]+", c) else repr(c) for c in cmd)
+        message = cmd[cmd.index("-m") + 1] if "-m" in cmd[:-1] else None
+        shown = " ".join("<message>" if c is message else c if re.fullmatch(r"[\w@%+=:,./-]+", c) else repr(c)
+                         for c in cmd)
         if (write or local) and self.dry:
             print(f"    DRY-RUN  {shown}")
+            if message is not None:
+                print("             <message>:\n" + "\n".join("               | " + ln for ln in message.rstrip().splitlines()))
             if counted and self.pacer:
                 self.pacer.wait()
             return subprocess.CompletedProcess(cmd, 0, "", "")
@@ -1222,11 +1238,17 @@ def run_github(args) -> int:
     login = gh.run(["gh", "api", "user", "--jq", ".login"], check=False).stdout.strip() or "<you>"
     r = gh.run(["gh", "api", f"repos/{args.repo}", "--jq", ".permissions.push"], check=False)
     perm = r.stdout.strip() if r.returncode == 0 else ""
-    if not perm and not args.dry_run:
-        raise SystemExit(f"can't read {args.repo} with gh (does it exist, is gh logged in?)")
-    use_fork = perm != "true"
-    print(f"gh account: {login} (every PR's author); push access: {perm or 'unknown'} -> "
-          f"{'push branches to a fork' if use_fork else 'push branches to the repo'}")
+    if not perm:
+        why = f"can't read {args.repo} with gh (it doesn't exist, is private to another account, or gh isn't logged in)"
+        if not args.dry_run:
+            raise SystemExit(why)
+        print(f"gh account: {login}. WARNING: {why}; a real run would stop here. "
+              "The dry run below assumes push access to it.")
+        use_fork = False
+    else:
+        use_fork = perm != "true"
+        print(f"gh account: {login} (every PR's author); push access: {perm} -> "
+              f"{'push branches to a fork' if use_fork else 'push branches to the repo'}")
 
     if args.workdir:
         workdir = Path(args.workdir).resolve()
@@ -1449,6 +1471,7 @@ def main() -> int:
     lo.add_argument("--work", help="empty dir to work in (default: a new temp dir)")
     lo.add_argument("--verbose", action="store_true", help="one line per event")
     lo.add_argument("--no-client", action="store_true", help="skip the Leutheria client check")
+    lo.add_argument("--keep", action="store_true", help="keep the temp work dir (it is removed by default)")
     for name in ("github", "status"):
         p = sub.choices[name]
         p.add_argument("--repo", required=True, help="OWNER/NAME of a scratch registry repo")
