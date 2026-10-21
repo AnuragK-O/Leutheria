@@ -14,7 +14,10 @@ A submission is staged as a PR head in <work>/head (main + one file), then:
 check_submission -> screen.py (only if structural passes; default
 <this repo>/screen/screen.py, absent means no result) -> decide -> on merge:
 head becomes main, record_review, build_index, sign_index, verify_index --
-the same order and the same scripts as .github/workflows/. Prints one JSON
+the same order and the same scripts as .github/workflows/ (there is no git
+here, so record_review stands in for record_push.py and the index is written
+in place instead of by commit_index.py; Leutheria's registry_pipeline_check.py
+runs those two against a local bare repo under a burst). Prints one JSON
 summary {structural, decision, recorded, index, verified}; exits 0 if the
 pipeline ran (whatever it decided), 1 if a step that must not fail did.
 """

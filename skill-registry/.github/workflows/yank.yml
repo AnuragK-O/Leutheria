@@ -21,8 +21,13 @@ permissions:
 jobs:
   yank:
     runs-on: ubuntu-latest
+    # Serialises yanks only. (GitHub keeps one queued run per group: a third
+    # yank dispatched while one runs and one waits cancels the waiting one --
+    # check the run list after dispatching several.) The push can still lose
+    # to a review record landing at the same moment; the job then fails and
+    # is safe to re-run.
     concurrency:
-      group: registry-main-writes
+      group: registry-yank
       cancel-in-progress: false
     env:
       NAME: ${{ inputs.name }}

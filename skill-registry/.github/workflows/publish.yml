@@ -17,7 +17,9 @@ name: publish
 on:
   push:
     branches: [main]
-    paths: ["skills/**", "reviews/**", "yanked.json", "LEUTHERIA_REF", "tools/**"]
+    # Everything the index is built and verified from; tools/commit_index.py's
+    # INPUTS is this same list (it relies on a push here starting a publish).
+    paths: ["skills/**", "reviews/**", "yanked.json", "LEUTHERIA_REF", "tools/**", "keys/**"]
   workflow_call:
   workflow_dispatch:
   # Daily re-sign: the index's signed expires_at is 7 days out, and clients
@@ -29,12 +31,22 @@ on:
 permissions:
   contents: read
 
+# Bursts (dozens of merges calling publish together): one run at a time, and
+# GitHub keeps only the NEWEST queued run per group and cancels older queued
+# ones. That is fine here, because a run reads main when it starts, so the
+# newest queued run covers every request it displaced. This group is only an
+# optimisation, though: correctness comes from the commit job (see
+# tools/commit_index.py), which never publishes an index older than main's
+# inputs and steps aside only for a later run. Whole-workflow, not per-job: a
+# group per job let one run's queued commit job be cancelled by another run's,
+# losing the newest index (and yank shared the group too).
+concurrency:
+  group: registry-publish
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
-    concurrency:
-      group: registry-main-writes
-      cancel-in-progress: false
     outputs:
       sha: ${{ steps.head.outputs.sha }}
     steps:
@@ -128,9 +140,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    concurrency:
-      group: registry-main-writes
-      cancel-in-progress: false
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
@@ -177,11 +186,14 @@ jobs:
           cp built/index.json built/index.json.sig .
           python tools/verify_index.py --repo . --keys keys/public_keys.json --leutheria .leutheria
 
+      # Onto main as it is now if main's inputs still match the built commit
+      # (retrying a lost push); if they don't, a later publish is coming and
+      # this one steps aside. tools/commit_index.py says why that is enough.
       - name: Commit index
+        env:
+          BUILT_SHA: ${{ needs.build.outputs.sha }}
         run: |
           git config user.name "leutheria-registry[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add index.json index.json.sig
-          if git diff --cached --quiet; then echo "index unchanged"; exit 0; fi
-          git commit --quiet -m "Publish index"
-          git push --quiet origin HEAD:main
+          python tools/commit_index.py --repo . --built-sha "$BUILT_SHA" \
+            --index built/index.json --sig built/index.json.sig

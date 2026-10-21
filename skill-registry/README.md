@@ -59,8 +59,13 @@ By submitting you dedicate the skill file to the public domain under CC0 1.0 (se
   commit and the PR only as data, then `tools/check_submission.py` (structure),
   `screen/screen.py` (screening, only if structure passed), `tools/decide.py` (decision
   table). On merge it squash-merges exactly the screened head (`--match-head-sha`), writes
-  the review record with `tools/record_review.py` (which assigns the version: previous max
-  for the name + 1, fixed forever), and calls `publish.yml`. Name ownership is checked three
+  the review record with `tools/record_push.py` (which runs `tools/record_review.py` on a fresh
+  copy of main -- assigning the version: previous max for the name + 1, fixed forever -- and
+  pushes it as a fast-forward), and calls `publish.yml`. When many merges land together most
+  record pushes lose the race to another one; `record_push.py` then starts again from the new
+  main (version and owner recomputed) with jittered exponential backoff, up to 60 tries or 30
+  minutes. If it still can't, the run fails, the PR gets a comment with the exact recovery
+  command and the `registry-unrecorded` label (see "Recovering"). Name ownership is checked three
   times: against the PR's base (structural), against current main just before merging, and
   by `record_review.py` against main as it is when the record is written, so two PRs racing
   for one new name can't make the second "version 2" of the first's skill. `build_index.py`
@@ -73,7 +78,13 @@ By submitting you dedicate the skill file to the public domain under CC0 1.0 (se
   `pip --require-hashes`, and signs the exact bytes build produced), and **commit**
   (`tools/verify_index.py` as the client would, then commits `index.json` + `.sig` if they
   changed). A skill file without a review record is never indexed, so a file that reached
-  main some other way stays unpublished.
+  main some other way stays unpublished. Publish runs one at a time (concurrency group
+  `registry-publish`); GitHub keeps only the newest queued run and cancels older queued ones,
+  which is harmless because a run reads main when it starts (a submission whose publish call
+  was the one dropped shows that job as cancelled). The commit job (`tools/commit_index.py`)
+  commits only if main's inputs still match the commit the index was built from, and
+  otherwise steps aside for the later publish that the newer change started, so after a burst
+  the last run always indexes everything.
 - Pushes made by workflows don't trigger other workflows, so `submission` and `yank` call
   `publish` themselves.
 - Every action is pinned to a full commit SHA, with its tag in a comment. To update one,
@@ -87,7 +98,8 @@ Repository settings this needs:
   → *Selected branches*, `main` only; no required reviewers (the daily re-sign runs
   unattended); the secret **`REGISTRY_SIGNING_KEY` as an environment secret there**, and no
   repository- or organisation-level secret of that name.
-- Labels `needs-human-review`, `human-approved` and `human-approved-override`.
+- Labels `needs-human-review`, `human-approved`, `human-approved-override` and
+  `registry-unrecorded`.
 - Actions allowed to create and approve pull requests and to push to `main`; branch
   protection on `main` (pull requests required, `github-actions[bot]` allowed to bypass), and
   a CODEOWNERS rule so `.github/`, `tools/`, `screen/` and `requirements-*.txt` need the
@@ -195,14 +207,34 @@ removed): yank that skill, then publish again.
 
 ### Recovering
 
-If a merge's review record couldn't be pushed, the skill is merged but pending. Run, from a
-checkout of main:
+A submission is **stranded** when it was merged but its review record never reached main: the
+file is on main, but it is never indexed. It fails safe (nothing unreviewed is published), but
+nobody else will notice, so look for it:
+
+- the PR has the `registry-unrecorded` label and a comment from the bot with the exact command
+  below filled in, and its `submission` run failed;
+- every publish build log lists `pending (no review record): skills/<name>/<hash>.json`.
+
+To record it, from a checkout of this repository's main (the tool makes its own clone in
+`--work`; never point that at a checkout you care about), with push access to main:
 
 ```bash
-python tools/record_review.py --repo . --path skills/<name>/<hash>.json --verdict human_approved --author <login> --pr <n>
+gh run download <run id> -n unrecorded-review-<pr>   # screen.json, if the run got that far
+python tools/record_push.py --remote https://github.com/<owner>/<repo>.git --work /tmp/record-review \
+    --path skills/<name>/<hash>.json --verdict <auto_approved|human_approved> --author <PR author> \
+    --pr <n> --screen screen.json
 ```
 
-commit, push, and run **publish** by hand.
+The verdict is the one in the PR's decision comment. Without `--screen` the record says risk
+`high`, no flags, screened by `none (not called)`, which is conservative and accurate. The
+tool re-checks the name's owner and assigns the version against main as it is now, and is
+safe to re-run (a record already there for this file and author counts as done). Your push
+touches `reviews/`, which starts **publish**; run it by hand if it doesn't. Then remove the
+label.
+
+If it exits 2 instead (`REFUSED`), recording is impossible rather than delayed: usually
+someone else claimed the name between the pre-merge owner check and the merge. The file
+stays on main unpublished; remove it with a commit, or leave it.
 
 ### Testing locally
 
