@@ -211,6 +211,23 @@ def main():
     check(result["static"]["verdict"] == "clean" and result["verdict"] == "approve",
           "an allowlisted command with an approving model can still auto-approve")
 
+    # A text argument that starts with a parameter is the user's value, not a program:
+    # no dangerous_text finding (it used to block set_clipboard and hold the rest).
+    # The same shape in a command is still param_is_program.
+    entry = {"entry": {"type": "string", "description": "Text."}}
+    for tool_name, args in [("set_clipboard", {"text": "{entry}"}), ("type_text", {"text": "{entry}"}),
+                            ("show_notification", {"title": "Reminder", "message": "{entry}"}),
+                            ("set_timer", {"minutes": 5, "label": "{entry}"}),
+                            ("append_text", {"path": "~/Documents/log.txt", "text": "- {entry}"}),
+                            ("write_new_file", {"path": "~/Notes/today.md", "content": "{entry}"})]:
+        sk = {"name": "text_skill", "description": "Copy, type, show or write a text you choose.",
+              "input_schema": {"type": "object", "properties": entry, "required": ["entry"]},
+              "steps": [{"tool": tool_name, "args": args}]}
+        found = {f["rule"] for f in static.analyze(sk, tools)["findings"]}
+        check("dangerous_text" not in found and "staged_execution" not in found,
+              f"a text starting with a parameter is not dangerous text: {tool_name}")
+    check("param_is_program" in rules("{entry} --version", entry), "a command starting with a parameter still is")
+
     # Output contract decide.py relies on.
     result, _ = run(BENIGN, StubClient(model_says("approve")))
     keys = {"verdict", "risk", "findings", "summary", "description_matches_steps", "static", "model", "screen_version"}

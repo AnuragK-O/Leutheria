@@ -31,7 +31,7 @@ import re
 import unicodedata
 from urllib.parse import urlsplit
 
-ANALYZER_VERSION = 2  # 2: run_command auto-publish allowlist
+ANALYZER_VERSION = 3  # 2: run_command auto-publish allowlist; 3: param_is_program only for commands
 
 BLOCK = "block"
 REVIEW = "needs_review"
@@ -963,7 +963,11 @@ def analyze_step(i: int, step: dict, tool: dict, variants: list, F: _Findings, f
             where = f"{base}.args.{arg}"
             sub = _Findings()
             analyze_shell(v, where, sub)
-            serious = [f for f in sub.items if f["severity"] == BLOCK]
+            # param_is_program is a rule about commands: in a text that is written,
+            # shown, typed or copied, a leading {parameter} is the user's value, not a
+            # program anyone chose. Applied here it blocked every "copy {text}" skill
+            # and held every "notify {message}" one for review.
+            serious = [f for f in sub.items if f["severity"] == BLOCK and f["rule"] != "param_is_program"]
             if serious:
                 facts["staged_payload"] = True
                 sev = BLOCK if name in ("type_text", "set_clipboard") else REVIEW
