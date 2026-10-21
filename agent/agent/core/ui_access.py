@@ -64,8 +64,11 @@ DENIED_APPS = {
     "rio",
     "wave",
     "cool retro term",
+    "cool-retro-term",
     "xterm",
     "xquartz",
+    "termius",
+    "wish",
     # script runners and launchers
     "automator",
     "shortcuts",
@@ -73,17 +76,26 @@ DENIED_APPS = {
     "applescript utility",
     "alfred",
     "raycast",
-    # virtual machines
+    "launchbar",
+    "launchpad",
+    "keyboard maestro",
+    "script debugger",
+    "hammerspoon",
+    # virtual machines and other operating systems
     "utm",
     "parallels desktop",
     "virtualbox",
+    "virtualbox vm",
     "vmware fusion",
+    "wine",
+    "crossover",
     # secrets and system control
     "keychain access",
     "system settings",
     "system preferences",
     "console",
     "script editor",
+    "passwords",
     "1password",
     "1password 7",
     "bitwarden",
@@ -132,6 +144,11 @@ TYPE_CHUNK = 20  # CGEventKeyboardSetUnicodeString is unreliable on long strings
 class UIAccessError(Exception):
     """Raised for the expected failure modes (no permission, no such app, a
     denied app). Tools catch this and turn it into the usual {"ok": False}."""
+
+
+class DeniedAppError(UIAccessError):
+    """A name resolved to an app on DENIED_APPS. Distinct so activate() does
+    not read it as "not running" and try to launch the name instead."""
 
 
 def is_denied(app_name: str) -> bool:
@@ -228,15 +245,20 @@ def resolve_app(name: str) -> tuple:
     apps = running_apps()
     target = name.strip().lower()
 
-    for candidate, pid in apps.items():
-        if candidate.lower() == target:
-            return candidate, pid
-    for candidate, pid in apps.items():
-        if candidate.lower().startswith(target):
-            return candidate, pid
-    for candidate, pid in apps.items():
-        if target in candidate.lower():
-            return candidate, pid
+    passes = (
+        lambda candidate: candidate.lower() == target,
+        lambda candidate: candidate.lower().startswith(target),
+        lambda candidate: target in candidate.lower(),
+    )
+    for matches in passes:
+        for candidate, pid in apps.items():
+            if matches(candidate):
+                # The denylist is judged on what the name resolved to, not on
+                # what was asked for: "Keych" or "Term" must not reach a denied
+                # app through the prefix/substring passes.
+                if is_denied(candidate):
+                    raise DeniedAppError(f"{candidate} is on the never-drivable, never-readable list")
+                return candidate, pid
 
     raise UIAccessError(f"no running app matches {name!r}; running: {', '.join(sorted(apps))}")
 
@@ -258,6 +280,8 @@ def activate(name: str, timeout: float = 5.0) -> str:
 
     try:
         canonical, pid = resolve_app(name)
+    except DeniedAppError:
+        raise
     except UIAccessError:
         # Not running yet -- launch it, then wait for it to register.
         try:
@@ -272,6 +296,8 @@ def activate(name: str, timeout: float = 5.0) -> str:
             try:
                 canonical, pid = resolve_app(name)
                 break
+            except DeniedAppError:
+                raise
             except UIAccessError:
                 time.sleep(0.15)
         if pid is None:

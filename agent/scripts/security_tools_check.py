@@ -815,6 +815,42 @@ async def check_gui_denied():
               f"focus_app {shown.strip()!r} refused with no prompt")
     check(not ui_access.is_denied("TextEdit"), "an ordinary app is not denied")
 
+    # The denylist is judged on the app a name resolves to: resolve_app's prefix and
+    # substring passes must not carry "Keych" to Keychain Access or "Ghost" to Ghostty
+    # (QA round 2). Every AppKit/AX call is stubbed; nothing real is read or launched.
+    running = {"Keychain Access": 9101, "Ghostty": 9102, "TextEdit": 9103, "VirtualBox VM": 9104}
+    saved = {k: getattr(ui_access, k) for k in ("running_apps", "ensure_trusted", "subprocess")}
+    launched = []
+
+    class _NoLaunch:
+        TimeoutExpired = subprocess.TimeoutExpired
+
+        @staticmethod
+        def run(argv, **kw):
+            launched.append(argv)
+            return subprocess.CompletedProcess(argv, 1, "", "stubbed")
+
+    ui_access.running_apps = lambda: dict(running)
+    ui_access.ensure_trusted = lambda: None
+    ui_access.subprocess = _NoLaunch
+    try:
+        check(ui_access.resolve_app("Text") == ("TextEdit", 9103), "a partial name still resolves an ordinary app")
+        for partial in ("Keych", "chain", "Ghost", "VirtualBox"):
+            try:
+                ui_access.resolve_app(partial)
+                refused = False
+            except ui_access.DeniedAppError:
+                refused = True
+            check(refused, f"resolve_app({partial!r}) refuses the denied app it would match")
+        result = tool("describe_ui", app="Keych")
+        check(result["ok"] is False and "never" in result["error"], f"describe_ui 'Keych' reads nothing: {result.get('error', '')[:60]}")
+        result = tool("focus_app", name="Ghost")
+        check(result["ok"] is False and "never" in result["error"] and not launched,
+              f"focus_app 'Ghost' is refused and launches nothing: {result.get('error', '')[:60]}")
+    finally:
+        for k, v in saved.items():
+            setattr(ui_access, k, v)
+
 
 SECTIONS = {
     "open_url": check_open_url,
