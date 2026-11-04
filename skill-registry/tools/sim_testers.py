@@ -22,7 +22,7 @@ produce (published / review / rejected + reason, and the version).
 
 local: runs every submission through tools/local_pipeline.py -- the CI flow
 with the same scripts -- in a temp dir, with the screener's static analysis
-for real and the model replaced by screen.py --model-stub (ANTHROPIC_API_KEY
+for real and the model replaced by local_pipeline.py --model-stub (ANTHROPIC_API_KEY
 is removed from the children's environment; no model is ever called). A
 throwaway Ed25519 key comes from tools/keygen.py. At the end: verify_index.py
 on the signed index, the index compared entry by entry with the plan, then
@@ -95,12 +95,7 @@ APPROVE = {"verdict": "approve", "risk": "low", "description_matches_steps": Tru
 FLAG = {"verdict": "flag", "risk": "medium", "description_matches_steps": True,
         "findings": [{"where": "steps[0]", "issue": "unclear why it needs this step", "severity": "needs_review"}],
         "summary": "Probably fine; a person should look."}
-
-SCREEN_WRAPPER = """import os, sys
-sys.path.insert(0, {screen_dir!r})
-import screen
-sys.exit(screen.main(sys.argv[1:] + ["--model-stub", os.environ["SIM_SCREEN_STUB"]]))
-"""
+SCREEN = REGISTRY_ROOT / "screen" / "screen.py"
 
 
 def default_leutheria() -> Path | None:
@@ -704,8 +699,6 @@ class Local:
         self.subs_dir = self.tmp / "submissions"
         for d in (self.work, self.keys, self.stubs, self.subs_dir):
             d.mkdir()
-        self.wrapper = self.tmp / "screen_stubbed.py"
-        self.wrapper.write_text(SCREEN_WRAPPER.format(screen_dir=str(REGISTRY_ROOT / "screen")))
         self.env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
         self.timings = []
 
@@ -722,11 +715,10 @@ class Local:
                 "--key-file", str(self.keys / "signing.pem"), "--keys", str(self.keys / "public_keys.json")]
 
     def pipeline(self, *args, stub=None, timeout=600):
-        env = dict(self.env)
         if stub is not None:
-            env["SIM_SCREEN_STUB"] = str(stub)
+            args = (*args, "--model-stub", str(stub))
         r = subprocess.run([PY, str(TOOLS / "local_pipeline.py"), *args, *self.common_args()],
-                           capture_output=True, text=True, timeout=timeout, env=env)
+                           capture_output=True, text=True, timeout=timeout, env=self.env)
         try:
             return json.loads(r.stdout), r
         except ValueError:
@@ -740,8 +732,7 @@ class Local:
         (rel, data), = s.files.items()
         f = self.subs_dir / f"{s.id:03d}.json"
         f.write_bytes(data)
-        summary, r = self.pipeline("submit", "--skill", str(f), "--author", s.tester, "--path", rel,
-                                   "--screen-script", str(self.wrapper), stub=stub)
+        summary, r = self.pipeline("submit", "--skill", str(f), "--author", s.tester, "--path", rel, stub=stub)
         if summary is None:
             return Actual("error", detail=f"local_pipeline exit {r.returncode}: {r.stderr[-400:]}")
         if "Traceback" in r.stderr:
@@ -770,9 +761,9 @@ class Local:
         dargs = ["--structural", str(out / "structural.json"), "--out", str(out / "decision.json")]
         if st.returncode == 0:
             path = common.read_json(out / "structural.json")["path"]
-            env = dict(self.env, SIM_SCREEN_STUB=str(stub))
-            subprocess.run([PY, str(self.wrapper), str(head / path), "--catalog", str(cat), "--out",
-                            str(out / "screen.json")], capture_output=True, text=True, timeout=300, env=env)
+            subprocess.run([PY, str(SCREEN), str(head / path), "--catalog", str(cat), "--out",
+                            str(out / "screen.json"), "--model-stub", str(stub)],
+                           capture_output=True, text=True, timeout=300, env=self.env)
             if (out / "screen.json").exists():
                 dargs += ["--screen", str(out / "screen.json")]
         subprocess.run([PY, str(TOOLS / "decide.py"), *dargs], capture_output=True, text=True, timeout=60,
