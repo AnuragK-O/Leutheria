@@ -457,7 +457,9 @@ async function handleMessage(client, message) {
       fixtures.inventory.trusted = fixtures.inventory.trusted.filter((entry) => entry.key !== message.key);
       return controlResult(client, message, {});
     case "revoke_grant":
-      fixtures.inventory.grants = fixtures.inventory.grants.filter((entry) => entry.app !== message.app && entry.key !== message.app);
+      // Stricter than session.revoke (which also takes the shown name): a grant with a
+      // key is matched only by it, so ui-capture proves the Permissions view sends the key.
+      fixtures.inventory.grants = fixtures.inventory.grants.filter((entry) => (entry.key ? entry.key !== message.app : entry.app !== message.app));
       return controlResult(client, message, {});
     case "confirm": {
       const ptt = pttConfirm;

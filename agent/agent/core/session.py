@@ -48,7 +48,8 @@ _last_activity: float = 0.0
 
 def grant(app_key: str, duration: float = GRANT_DURATION, name: str = None) -> float:
     """Allow the scoped tools to drive an app. `app_key` is the resolved
-    app's ui_access.AppRef.key -- its bundle ID -- so "notes" and "Notes",
+    app's ui_access.AppRef.key -- "bundle:<id>", or "name:<name>" for an
+    app with no bundle ID (separate namespaces) -- so "notes" and "Notes",
     or a German and an English name, are one grant; `name` is what the
     Permissions view shows. `duration` of None means "until the agent
     restarts" -- the longest a grant can ever last, since none of them are
@@ -73,8 +74,9 @@ def has_grant(app_key: str) -> bool:
 
 
 def revoke(app: str) -> bool:
-    """Revoke by key or by the shown name (the Permissions view sends the
-    name it was given)."""
+    """Revoke by key ("bundle:..." / "name:...", what the Permissions view
+    sends) or by the shown name. Matching a name can only remove grants,
+    never create or widen one."""
     keys = [key for key, entry in _grants.items() if app in (key, entry["name"])]
     for key in keys:
         del _grants[key]

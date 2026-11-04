@@ -183,7 +183,8 @@ or no grant; Terminal is on it because typing into a shell would bypass the whol
 confirmation model) and secure-text-field redaction. The denylist is judged on the app a
 request *resolves* to, never the asked-for string, by bundle ID (`DENIED_BUNDLE_IDS`)
 first and display name as the fallback — names are localised. `core/session.py` holds
-the grants, keyed by the resolved app's bundle ID (`dispatcher._scope_target` resolves
+the grants, keyed by the resolved app: `bundle:<id>`, or `name:<name>` with no bundle ID
+(two namespaces -- a name can look like an ID) (`dispatcher._scope_target` resolves
 before it prompts); they are in-memory only and die with the process, unlike `trust.py`'s "always" scope.
 `type_text`/`press_keys` re-check focus before every chunk and abort mid-stream if it
 moves — the premise of a long session is that the user keeps using their machine, so

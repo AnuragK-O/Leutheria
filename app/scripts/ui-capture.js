@@ -448,6 +448,8 @@ async function runTheme(theme) {
     await main.waitFor(`document.querySelector("#permissions-body .trust-row")`);
     await main.shot(file("permissions"));
     const rowsBefore = await main.eval(`document.querySelectorAll("#permissions-body .trust-row").length`);
+    const grantRow = `[...document.querySelectorAll("#permissions-body .trust-row")].find((row) => row.querySelector(".trust-tool span") && row.querySelector(".trust-tool span").textContent.trim() === "Notes")`;
+    const grantShown = await main.eval(`Boolean(${grantRow})`);
     await main.eval(clickText("#permissions-body .trust-row button", "Revoke"));
     check(
       `[${theme}] Revoke removes the row and toasts`,
@@ -455,6 +457,13 @@ async function runTheme(theme) {
         (await main.waitFor(`document.querySelector("#toasts .toast")`))
     );
     await main.shot(file("permissions-revoked-toast"));
+    // That first Revoke is the App control card's (it comes first): the grant's
+    // Revoke sends its key ("bundle:..."), which the mock matches strictly -- the
+    // shown name alone would leave the row (grant keys, QA PR #22).
+    check(
+      `[${theme}] ...the app grant was revoked by its key`,
+      grantShown && (await main.eval(`!(${grantRow})`)) && (await main.eval(`document.querySelector("#toasts .toast").textContent.includes("Notes")`))
+    );
 
     // --- voice settings
     await main.eval(clickNav(NAV.voice));
