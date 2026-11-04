@@ -66,12 +66,28 @@ def git(work: Path, *args, check=True) -> subprocess.CompletedProcess:
 
 
 def display_remote(remote: str) -> str:
-    """The remote without credentials (the workflows' URLs carry a token)."""
-    parts = urllib.parse.urlsplit(remote)
-    if parts.username or parts.password:
-        host = parts.hostname + (f":{parts.port}" if parts.port else "")
-        return urllib.parse.urlunsplit(parts._replace(netloc=host))
+    """The remote without credentials (the workflows' URLs carry a token). A URL
+    urllib can't parse (a bad port, an unclosed "[") loses everything before "@"."""
+    try:
+        parts = urllib.parse.urlsplit(remote)
+        if parts.username or parts.password:
+            host = parts.hostname + (f":{parts.port}" if parts.port else "")
+            return urllib.parse.urlunsplit(parts._replace(netloc=host))
+    except ValueError:
+        return re.sub(r"^([a-zA-Z][a-zA-Z0-9+.-]*://)[^/]*@", r"\1", remote)
     return remote
+
+
+def _unparseable(url: str) -> str | None:
+    """Why urllib can't parse <url>, in words that never quote it (a token may sit
+    where a port should be), or None if it parses."""
+    try:
+        remote_identity(url)
+    except ValueError as e:
+        msg = str(e).lower()
+        return ("a port that isn't a number from 0 to 65535" if "port" in msg else
+                "an unclosed IPv6 bracket" if "ipv6" in msg else "a malformed host part")
+    return None
 
 
 _SCP_RE = re.compile(r"^(?:[^@/:]+@)?([^/:]+):(?!//)(.*)$")  # git@github.com:o/r.git
@@ -121,6 +137,13 @@ def check_origin(remote: str, work: Path, consequence: str) -> str:
     if url is None:
         raise Permanent(f"{work} has no origin remote, so it is not this tool's clone of "
                         f"{display_remote(remote)}; {consequence}")
+    # A URL urllib can't parse raises ValueError from remote_identity; that is a
+    # wrong --work or --remote, not a reason to crash. Neither URL is quoted then.
+    for which, value in (("the origin URL stored in it", url), ("the --remote URL", remote)):
+        why = _unparseable(value)
+        if why is not None:
+            raise Permanent(f"{work}: {which} can't be parsed ({why}), so it can't be shown to be this "
+                            f"tool's clone of the remote; {consequence}")
     diff = remote_difference(url, remote)
     if diff is not None:
         raise Permanent(f"{work} is a clone of {display_remote(url)}, not of {display_remote(remote)} "

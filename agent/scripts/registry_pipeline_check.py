@@ -717,6 +717,29 @@ try:
 except _mp.Permanent as e:
     check(tokened.is_dir() and "OLDTOK" not in str(e) and "NEWTOK" not in str(e) and "path /o/reg vs /someone/else" in str(e),
           f"discard still refuses a different repository behind a token URL, tokens not shown: {e}")
+# A stored origin (or a --remote) urllib can't parse -- a bad port, an unclosed IPv6
+# bracket -- is Permanent with a token-free reason, not an uncaught ValueError (QA of #21).
+# Nothing here reaches a network: the refusal comes before any fetch.
+for bad, why in (("https://x-access-token:BADTOK@github.com:99999/o/reg.git", "port"),
+                 ("https://x-access-token:BADTOK@github.com:abc/o/reg.git", "port"),
+                 ("https://x-access-token:BADTOK@[::1/o/reg.git", "IPv6"),
+                 ("https://github.com:BADTOK/o/reg.git", "port")):
+    for what, fn, stored, given in (("discard", _mp.discard, bad, GH_NEW), ("sync", _mp.sync, bad, GH_NEW),
+                                    ("sync (bad --remote)", _mp.sync, GH_OLD, bad)):
+        fresh_clone(bare, tokened)
+        g(tokened, "remote", "set-url", "origin", stored)
+        try:
+            fn(given, tokened)
+            outcome = "returned"
+        except _mp.Permanent as e:
+            outcome = f"Permanent: {e}"
+        except Exception as e:  # noqa: BLE001
+            outcome = f"escaped: {type(e).__name__}: {e}"
+        check(outcome.startswith("Permanent") and "can't be parsed" in outcome and why in outcome
+              and not any(t in outcome for t in ("BADTOK", "OLDTOK", "NEWTOK")) and tokened.is_dir(),
+              f"{what}: an unparseable URL is Permanent, says why, shows no token: {outcome}")
+check("BADTOK" not in _mp.display_remote("https://x-access-token:BADTOK@github.com:99999/o/reg.git"),
+      "display_remote strips the token even from a URL with a bad port")
 # A reused clone whose stored origin spells the same repository differently is synced and
 # takes the URL given now (so a stale token in it is not what fetch and push use).
 respelled = BT / "respelled_clone"
