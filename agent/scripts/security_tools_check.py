@@ -791,6 +791,67 @@ async def check_missing_folder():
     check(result["ok"] is False and "doesn't exist" not in result["error"], f"a file that exists is not called missing: {result['error'][:80]}")
 
 
+# --- GUI control: no terminal is drivable (QA, registry load test) ----------------
+
+async def check_gui_denied():
+    section("GUI control: every terminal, runner, launcher and VM is denied")
+    from agent.core import ui_access
+    from agent.tools import open_with as open_with_mod
+    # Typing into any terminal is run_command with no prompt; the openers already
+    # know every terminal and runner, so the GUI denylist must cover them too.
+    executing = {name for name in open_file_mod.EXECUTING_HANDLERS
+                 if name not in ("javalauncher", "jar launcher", "installer", "automator installer",
+                                 "script menu", "profilehelper", "archive utility", "diskimagemounter")}
+    executing |= {"warp", "kitty", "alacritty", "ghostty", "hyper", "wezterm", "tabby", "rio", "wave",
+                  "cool retro term", "xterm", "xquartz", "automator", "shortcuts", "alfred", "raycast",
+                  "utm", "parallels desktop", "virtualbox", "vmware fusion"}
+    check(executing <= open_with_mod.EXECUTING_APPS | open_file_mod.EXECUTING_HANDLERS,
+          "every app the GUI denylist must cover is one the openers already refuse")
+    missing = sorted(name for name in executing if not ui_access.is_denied(name))
+    check(not missing, f"GUI denylist covers every terminal/runner/launcher/VM (missing: {missing})")
+    for shown in ("Ghostty", " Warp ", "WezTerm", "kitty", "iTerm2", "Raycast", "UTM"):
+        result, asked = await through_dispatch("focus_app", {"name": shown})
+        check(result["ok"] is False and "never be controlled" in result.get("error", "") and not asked,
+              f"focus_app {shown.strip()!r} refused with no prompt")
+    check(not ui_access.is_denied("TextEdit"), "an ordinary app is not denied")
+
+    # The denylist is judged on the app a name resolves to: resolve_app's prefix and
+    # substring passes must not carry "Keych" to Keychain Access or "Ghost" to Ghostty
+    # (QA round 2). Every AppKit/AX call is stubbed; nothing real is read or launched.
+    running = {"Keychain Access": 9101, "Ghostty": 9102, "TextEdit": 9103, "VirtualBox VM": 9104}
+    saved = {k: getattr(ui_access, k) for k in ("running_apps", "ensure_trusted", "subprocess")}
+    launched = []
+
+    class _NoLaunch:
+        TimeoutExpired = subprocess.TimeoutExpired
+
+        @staticmethod
+        def run(argv, **kw):
+            launched.append(argv)
+            return subprocess.CompletedProcess(argv, 1, "", "stubbed")
+
+    ui_access.running_apps = lambda: dict(running)
+    ui_access.ensure_trusted = lambda: None
+    ui_access.subprocess = _NoLaunch
+    try:
+        check(ui_access.resolve_app("Text") == ("TextEdit", 9103), "a partial name still resolves an ordinary app")
+        for partial in ("Keych", "chain", "Ghost", "VirtualBox"):
+            try:
+                ui_access.resolve_app(partial)
+                refused = False
+            except ui_access.DeniedAppError:
+                refused = True
+            check(refused, f"resolve_app({partial!r}) refuses the denied app it would match")
+        result = tool("describe_ui", app="Keych")
+        check(result["ok"] is False and "never" in result["error"], f"describe_ui 'Keych' reads nothing: {result.get('error', '')[:60]}")
+        result = tool("focus_app", name="Ghost")
+        check(result["ok"] is False and "never" in result["error"] and not launched,
+              f"focus_app 'Ghost' is refused and launches nothing: {result.get('error', '')[:60]}")
+    finally:
+        for k, v in saved.items():
+            setattr(ui_access, k, v)
+
+
 SECTIONS = {
     "open_url": check_open_url,
     "open_app": check_open_app,
@@ -799,6 +860,7 @@ SECTIONS = {
     "fetch_url": check_fetch_url,
     "openers": check_openers,
     "missing_folder": check_missing_folder,
+    "gui_denied": check_gui_denied,
 }
 
 
