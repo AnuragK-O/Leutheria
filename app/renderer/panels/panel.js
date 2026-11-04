@@ -314,10 +314,63 @@
     }
   }
 
+  // --- arriving and leaving (panels.css "slide") ----------------------------------
+  /* main.js never moves the window to animate it: it sets the real bounds,
+     shows the window and says motion "in"; to hide it says "out" and waits
+     for "motion-done" before hiding the window. The frame slides inside the
+     window: from the docked edge (data-slide-kind "edge"), or for a free
+     panel a short nudge from the nearest screen edge with a fade ("nudge").
+     A show or hide that arrives mid-slide just flips the class, and the CSS
+     transition reverses from wherever the frame is. data-motion
+     (entering / in / leaving / out) is for checks and nothing else. */
+  let motion = { state: "out", seq: 0 };
+
+  function setSlide(from, kind) {
+    document.body.dataset.slide = from;
+    document.body.dataset.slideKind = kind;
+  }
+
+  function applyMotion(next, dock) {
+    if (!next) return;
+    const body = document.body;
+    const kind = dock === "free" ? "nudge" : "edge";
+    const changed = next.state !== motion.state;
+    motion = { state: next.state, seq: next.seq };
+    if (next.state === "in") {
+      if (changed && (body.dataset.slide !== next.from || body.dataset.slideKind !== kind)) {
+        // Off the edge it's about to come in from (a hot edge on the other
+        // side, a different dock): jump there first, without a transition.
+        body.classList.add("panel-snap");
+        setSlide(next.from, kind);
+        getComputedStyle(frameEl).transform; // flush, so the jump isn't animated
+        body.classList.remove("panel-snap");
+      } else if (!changed) setSlide(next.from, kind); // invisible while in
+      if (changed) {
+        body.classList.add("panel-in");
+        body.dataset.motion = "entering";
+        // Two frames on, the frame has been drawn where the slide starts:
+        // main.js may be holding the window transparent until then.
+        const seq = next.seq;
+        requestAnimationFrame(() => requestAnimationFrame(() => api.panelOp("motion-started", { seq })));
+      }
+    } else if (changed) {
+      body.classList.remove("panel-in");
+      body.dataset.motion = "leaving";
+    }
+  }
+
+  frameEl.addEventListener("transitionend", (event) => {
+    if (event.target !== frameEl || event.propertyName !== "transform") return;
+    const state = document.body.classList.contains("panel-in") ? "in" : "out";
+    document.body.dataset.motion = state;
+    api.panelOp("motion-done", { state, seq: motion.seq });
+  });
+
   function applyConfig(next) {
     config = { ...config, ...next };
     document.body.dataset.orientation = config.orientation;
     document.body.dataset.dock = config.dock;
+    applyMotion(next.motion, config.dock);
     document.body.classList.toggle("pinned", Boolean(config.pinned));
     renderStrip();
     renderResizers();

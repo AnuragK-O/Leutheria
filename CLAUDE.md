@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Leutheria: a macOS voice-controlled assistant. An **Electron shell** (`app/`) spawns a
 **Python sidecar** (`agent/`) and talks to it over `ws://127.0.0.1:8765` with JSON messages.
 All agent work — wake word (openWakeWord), STT (Whisper), TTS (ElevenLabs by default,
-macOS `say` as the local fallback, Piper optional), LLM tool-calling (Anthropic `claude-opus-5`), tool/skill
+macOS `say` as the local fallback, Piper optional), LLM tool-calling (Anthropic `claude-haiku-5-5`), tool/skill
 execution — happens Python-side; Electron is UI + process supervision only.
 `overlay-qt/` is a third piece: a native C++/Qt Quick build of the activation overlay, a
 second client of the same WebSocket (off by default; `LEUTHERIA_OVERLAY=qt`). It has its

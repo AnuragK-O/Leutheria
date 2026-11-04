@@ -147,7 +147,7 @@
   /* Motion. */
   --t-fast: 90ms; /* hover, press */
   --t-base: 160ms; /* state changes */
-  --t-slow: 320ms; /* the overlay arriving and leaving */
+  --t-slow: 320ms; /* the overlay arriving and leaving; a panel arriving */
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
 
   /* Overlay (overlay/overlay.css). --level and --slot-size are set from
