@@ -210,6 +210,9 @@ jobs:
                 after=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json state,headRefOid --jq '.state + " " + .headRefOid' || echo "UNKNOWN -")
                 case "$after" in
                   "MERGED $HEAD_SHA") echo "::warning::gh pr merge reported an error, but the PR is merged at the screened head; recording it" ;;
+                  # OPEN at the screened head may be a merge still landing (or a
+                  # lagging read): keep the report; the failure step asks again.
+                  "OPEN $HEAD_SHA") echo "::error::merge not confirmed yet ($after)"; exit 1 ;;
                   OPEN\ *|CLOSED\ *) rm -f record_report.md; exit 1 ;;
                   *) echo "::error::merge outcome unclear ($after); see README 'Recovering'"; exit 1 ;;
                 esac
