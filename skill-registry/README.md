@@ -220,7 +220,10 @@ nobody else will notice, so look for it:
   PR closed and runs in a group of its own), but one cancelled in the moment around the
   merge -- or by hand -- still reports from its `cancelled()` step, and only if the PR really
   merged;
-- every publish build log lists `pending (no review record): skills/<name>/<hash>.json`.
+- every publish build log lists `pending (no review record): skills/<name>/<hash>.json`;
+- a run that logged `merge outcome unclear`: `gh pr merge` returned an error and the PR's state
+  couldn't be read. If the PR shows as merged, record it as below. (When the state does read
+  as merged at the screened head, the run records it anyway, so that case needs nothing.)
 
 To record it, from a checkout of this repository's main (the tool makes its own clone in
 `--work`; never point that at a checkout you care about), with push access to main:

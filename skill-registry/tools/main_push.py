@@ -13,11 +13,16 @@ raises Permanent (retrying can't help). The change is committed and pushed as a 
 fast-forward (never forced), so it lands only on the exact main apply() read; when
 another write lands first the push is rejected and the next attempt starts over from
 the new main, after a jittered exponential backoff so a burst spreads out instead of
-retrying in lockstep. Returns ("pushed", result) or ("already", None); raises
-Permanent, or GaveUp after the attempts or the deadline.
+retrying in lockstep. A clone that is broken rather than behind (git reports missing or
+damaged objects, or RECLONE_AFTER failures in a row that aren't a rejected push) is
+deleted and cloned afresh, since fetch never re-sends objects it thinks it has.
+Returns ("pushed", result) or ("already", None); raises Permanent, or GaveUp after the
+attempts or the deadline.
 """
 
 import random
+import re
+import shutil
 import subprocess
 import sys
 import time
@@ -28,6 +33,15 @@ GIT_TIMEOUT = 120
 BOT_NAME = "leutheria-registry[bot]"
 BOT_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com"
 ALREADY = object()
+# What git says when the clone itself is broken (objects missing or damaged) rather than
+# behind: fetch never re-sends objects it believes the clone has, so retrying in place
+# fails the same way forever. Seen for real: a clone that copied loose objects while gc
+# repacked them, then "invalid object <blob> for reviews/..." on all 400 attempts.
+CORRUPT_RE = re.compile(r"invalid object|bad object|missing (blob|tree|commit)|unable to read|corrupt|"
+                        r"loose object|packfile|did not send all necessary objects|fsck|"
+                        r"not a tree|could not parse|is not a valid", re.IGNORECASE)
+# Failures in a row, other than a rejected push, after which the clone is rebuilt anyway.
+RECLONE_AFTER = 3
 
 
 class Permanent(Exception):
@@ -76,13 +90,29 @@ def sync(remote: str, work: Path) -> None:
     git(work, "clean", "-qfdx")
 
 
+def discard(remote: str, work: Path) -> None:
+    """Delete <work> so the next attempt clones afresh -- only if it is a clone of
+    <remote> (its origin), never some other directory a caller passed by mistake."""
+    if not (work / ".git").is_dir():
+        return  # nothing cloned (a failed clone cleans up after itself); next attempt clones
+    r = subprocess.run(["git", "config", "--file", str(work / ".git" / "config"), "remote.origin.url"],
+                       capture_output=True, text=True, timeout=GIT_TIMEOUT)
+    url = r.stdout.strip()
+    same = url == remote or (url and Path(url).expanduser().resolve() == Path(remote).expanduser().resolve())
+    if r.returncode != 0 or not same:
+        raise Permanent(f"{work} looks broken but is not this tool's clone of the remote; not deleting it")
+    shutil.rmtree(work)
+
+
 def push_to_main(remote: str, work: Path, apply, message: str, *, attempts=60, deadline=1800.0,
                  base_delay=2.0, max_delay=60.0, git_name=BOT_NAME, git_email=BOT_EMAIL):
     started = time.monotonic()
     last = "no attempt made"
     tries = 0
+    odd_failures = 0  # in a row; a rejected push (the race) resets it
     while tries < attempts:
         tries += 1
+        broken = False
         try:
             sync(remote, work)
             result = apply(work)
@@ -95,8 +125,17 @@ def push_to_main(remote: str, work: Path, apply, message: str, *, attempts=60, d
             if push.returncode == 0:
                 return "pushed", result
             last = push.stderr.strip()[-300:] or "push rejected"
+            broken = bool(CORRUPT_RE.search(last))
+            odd_failures = odd_failures + 1 if broken else 0
         except (GitFailed, subprocess.TimeoutExpired, OSError) as e:
             last = str(e)
+            broken = bool(CORRUPT_RE.search(last))
+            odd_failures += 1
+        if broken or odd_failures >= RECLONE_AFTER:
+            # The work clone is this helper's own: throw it away and clone afresh next time.
+            print(f"attempt {tries}: work clone looks broken ({last[:120]}); re-cloning", file=sys.stderr)
+            discard(remote, work)
+            odd_failures = 0
         elapsed = time.monotonic() - started
         delay = random.uniform(base_delay / 2, min(max_delay, base_delay * 2 ** (tries - 1)))
         if tries >= attempts or elapsed + delay > deadline:

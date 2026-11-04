@@ -201,7 +201,19 @@ jobs:
               # it only on success), so a failed or cancelled run is reported.
               echo "This submission may have been merged, but the run stopped before its review record was written, so it is not published. See README \"Recovering\"." > record_report.md
               # --match-head-sha: merge exactly the commit that was screened.
-              gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --squash --match-head-sha "$HEAD_SHA" || { rm -f record_report.md; exit 1; }
+              # An error from the client doesn't prove the merge didn't happen (a
+              # network error after GitHub merged): ask. Merged at the screened
+              # head -> carry on and record it; plainly not merged -> nothing to
+              # report; anything else -> keep the report, so the failure step
+              # (which asks again) reports it if it did merge.
+              if ! gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --squash --match-head-sha "$HEAD_SHA"; then
+                after=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json state,headRefOid --jq '.state + " " + .headRefOid' || echo "UNKNOWN -")
+                case "$after" in
+                  "MERGED $HEAD_SHA") echo "::warning::gh pr merge reported an error, but the PR is merged at the screened head; recording it" ;;
+                  OPEN\ *|CLOSED\ *) rm -f record_report.md; exit 1 ;;
+                  *) echo "::error::merge outcome unclear ($after); see README 'Recovering'"; exit 1 ;;
+                esac
+              fi
               # The version (and the owner re-check) come from main as it is
               # when the record is written; the push is a fast-forward, so it
               # lands only on the exact main they were computed from. A burst

@@ -630,7 +630,40 @@ r = yank_push(bare, BT / "yank" / "again", "yank_target", YANK_REL_D["content_ha
 check(r.returncode == 0 and "already yanked" in r.stdout and g(bare, "rev-parse", "main").stdout.strip() == head,
       f"re-running a yank is a no-op success: {r.stdout}{r.stderr}")
 
+# A broken work clone (objects gone, as when a clone raced a gc) is rebuilt, not retried in
+# place until record_push gives up: fetch never re-sends objects it thinks the clone has.
+fix_me = skill(name="fix_me", steps=[{"tool": "create_folder", "args": {"path": "{place}/fixed"}}])
+rel_f = f"skills/fix_me/{fix_me['content_hash']}.json"
+work_f = BT / "rec" / "corrupt"
+fresh_clone(bare, work_f)
+push_change(bare, BT / "merge" / "f", rel_f, fix_me)  # main moves on after that clone
+# Exactly the failure seen: one blob of an unchanged file missing. The server believes the
+# clone has it (it has the commits), so no fetch brings it back. (Deleting every object
+# instead doesn't reproduce it: fetch then negotiates from nothing and heals the clone.)
+blob = g(work_f, "rev-parse", "HEAD:LEUTHERIA_REF").stdout.strip()
+loose = work_f / ".git" / "objects" / blob[:2] / blob[2:]
+check(loose.is_file(), f"the blob to remove is a loose object in the work clone: {loose}")
+loose.unlink()
+# ...and the file itself, as in a clone whose first checkout is still to write it (an
+# unchanged file already on disk is skipped by checkout, and the blob never read).
+(work_f / "LEUTHERIA_REF").unlink()
+check(g(work_f, "cat-file", "-e", blob, check_rc=False).returncode != 0, "the work clone is now missing that blob")
+r = record_push(bare, work_f, rel_f, "Fixer", "996", "--base-delay", "0.01", "--max-delay", "0.02", "--attempts", "10")
+check(r.returncode == 0 and "re-cloning" in r.stderr and "recorded fix_me v1" in r.stdout
+      and (fresh_clone(bare, BT / "corrupt_check") / "reviews" / "fix_me" / f"{fix_me['content_hash']}.json").is_file(),
+      f"record_push re-clones a broken work clone and records: {r.stdout}{r.stderr[-600:]}")
 sys.path.insert(0, str(TOOLS))
+import main_push as _mp  # noqa: E402
+
+nonclone = BT / "not_a_clone"
+fresh_clone(bare, nonclone)
+g(nonclone, "remote", "set-url", "origin", "https://example.invalid/other.git")
+try:
+    _mp.discard(str(bare), nonclone)
+    check(False, "discard refuses to delete a clone of some other remote")
+except _mp.Permanent:
+    check(nonclone.is_dir(), "discard refuses to delete a clone of some other remote")
+
 import record_push as _rp  # noqa: E402
 
 check(_rp.display_remote("https://x-access-token:SECRET@github.com/o/r.git") == "https://github.com/o/r.git",
