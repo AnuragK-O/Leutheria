@@ -31,7 +31,7 @@ import re
 import unicodedata
 from urllib.parse import urlsplit
 
-ANALYZER_VERSION = 3  # 2: run_command auto-publish allowlist; 3: param_is_program exempt for a bare {param} text / display-only text
+ANALYZER_VERSION = 3  # 2: run_command auto-publish allowlist; 3: param_is_program exempt for a bare {param} text / display-only text; 4: param_receives_pipe, redirections and zsh modifiers before the program word
 
 BLOCK = "block"
 REVIEW = "needs_review"
@@ -243,8 +243,12 @@ SEP_RE = re.compile(r"\|\||&&|[;|&\n(){}`]|\$\(|<\(|>\(")
 WRAPPERS = {
     "sudo", "doas", "env", "exec", "command", "builtin", "nohup", "time", "nice", "xargs", "then", "do",
     "else", "if", "while", "until", "!", "caffeinate", "arch", "stdbuf", "timeout", "gtimeout", "unbuffer",
-    "script", "watch", "eval", "source", ".",
+    "script", "watch", "eval", "source", ".", "noglob", "nocorrect", "coproc",
 }
+# A redirection before the program word ("2>/dev/null rm", "</dev/null {x}"): skipped
+# like a wrapper. An operator with its target in the next token ("2> /dev/null")
+# skips that token too.
+REDIR_RE = re.compile(r"\d*(?:<<<|<<-?|<>|<&|>&|>>|>\||<|>)|&>>?")
 
 
 def command_words(view: str) -> list:
@@ -252,14 +256,9 @@ def command_words(view: str) -> list:
     words = []
     for seg in SEP_RE.split(view):
         toks = seg.split()
-        i = 0
-        while i < len(toks):
-            t = toks[i]
-            if re.fullmatch(r"[a-z_][a-z0-9_]*=\S*", t) or t.startswith("-") or t in WRAPPERS or re.fullmatch(r"\d+", t):
-                i += 1
-                continue
-            words.append(t)
-            break
+        i = _program_index(toks)
+        if i < len(toks):
+            words.append(toks[i])
     return words
 
 
@@ -870,6 +869,10 @@ def _program_index(toks: list) -> int:
         if re.fullmatch(r"[a-z_][a-z0-9_]*=\S*", t) or t.startswith("-") or t in WRAPPERS or re.fullmatch(r"\d+", t):
             i += 1
             continue
+        m = REDIR_RE.match(t)
+        if m:
+            i += 2 if m.end() == len(t) else 1
+            continue
         break
     return i
 
@@ -880,17 +883,26 @@ def _bare_param_receives_pipe(text: str) -> bool:
     user's value would become the program that reads the piped text. Also what a
     markdown table row ("| {a} | {b} |") looks like, so callers make it a
     needs_review finding, never a block."""
-    view = shell_views(text)["dequoted"]
-    prev_sep, pos = None, 0
+    view = shell_views(text)["dequoted"].replace("|&", "| ")  # "|&" pipes stderr too
+    piped, pos = False, 0
     for m in list(SEP_RE.finditer(view)) + [None]:
         seg = view[pos: m.start()] if m else view[pos:]
         toks = seg.split()
         i = _program_index(toks)
-        if prev_sep == "|" and i < len(toks) and toks[i].startswith(PARAM_MARK.lower()):
+        # "{x}<notes.txt" (no space: still one "bare" token) feeds it the same way.
+        if i < len(toks) and toks[i].startswith(PARAM_MARK.lower()) and (
+                piped or re.match(PARAM_MARK.lower() + r"\w*<", toks[i])):
             return True
         if m is None:
             break
-        prev_sep, pos = m.group(0), m.end()
+        sep = m.group(0)
+        # The pipe's reader is the next command, even past a line break or inside a
+        # group or substitution opened right after it; ">(" reads what tee writes.
+        if sep in ("|", ">("):
+            piped = True
+        elif toks or sep not in ("\n", "(", "{", "`", "$("):
+            piped = False
+        pos = m.end()
     return False
 
 

@@ -250,6 +250,14 @@ def main():
                                 ("append_text", {"path": "~/Notes/x.txt", "text": payload})]:
             check("dangerous_text" in text_rules(tool_name, args),
                   f"parameter-led command with arguments is still dangerous text: {tool_name} {payload!r}")
+    # A redirection or zsh precommand modifier before the parameter doesn't hide it
+    # from param_is_program (QA round 3).
+    for payload in ["2>/dev/null {entry} -rf ~", "</dev/null {entry} -rf ~", "noglob {entry} -rf ~",
+                    "coproc {entry} -rf ~", "cat notes.txt | 2> /dev/null {entry}"]:
+        for tool_name, key, extra in [("set_clipboard", "text", {}), ("write_new_file", "content", {"path": "~/Notes/x.txt"})]:
+            args = {**extra, key: payload}
+            check("dangerous_text" in text_rules(tool_name, args),
+                  f"parameter-led command after a redirection or modifier is dangerous text: {tool_name} {payload!r}")
 
     # A bare parameter that receives a pipe is the program reading it: needs_review
     # (never block -- a markdown table row has the same shape), except in display-only
@@ -264,7 +272,12 @@ def main():
     text_tools = [("set_clipboard", "text", {}), ("type_text", "text", {}),
                   ("write_new_file", "content", {"path": "~/Notes/x.txt"}),
                   ("append_text", "text", {"path": "~/Notes/x.txt"})]
-    for payload in ["cat notes.txt | {entry}", "echo aGVsbG8K | base64 -d | {entry}", "| {entry} | {other} |"]:
+    for payload in ["cat notes.txt | {entry}", "echo aGVsbG8K | base64 -d | {entry}", "| {entry} | {other} |",
+                    # QA round 3: the pipe's reader past "|&", a line break, a group or
+                    # a substitution, tee's ">(", and stdin glued onto the parameter.
+                    "cat notes.txt |& {entry}", "cat notes.txt |\n{entry}", "cat notes.txt | ({entry})",
+                    "cat notes.txt | { {entry}; }", "cat notes.txt | tee >({entry})", "{entry}<notes.txt",
+                    "{entry}<<<x"]:
         for tool_name, key, extra in text_tools:
             found = text_findings(tool_name, {**extra, key: payload})
             check(("param_receives_pipe", static.REVIEW) in found
