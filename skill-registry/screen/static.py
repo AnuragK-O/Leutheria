@@ -1099,6 +1099,11 @@ def _code_argument(toks: list, start: int, prog: str) -> str | None:
     return None
 
 
+# Words after which an interpreter further along the line still runs: every
+# wrapper, plus commands that run their arguments as a command line.
+CODE_LAUNCHERS = WRAPPERS | {"find", "-exec", "-execdir", "-ok", "-okdir", "fd", "parallel", "ssh", "launchctl", "su", "chroot"}
+
+
 def param_is_code(view: str) -> bool:
     """True if some simple command in <view> (shell_views()'s "cased" view, so option
     letters keep their case; program names compare lower-cased) runs an
@@ -1110,14 +1115,27 @@ def param_is_code(view: str) -> bool:
     flat = re.sub(r"\$\(|[`(){}]", " ", view)
     for seg in re.split(r"\|\||&&|[;|&\n]", flat):
         toks = seg.split()
-        i = _program_index([t.lower() for t in toks])
+        low = [t.lower() for t in toks]
+        i = _program_index(low)
         if i >= len(toks):
             continue
-        prog = _interpreter_name(toks[i].lower())
-        if prog in CODE_SPECS or prog in ("pwsh", "deno"):
-            code = _code_argument(toks, i + 1, prog)
-            if code is not None and code.startswith(PARAM_MARK):
-                return True
+        # The program word, and any later word once a launcher has been seen: a
+        # wrapper whose own option takes a value ("sudo -u bob bash -c", "env -u X",
+        # "exec -a name", "xargs -J %", "script -q FILE"), a wrapper by path
+        # ("/usr/bin/env bash -c") or a command that runs its arguments ("find
+        # -exec", "ssh host", "parallel") hides the interpreter from
+        # _program_index. "echo bash -c {x}" still is not code: echo runs nothing.
+        launched = any(basename(t) in CODE_LAUNCHERS for t in low[:i])
+        for j in range(i, len(toks)):
+            if j > i:
+                launched = launched or basename(low[j - 1]) in CODE_LAUNCHERS
+                if not launched:
+                    continue
+            prog = _interpreter_name(low[j])
+            if prog in CODE_SPECS or prog in ("pwsh", "deno"):
+                code = _code_argument(toks, j + 1, prog)
+                if code is not None and code.startswith(PARAM_MARK):
+                    return True
     return False
 
 
