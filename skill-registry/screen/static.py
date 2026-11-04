@@ -31,7 +31,7 @@ import re
 import unicodedata
 from urllib.parse import urlsplit
 
-ANALYZER_VERSION = 6  # 2: run_command auto-publish allowlist; 3: param_is_program exempt for a bare {param} text / display-only text; 4: param_receives_pipe, redirections and zsh modifiers before the program word; 5: set_clipboard text whose only dangerous finding is param_is_program is needs_review, not block; 6: that downgrade only for prose-shaped text, param_is_code (bash -c {x}), a backgrounded bare parameter ({x} & disown)
+ANALYZER_VERSION = 7  # 2: run_command auto-publish allowlist; 3: param_is_program exempt for a bare {param} text / display-only text; 4: param_receives_pipe, redirections and zsh modifiers before the program word; 5: set_clipboard text whose only dangerous finding is param_is_program is needs_review, not block; 6: that downgrade only for prose-shaped text, param_is_code (bash -c {x}), a backgrounded bare parameter ({x} & disown); 7: review floor for a parameter in pasted/typed text (param_in_pasted_text), the prose test removed, param_is_code finds the code argument per interpreter, backgrounding past redirections and groups
 
 BLOCK = "block"
 REVIEW = "needs_review"
@@ -236,7 +236,10 @@ def shell_views(raw: str) -> dict:
     # pretty-printing JSON is not "piping into an interpreter"
     json_tool = re.compile(r"\|\s*python[0-9.]*\s+-m\s+json\.tool\b")
     noq, deob = json_tool.sub("| jsonfmt", noq), json_tool.sub("| jsonfmt", deob)
-    return {"literal": lit, "dequoted": noq.lower(), "deobfuscated": deob}
+    # "cased": the dequoted view before lower-casing, for option letters whose case
+    # matters (perl -I vs -i, bash -O vs -o; param_is_code). Program names still
+    # compare lower-cased: the file system is case-insensitive.
+    return {"literal": lit, "dequoted": noq.lower(), "deobfuscated": deob, "cased": noq}
 
 
 SEP_RE = re.compile(r"\|\||&&|[;|&\n(){}`]|\$\(|<\(|>\(")
@@ -434,11 +437,10 @@ def analyze_shell(raw: str, where: str, F: _Findings, *, depth: int = 0, ctx: di
                            r"\bosascript\b|\bawk\b[^|;]*\bsystem\s*\(", v) for v in allv)
     if inline:
         F.add(where, "inline_interpreter", REVIEW, "runs inline code through a shell or interpreter")
-    # "bash -c {x}", "python3 -c {x}": the parameter is the code that runs, which is
-    # param_is_program with an interpreter in front.
-    if re.search(r"(?:^|[\s;|&(/])(?:(?:sh|bash|zsh|dash|ksh|fish|csh|tcsh)\s+(?:-\S+\s+)*-[a-z]*c|"
-                 r"(?:python[0-9.]*|perl|ruby|node|php|lua|deno|bun|swift)\s+(?:-\S+\s+)*-[a-z]*[ecr])\s+"
-                 + PARAM_MARK.lower(), deq):
+    # "bash -c {x}", "python3 -W ignore -c {x}", "node --eval={x}": the parameter is
+    # the code that runs, which is param_is_program with an interpreter in front.
+    # (param_is_code() finds the code argument per interpreter; see CODE_SPECS.)
+    if param_is_code(views["cased"]):
         F.add(where, "param_is_code", BLOCK, "a parameter is the code a shell or interpreter runs")
     if {"source", "."} & set(raw_cmd_words) or re.search(r"(?:^|[;&|]\s*)(?:source|\.)\s+\S", deq):
         F.add(where, "source_file", REVIEW, "sources a file into the shell")
@@ -864,6 +866,8 @@ def _path_mode(spec) -> str:
 # Tools whose text is only shown to the user (a banner, a timer's label and
 # spoken line): nothing in it can be pasted, typed, opened or run.
 DISPLAY_ONLY_TEXT = {"show_notification", "set_timer"}
+# Tools whose text ends up pasted or typed into another app, outside any confirmation.
+PASTE_SINKS = {"set_clipboard", "type_text"}
 
 
 def _program_index(toks: list) -> int:
@@ -929,58 +933,200 @@ def _param_only_commands(text: str) -> bool:
     return True
 
 
-_OPERAND_RE = re.compile(r"^['\"(]*(?:/|~|\./|\.\./|\$)|://")  # a path, a URL or a variable
+_BG_SEP_RE = re.compile(r"\|\||&&|[;|\n]|&")
 
 
-def _param_led_prose(text: str) -> bool:
-    """True if the one parameter-led command in <text> reads as a sentence that
-    starts with the user's value ("{x}, thanks", "{x} is here", "{x} said hello to
-    {y}") rather than a command whose program is left blank. Prose here means: the
-    parameter is the very first word of its segment (no wrapper, assignment,
-    redirection or "-" before it), the segment is not reading a pipe, none of its
-    words is a flag (-x, --x), a redirection, a path, a URL or a variable, and no
-    other segment has a parameter as its program. "{x} -rf ~", "{x} < notes.txt",
-    "cat notes.txt | {x} -flag" and "{x}; {y} -rf ~" are not prose."""
-    view = shell_views(text)["dequoted"].replace("|&", "| ")
+def _param_backgrounded(text: str) -> str | None:
+    """A simple command whose program is a parameter, put in the background with a
+    single "&", is a program being started. Returns "command" when nothing but
+    disown / wait / a comment / the end of the line follows the "&" ("{x} &",
+    "{x} & disown", "{x} &>/dev/null &", "( {x} ) &", "{ {x}; } &", "echo hi & {x} &"),
+    "ambiguous" when words do ("{x} & {y}" reads like "Tom & Jerry"), else None.
+    Redirections ("&>", "2>&1") are removed first, so their "&" is not a background
+    one; groups and substitutions are opened up, since "( {x} ) &" backgrounds {x}."""
     mark = PARAM_MARK.lower()
-    led, piped, pos = [], False, 0
-    for m in list(SEP_RE.finditer(view)) + [None]:
+    view = shell_views(text)["dequoted"].replace("\r", "").replace("|&", "|")
+    view = re.sub(r"\d*&>>?\s*\S+|\d*[<>]&\d*-?|\d*(?:>>?|<)\s*\S+", " ", view)  # redirections
+    view = re.sub(r"\$\(|[`(){}]", " ", view)                                   # groups, substitutions
+    view = re.sub(r";\s*&(?![&>])", " &", view)                                  # "{ x; } &" -> "x &"
+    found, pos = None, 0
+    for m in list(_BG_SEP_RE.finditer(view)) + [None]:
         seg = view[pos: m.start()] if m else view[pos:]
-        toks = seg.split()
-        i = _program_index(toks)
-        if i < len(toks) and toks[i].startswith(mark):
-            led.append((toks, i, piped))
         if m is None:
             break
-        sep = m.group(0)
-        if sep in ("|", ">("):
-            piped = True
-        elif toks or sep not in ("\n", "(", "{", "`", "$("):
-            piped = False
         pos = m.end()
-    if len(led) != 1:
-        return False
-    toks, i, piped = led[0]
-    if piped or i != 0 or re.search(r"[<>]", toks[0]):
-        return False
-    return not any(t.startswith("-") or REDIR_RE.match(t) or re.search(r"[<>]", t) or _OPERAND_RE.search(t)
-                   for t in toks[1:])
-
-
-def _bare_param_backgrounded(text: str) -> str | None:
-    """A bare parameter put in the background with a single "&" is a program being
-    started. "command" when nothing but "disown"/"wait" or the end of a line follows
-    the "&" ("{x} & disown", "{x} &"); "ambiguous" when words do ("{x} & {y}" reads
-    like "Tom & Jerry"); None when no bare parameter is backgrounded."""
-    view = shell_views(text)["dequoted"]
-    mark = PARAM_MARK.lower()
-    found = None
-    for m in re.finditer(r"(?:^|[;\n|(]|&&)\s*(?:-\s+)?(" + mark + r"\w*)\s*&(?![&>])([^;\n]*)", view):
-        rest = m.group(2).strip()
-        if rest in ("", "disown", "wait", "!") or re.fullmatch(r"(?:disown|wait)(?:\s+-\S+)*", rest):
+        if m.group(0) != "&":
+            continue
+        toks = seg.split()
+        i = _program_index(toks)
+        if i >= len(toks) or not toks[i].startswith(mark):
+            continue
+        rest = re.split(r"[;\n]", view[m.end():], maxsplit=1)[0].strip()
+        if rest in ("", "!", "|") or rest.startswith("#") or re.fullmatch(r"(?:disown|wait)(?:\s+\S+)*", rest):
             return "command"
         found = "ambiguous"
     return found
+
+
+# Interpreters whose command line can carry the code to run, and how to find it:
+# code letters in a short-option cluster ("-c", "-lc", "-ne"), long code options
+# ("--eval", "--eval=x"), options that take a value ("-o pipefail", "-W ignore",
+# "-I lib") and must be skipped with it, and the mode -- "shell": the code is the
+# first operand after the code flag, past later options and "--" (bash -c -x {x},
+# sh -c -- {x}); "next": the code is the flag's own value (attached or the next word);
+# "awk": the first operand is the program unless -f names a file.
+_SHELL_SPEC = ("c", ("--command",), "oO", ("--rcfile", "--init-file"), "shell")
+CODE_SPECS = {
+    **{sh: _SHELL_SPEC for sh in ("sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh", "mksh", "yash")},
+    "python": ("c", ("--command",), "WXQ", (), "next"),
+    "perl": ("eE", (), "I", (), "next"),
+    "ruby": ("e", (), "IrCE", ("--encoding",), "next"),
+    "node": ("ep", ("--eval", "--print"), "r", ("--require", "--import", "--input-type", "--loader",
+                                               "--experimental-loader", "--conditions"), "next"),
+    "nodejs": ("ep", ("--eval", "--print"), "r", ("--require", "--import", "--input-type"), "next"),
+    "bun": ("ep", ("--eval", "--print"), "r", ("--preload", "--require", "--cwd", "--config"), "next"),
+    "deno": ("ep", ("--eval", "--print"), "", ("--import-map", "--config", "--location", "--ext"), "next"),
+    "php": ("r", (), "dcz", (), "next"),
+    "lua": ("e", (), "l", (), "next"),
+    "luajit": ("e", (), "lj", (), "next"),
+    "swift": ("e", (), "", (), "next"),
+    "expect": ("c", (), "", (), "next"),
+    "tclsh": ("c", (), "", (), "next"),
+    "rscript": ("e", ("--expr",), "", (), "next"),
+    "irb": ("e", (), "Ir", (), "next"),
+    "awk": ("", (), "Fv", (), "awk"), "gawk": ("", (), "Fv", (), "awk"),
+    "nawk": ("", (), "Fv", (), "awk"), "mawk": ("", (), "Fv", (), "awk"),
+}
+# PowerShell takes single-dash words, case-insensitively, as unique prefixes.
+_PWSH_CODE = ("-c", "-co", "-com", "-comm", "-comma", "-comman", "-command", "-cwa", "-commandwithargs",
+              "-e", "-ec", "-en", "-enc", "-encodedcommand")
+_PWSH_VALUE = ("-ep", "-ex", "-executionpolicy", "-wd", "-workingdirectory", "-config", "-configurationname",
+               "-if", "-inputformat", "-of", "-outputformat", "-settingsfile", "-wi", "-windowstyle", "-file", "-f")
+# Options whose value can only be attached ("-Mstrict", "-i.bak"): the rest of the
+# cluster is that value, never more option letters.
+_ATTACHED_ONLY = {"perl": "iMmx"}
+
+
+def _interpreter_name(tok: str) -> str:
+    b = basename(tok)
+    b = re.sub(r"^(python|pythonw|ruby|perl|php|node|lua|tclsh|wish)[0-9.]*$", r"\1", b)
+    return {"pythonw": "python", "powershell": "pwsh", "pwsh-preview": "pwsh"}.get(b, b)
+
+
+def _code_argument(toks: list, start: int, prog: str) -> str | None:
+    """The code argument of interpreter <prog> in toks[start:], or None."""
+    if prog == "pwsh":
+        i = start
+        while i < len(toks):
+            t = toks[i].lower()  # PowerShell options are case-insensitive
+            if t in _PWSH_CODE:
+                return toks[i + 1] if i + 1 < len(toks) else None
+            if t in _PWSH_VALUE:
+                if t in ("-file", "-f"):
+                    return None
+                i += 2
+                continue
+            if not t.startswith("-"):
+                return t  # pwsh's first positional argument is -Command's
+            i += 1
+        return None
+    if prog == "deno":
+        # "deno eval [opts] CODE", or "deno -e/--eval"-style flags of newer releases.
+        if start < len(toks) and toks[start] == "eval":
+            return _code_argument(toks, start + 1, "_first_operand")
+    if prog == "_first_operand":
+        i = start
+        while i < len(toks):
+            t = toks[i]
+            if t == "--":
+                return toks[i + 1] if i + 1 < len(toks) else None
+            if not t.startswith("-"):
+                return t
+            i += 1
+        return None
+    spec = CODE_SPECS.get(prog)
+    if spec is None:
+        return None
+    code_letters, code_long, value_letters, value_long, mode = spec
+    attached_only = _ATTACHED_ONLY.get(prog, "")
+    i, seen_code = start, False
+    while i < len(toks):
+        t = toks[i]
+        if t == "--":
+            if mode == "shell" and seen_code:
+                return toks[i + 1] if i + 1 < len(toks) else None
+            if mode == "awk":
+                return toks[i + 1] if i + 1 < len(toks) else None
+            return None
+        if t.startswith("--"):
+            key, eq, val = t.partition("=")
+            if key in code_long:
+                if mode == "shell":
+                    seen_code = True
+                    i += 1
+                    continue
+                return val if eq else (toks[i + 1] if i + 1 < len(toks) else None)
+            i += 2 if key in value_long and not eq else 1
+            continue
+        if len(t) > 1 and t[0] in "-+" and not (mode == "awk" and t[0] == "+"):
+            body, step = t[1:], 1
+            for j, ch in enumerate(body):
+                if mode == "awk" and ch == "f":
+                    return None  # the program comes from a file
+                if ch in attached_only:
+                    break
+                if ch in code_letters:
+                    if mode == "shell":
+                        seen_code = True
+                        continue
+                    rest = body[j + 1:]
+                    if rest and not all(c in code_letters for c in rest):
+                        return rest  # attached code: "-e{x}"
+                    return toks[i + 1] if i + 1 < len(toks) else None  # "-e CODE", "-pe CODE"
+                if ch in value_letters:
+                    step = 1 if body[j + 1:] else 2
+                    break
+            i += step
+            continue
+        # an operand
+        if mode == "shell":
+            return t if seen_code else None
+        if mode == "awk":
+            return t
+        return None
+    return None
+
+
+def param_is_code(view: str) -> bool:
+    """True if some simple command in <view> (shell_views()'s "cased" view, so option
+    letters keep their case; program names compare lower-cased) runs an
+    interpreter whose code argument is a parameter: "bash -c {x}", "sh -c -- {x}",
+    "bash -o pipefail -c {x}", "python3 -W ignore -c {x}", "perl -I lib -e {x}",
+    "node --eval={x}", "deno eval {x}", "pwsh -Command {x}", "awk {x}". Wrappers
+    (env, nohup, xargs -I%, command ...) are skipped the way command_words() skips
+    them; groups and substitutions are opened up ("sh -c $({x})")."""
+    flat = re.sub(r"\$\(|[`(){}]", " ", view)
+    for seg in re.split(r"\|\||&&|[;|&\n]", flat):
+        toks = seg.split()
+        i = _program_index([t.lower() for t in toks])
+        if i >= len(toks):
+            continue
+        prog = _interpreter_name(toks[i].lower())
+        if prog in CODE_SPECS or prog in ("pwsh", "deno"):
+            code = _code_argument(toks, i + 1, prog)
+            if code is not None and code.startswith(PARAM_MARK):
+                return True
+    return False
+
+
+def bare_param_text(raw) -> bool:
+    """True if a text argument's template is a parameter alone, optionally after a
+    list marker: "{x}", "  {x} ", "- {x}"."""
+    return isinstance(raw, str) and bool(re.fullmatch(r"\s*(?:-\s+)?\{" + PARAM_PATTERN + r"\}\s*", raw))
+
+
+def has_param(raw) -> bool:
+    return isinstance(raw, str) and any(m.group(1) for m in TOKEN_RE.finditer(raw))
 
 
 def analyze_step(i: int, step: dict, tool: dict, variants: list, F: _Findings, facts: dict):
@@ -1086,6 +1232,16 @@ def analyze_step(i: int, step: dict, tool: dict, variants: list, F: _Findings, f
         "press_keys": ("keys",), "show_notification": ("title", "message"), "set_timer": ("label", "message"),
     }.get(name, ())
     for arg in text_args:
+        # The review floor (analyzer 7): text that is pasted or typed and mixes a
+        # parameter with anything else gets a person, whatever the parsers make of it.
+        # Five rounds of shape rules ("is it prose or a command?") each leaked: "$(",
+        # a backtick, "{a,b}" and quoting can always make a command look like a bare
+        # value. A bare "{x}" (or "- {x}") is the user's own text and stays clean.
+        raw = args.get(arg)
+        if name in PASTE_SINKS and has_param(raw) and not bare_param_text(raw):
+            F.add(f"{base}.args.{arg}", "param_in_pasted_text", REVIEW,
+                  "text this step pastes or types mixes a parameter with other text, so what the pasted text "
+                  "does can't be judged from its shape")
         for v in each_value(arg):
             where = f"{base}.args.{arg}"
             sub = _Findings()
@@ -1101,43 +1257,33 @@ def analyze_step(i: int, step: dict, tool: dict, variants: list, F: _Findings, f
             serious = [f for f in sub.items if f["severity"] == BLOCK
                        and not (f["rule"] == "param_is_program" and exempt)
                        and not (f["rule"] == "param_is_code" and name in DISPLAY_ONLY_TEXT)]
-            bg = _bare_param_backgrounded(v) if exempt and name not in DISPLAY_ONLY_TEXT else None
-            if serious:
+            bg = _param_backgrounded(v) if name not in DISPLAY_ONLY_TEXT else None
+            if serious or bg == "command":
                 facts["staged_payload"] = True
-                sev = BLOCK if name in ("type_text", "set_clipboard") else REVIEW
-                # On the clipboard, a sentence that starts with the user's value
-                # ("{x}, thanks", "{x} is here") trips param_is_program, but a paste
-                # still needs the user, so when that is the only finding and the text
-                # reads as prose (_param_led_prose: no flags, redirections, paths, pipe,
-                # or second parameter-led command) it is held for a maintainer (never
-                # auto-published) rather than blocked. "{x} -rf ~" and every other
-                # dangerous finding still block; type_text, which types it itself, too.
-                if name == "set_clipboard" and {f["rule"] for f in serious} == {"param_is_program"} \
-                        and _param_led_prose(v):
+                sev = BLOCK if name in PASTE_SINKS else REVIEW
+                rules = {f["rule"] for f in serious}
+                # On the clipboard, param_is_program alone is held for a maintainer
+                # (never auto-published), not blocked: "{x}, thanks" and "{x} -rf ~"
+                # can't be told apart by shape, a paste still needs the user, and the
+                # review floor above covers every such text anyway. Anything else that
+                # blocks -- and a parameter started in the background -- still blocks;
+                # type_text, which types it itself, keeps blocking it too.
+                if name == "set_clipboard" and rules == {"param_is_program"} and bg != "command":
                     sev = REVIEW
                 F.add(where, "dangerous_text", sev,
-                      "text this step writes, types or copies contains a dangerous shell command" +
+                      ("text this step writes, types or copies contains a dangerous shell command" if serious else
+                       "text this step writes, types or copies starts a parameter as a background program") +
                       (" (it would be typed or pasted, outside any confirmation)" if sev == BLOCK else ""))
-                facts["staged_rules"] |= {f["rule"] for f in serious}
-            elif bg == "command":
-                # "{x} & disown", "{x} &": the user's value started as a background
-                # program -- a command whose program is left blank, staged like any
-                # other (block where it is typed or pasted, review where it is written).
-                facts["staged_payload"] = True
-                sev = BLOCK if name in ("type_text", "set_clipboard") else REVIEW
-                F.add(where, "dangerous_text", sev,
-                      "text this step writes, types or copies starts a parameter as a background program" +
-                      (" (it would be typed or pasted, outside any confirmation)" if sev == BLOCK else ""))
-                facts["staged_rules"] |= {"param_is_program"}
-            elif exempt and name not in DISPLAY_ONLY_TEXT and (bg == "ambiguous" or _bare_param_receives_pipe(v)):
+                facts["staged_rules"] |= rules or {"param_is_program"}
+            elif name not in DISPLAY_ONLY_TEXT and (bg == "ambiguous" or (exempt and _bare_param_receives_pipe(v))):
                 # A bare parameter is the user's value -- unless something is piped
                 # into it, or it is backgrounded with "&" and more words follow: then
                 # it may be the program. Review, not block: a markdown table row and
                 # "Tom & Jerry" have the same shapes.
-                F.add(where, "param_receives_pipe" if bg != "ambiguous" else "param_backgrounded", REVIEW,
-                      "text this step writes, types or copies pipes into a command whose program a parameter names"
-                      if bg != "ambiguous" else
-                      "text this step writes, types or copies puts a parameter-named program in the background (&)")
+                F.add(where, "param_backgrounded" if bg == "ambiguous" else "param_receives_pipe", REVIEW,
+                      "text this step writes, types or copies puts a parameter-named program in the background (&)"
+                      if bg == "ambiguous" else
+                      "text this step writes, types or copies pipes into a command whose program a parameter names")
             if name in ("show_notification", "set_timer") and re.search(
                     r"\b(?:say|answer|reply)\s+(?:yes|confirm)|\bconfirm\b|\bapprove\b|\bpassword\b|\benter your\b|\bclick (?:allow|ok)\b", v.lower()):
                 F.add(where, "fake_prompt", REVIEW, "a notification or reminder reads like a confirmation or password prompt")
