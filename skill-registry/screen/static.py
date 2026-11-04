@@ -31,7 +31,7 @@ import re
 import unicodedata
 from urllib.parse import urlsplit
 
-ANALYZER_VERSION = 2  # 2: run_command auto-publish allowlist
+ANALYZER_VERSION = 3  # 2: run_command auto-publish allowlist; 3: param_is_program exempt for a bare {param} text / display-only text; 4: param_receives_pipe, redirections and zsh modifiers before the program word
 
 BLOCK = "block"
 REVIEW = "needs_review"
@@ -243,8 +243,12 @@ SEP_RE = re.compile(r"\|\||&&|[;|&\n(){}`]|\$\(|<\(|>\(")
 WRAPPERS = {
     "sudo", "doas", "env", "exec", "command", "builtin", "nohup", "time", "nice", "xargs", "then", "do",
     "else", "if", "while", "until", "!", "caffeinate", "arch", "stdbuf", "timeout", "gtimeout", "unbuffer",
-    "script", "watch", "eval", "source", ".",
+    "script", "watch", "eval", "source", ".", "noglob", "nocorrect", "coproc",
 }
+# A redirection before the program word ("2>/dev/null rm", "</dev/null {x}"): skipped
+# like a wrapper. An operator with its target in the next token ("2> /dev/null")
+# skips that token too.
+REDIR_RE = re.compile(r"\d*(?:<<<|<<-?|<>|<&|>&|>>|>\||<|>)|&>>?")
 
 
 def command_words(view: str) -> list:
@@ -252,14 +256,9 @@ def command_words(view: str) -> list:
     words = []
     for seg in SEP_RE.split(view):
         toks = seg.split()
-        i = 0
-        while i < len(toks):
-            t = toks[i]
-            if re.fullmatch(r"[a-z_][a-z0-9_]*=\S*", t) or t.startswith("-") or t in WRAPPERS or re.fullmatch(r"\d+", t):
-                i += 1
-                continue
-            words.append(t)
-            break
+        i = _program_index(toks)
+        if i < len(toks):
+            words.append(toks[i])
     return words
 
 
@@ -856,6 +855,74 @@ def _path_mode(spec) -> str:
     return spec.get("mode", "") if isinstance(spec, dict) else str(spec)
 
 
+# Tools whose text is only shown to the user (a banner, a timer's label and
+# spoken line): nothing in it can be pasted, typed, opened or run.
+DISPLAY_ONLY_TEXT = {"show_notification", "set_timer"}
+
+
+def _program_index(toks: list) -> int:
+    """Index of a simple command's program word, found the way command_words()
+    finds it: past assignments, flags, wrappers and fd numbers."""
+    i = 0
+    while i < len(toks):
+        t = toks[i]
+        if re.fullmatch(r"[a-z_][a-z0-9_]*=\S*", t) or t.startswith("-") or t in WRAPPERS or re.fullmatch(r"\d+", t):
+            i += 1
+            continue
+        m = REDIR_RE.match(t)
+        if m:
+            i += 2 if m.end() == len(t) else 1
+            continue
+        break
+    return i
+
+
+def _bare_param_receives_pipe(text: str) -> bool:
+    """True if a simple command right after a single "|" has a parameter as its
+    program word ("cat notes.txt | {x}", "echo <b64> | base64 -d | {x}"): the
+    user's value would become the program that reads the piped text. Also what a
+    markdown table row ("| {a} | {b} |") looks like, so callers make it a
+    needs_review finding, never a block."""
+    view = shell_views(text)["dequoted"].replace("|&", "| ")  # "|&" pipes stderr too
+    piped, pos = False, 0
+    for m in list(SEP_RE.finditer(view)) + [None]:
+        seg = view[pos: m.start()] if m else view[pos:]
+        toks = seg.split()
+        i = _program_index(toks)
+        # "{x}<notes.txt" (no space: still one "bare" token) feeds it the same way.
+        if i < len(toks) and toks[i].startswith(PARAM_MARK.lower()) and (
+                piped or re.match(PARAM_MARK.lower() + r"\w*<", toks[i])):
+            return True
+        if m is None:
+            break
+        sep = m.group(0)
+        # The pipe's reader is the next command, even past a line break or inside a
+        # group or substitution opened right after it; ">(" reads what tee writes.
+        if sep in ("|", ">("):
+            piped = True
+        elif toks or sep not in ("\n", "(", "{", "`", "$("):
+            piped = False
+        pos = m.end()
+    return False
+
+
+def _param_only_commands(text: str) -> bool:
+    """True if every simple command whose program word is a parameter is that
+    parameter alone ("{x}", "- {x}", "{x}\n{y}"). "{x} -rf ~" is not: the author
+    wrote the arguments, and the parameter picks the program. Nor is
+    "env {x} -rf ~" or "A=1 {x}": the program word is found the way
+    command_words() finds it (past wrappers, assignments and flags). Only a
+    list-marker "-" may come before a bare parameter -- and not before one with
+    arguments: "-" is a zsh precommand modifier, so "- {x} -rf ~" runs {x}."""
+    for seg in SEP_RE.split(shell_views(text)["dequoted"]):
+        toks = seg.split()
+        i = _program_index(toks)
+        if i < len(toks) and toks[i].startswith(PARAM_MARK.lower()):
+            if len(toks) > i + 1 or any(t != "-" for t in toks[:i]):
+                return False
+    return True
+
+
 def analyze_step(i: int, step: dict, tool: dict, variants: list, F: _Findings, facts: dict):
     name = step.get("tool")
     args = step.get("args") if isinstance(step.get("args"), dict) else {}
@@ -963,7 +1030,14 @@ def analyze_step(i: int, step: dict, tool: dict, variants: list, F: _Findings, f
             where = f"{base}.args.{arg}"
             sub = _Findings()
             analyze_shell(v, where, sub)
-            serious = [f for f in sub.items if f["severity"] == BLOCK]
+            # param_is_program is a rule about commands. In a text that is only shown
+            # (DISPLAY_ONLY_TEXT) it never applies. In one that is written, typed or
+            # copied it applies unless every parameter-led command is the bare
+            # parameter: "{text}" is the user's value, but "{tool} -rf ~" is an
+            # author-written command whose program is left to fill in.
+            exempt = name in DISPLAY_ONLY_TEXT or _param_only_commands(v)
+            serious = [f for f in sub.items if f["severity"] == BLOCK
+                       and not (f["rule"] == "param_is_program" and exempt)]
             if serious:
                 facts["staged_payload"] = True
                 sev = BLOCK if name in ("type_text", "set_clipboard") else REVIEW
@@ -971,6 +1045,12 @@ def analyze_step(i: int, step: dict, tool: dict, variants: list, F: _Findings, f
                       "text this step writes, types or copies contains a dangerous shell command" +
                       (" (it would be typed or pasted, outside any confirmation)" if sev == BLOCK else ""))
                 facts["staged_rules"] |= {f["rule"] for f in serious}
+            elif exempt and name not in DISPLAY_ONLY_TEXT and _bare_param_receives_pipe(v):
+                # A bare parameter is the user's value -- unless something is piped
+                # into it, when it is the program that reads the pipe. Review, not
+                # block: a markdown table row has the same shape.
+                F.add(where, "param_receives_pipe", REVIEW,
+                      "text this step writes, types or copies pipes into a command whose program a parameter names")
             if name in ("show_notification", "set_timer") and re.search(
                     r"\b(?:say|answer|reply)\s+(?:yes|confirm)|\bconfirm\b|\bapprove\b|\bpassword\b|\benter your\b|\bclick (?:allow|ok)\b", v.lower()):
                 F.add(where, "fake_prompt", REVIEW, "a notification or reminder reads like a confirmation or password prompt")

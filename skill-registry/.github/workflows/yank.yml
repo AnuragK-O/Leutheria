@@ -21,31 +21,38 @@ permissions:
 jobs:
   yank:
     runs-on: ubuntu-latest
+    # Serialises yanks only. (GitHub keeps one queued run per group: a third
+    # yank dispatched while one runs and one waits cancels the waiting one --
+    # check the run list after dispatching several.) Review records landing at
+    # the same moment are handled by yank_push.py's retry, not by a group.
     concurrency:
-      group: registry-main-writes
+      group: registry-yank
       cancel-in-progress: false
     env:
       NAME: ${{ inputs.name }}
       HASH: ${{ inputs.content_hash }}
       REASON: ${{ inputs.reason }}
       ACTOR: ${{ github.actor }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           ref: main
+          persist-credentials: false
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.12"
 
+      # The checkout supplies the trusted scripts; the yank itself is applied to
+      # a fresh main on every try and pushed as a fast-forward, with backoff, so
+      # a burst of merges can't make the security response fail. Re-running is
+      # safe: an already-yanked version counts as done.
       - name: Record the yank
         run: |
-          python tools/yank.py --repo . --name "$NAME" --content-hash "$HASH" --reason "$REASON" --by "$ACTOR"
-          git config user.name "leutheria-registry[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add yanked.json
-          git commit --quiet -m "Yank $NAME ${HASH:0:12}"
-          git push --quiet origin HEAD:main
+          python tools/yank_push.py \
+            --remote "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            --work yank-main --name "$NAME" --content-hash "$HASH" --reason "$REASON" --by "$ACTOR"
 
   publish:
     needs: yank

