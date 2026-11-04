@@ -1234,6 +1234,26 @@ async function runPanels(theme) {
     await main.eval(`window.leutheria.setOverlaySettings({ panels: { chat: { opacity: null } }, appearance: { panelOpacity: ${chatOpacity} } })`);
     await sleep(200);
 
+    // A hide inside the reveal window (hot edge brushed, then the panel
+    // closed at once): the half-slid frame was never revealed, so it must
+    // not be revealed now either -- hidden at once, still transparent; the
+    // next show comes back at the normal opacity.
+    await hideChat();
+    await settleChat();
+    await hooks.eval(`__leutheriaTest.hide("chat")`);
+    await sleep(60);
+    const hideInWindow = await hooks.eval(`(() => {
+      const state = () => __leutheriaTest.panels().find((e) => e.id === "chat");
+      __leutheriaTest.show("chat", null, "left");
+      __leutheriaTest.hide("chat");
+      const s = state();
+      return { opacity: s.opacity, windowVisible: s.windowVisible };
+    })()`);
+    check(`${T} hide inside the reveal window: hidden at once, never revealed`, hideInWindow.opacity === 0 && !hideInWindow.windowVisible, JSON.stringify(hideInWindow));
+    await settleChat();
+    s = await panelState(hooks, "chat");
+    check(`${T} ...and the next show is at the panel opacity again`, s.windowVisible && Math.abs(s.opacity - chatOpacity) < 0.01, JSON.stringify(s));
+
     // A dock / orientation change from the panel's own strip while it is
     // sliding out: the window still on screen must not move (the same
     // hide-first rule as show()). The slide out is held paused so the

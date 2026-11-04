@@ -391,10 +391,18 @@ function createPanelManager({ rendererDir, preload, log, getSettings, updateSett
     const neverShown = entry.showWhenReady && !entry.win.isVisible();
     entry.showWhenReady = false;
     entry.gesture = null;
-    reveal(entry);
+    // Still inside the reveal window of a cut-short show: the page has not
+    // drawn its first good frame, so revealing now would bring back the
+    // half-slid one. Nothing visible to slide out -- hidden at once, still
+    // transparent (the next show's place() restores the opacity).
+    const unrevealed = Boolean(entry.revealTimer);
+    if (unrevealed) {
+      clearTimeout(entry.revealTimer);
+      entry.revealTimer = null;
+    } else reveal(entry);
     setMotion(entry, "out");
     entry.hiding = true;
-    if (neverShown || !entry.ready) {
+    if (neverShown || unrevealed || !entry.ready) {
       // Nothing on screen to slide (or no page yet to slide it): at once.
       finishHide(entry, entry.motionSeq);
     } else {
