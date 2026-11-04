@@ -195,6 +195,36 @@ def index():
     return json.loads((WORK / "repo" / "index.json").read_text())
 
 
+# The real screen.py through local_pipeline with a key exported: the model is not called
+# unless --real-model says so (the key is removed from the child, and the run says so).
+# The base URL points at a closed local port, so even a regression here reaches no network.
+def model_run(*extra):
+    (TMP / "model_work").mkdir(exist_ok=True)
+    f = write(TMP / "model_skill.json", skill(name="model_probe"))
+    env = dict(os.environ, ANTHROPIC_API_KEY="sk-ant-fake-not-a-key", ANTHROPIC_BASE_URL="http://127.0.0.1:9")
+    r = subprocess.run([sys.executable, str(TOOLS / "local_pipeline.py"), "submit", "--work", str(TMP / "model_work"),
+                        "--leutheria", str(REPO), "--skill", str(f), "--author", "alice", "--key-file", str(key_a),
+                        "--keys", str(keys), *extra], capture_output=True, text=True, timeout=300, env=env)
+    check("Traceback" not in r.stderr, f"local_pipeline did not crash: {r.stderr[-800:]}")
+    return json.loads(r.stdout), r, json.loads((TMP / "model_work" / "screen.json").read_text())
+
+
+s, r, scr = model_run()
+check(r.returncode == 0 and s["screener_model"] == "off" and scr["model"]["status"] == "no_key"
+      and not scr["model"]["called"] and s["decision"]["action"] != "merge"
+      and "ANTHROPIC_API_KEY removed from screen.py's environment" in r.stderr and "--real-model" in r.stderr,
+      f"an exported key is not used by default: the screen flags and the run says why: {s} {scr['model']} {r.stderr}")
+canned = write(TMP / "canned_approve.json", {"verdict": "approve", "risk": "low", "description_matches_steps": True,
+                                             "findings": [], "summary": "Does what it says."})
+s, r, scr = model_run("--model-stub", canned)
+check(r.returncode == 0 and s["screener_model"] == "stub" and scr["model"]["status"] == "stub:ok"
+      and scr["verdict"] == "approve" and s["decision"]["action"] == "merge" and "not called" not in r.stderr,
+      f"--model-stub reaches screen.py: {s} {scr['model']}")
+r = subprocess.run([sys.executable, str(TOOLS / "local_pipeline.py"), "submit", "--leutheria", str(REPO), "--skill",
+                    str(TMP / "model_skill.json"), "--author", "a", "--key-file", str(key_a), "--keys", str(keys),
+                    "--model-stub", str(canned), "--real-model"], capture_output=True, text=True, timeout=60)
+check(r.returncode == 2 and "not allowed with" in r.stderr, f"--model-stub and --real-model are exclusive: {r.stderr}")
+
 v1 = skill()
 s, r = submit(v1)
 check(r.returncode == 0 and s["decision"]["action"] == "merge" and s.get("verified"), f"clean submission merges, publishes, verifies: {s}")
@@ -657,12 +687,71 @@ import main_push as _mp  # noqa: E402
 
 nonclone = BT / "not_a_clone"
 fresh_clone(bare, nonclone)
-g(nonclone, "remote", "set-url", "origin", "https://example.invalid/other.git")
+g(nonclone, "remote", "set-url", "origin", "https://x-access-token:SECRET1@example.invalid/other.git")
+for what, fn in (("discard", _mp.discard), ("sync", _mp.sync)):
+    try:
+        fn(str(bare), nonclone)
+        check(False, f"{what} refuses a clone of some other remote")
+    except _mp.Permanent as e:
+        check(nonclone.is_dir() and "example.invalid/other.git" in str(e) and "scheme https vs file" in str(e)
+              and "SECRET1" not in str(e), f"{what} refuses a clone of some other remote, says what differed, "
+              f"shows no token: {e}")
+# The same repository under another token (a manual recovery reusing an old --work: the
+# token stored in its origin has expired) is the same remote, not "not this tool's clone".
+GH_OLD, GH_NEW = ("https://x-access-token:OLDTOK@github.com/o/reg.git", "https://x-access-token:NEWTOK@github.com/o/reg")
+check(_mp.remote_difference(GH_OLD, GH_NEW) is None, "a remote URL differing only by token (and .git) is the same remote")
+diff = _mp.remote_difference(GH_OLD, "https://x-access-token:NEWTOK@github.com/o/other.git")
+check(diff == "path /o/reg vs /o/other", f"a genuinely different repository on the same host differs by path: {diff}")
+check(_mp.remote_difference(GH_OLD, "https://x-access-token:OLDTOK@gitlab.com/o/reg.git") == "host github.com vs gitlab.com",
+      "...and one on another host by host, with no token in the wording")
+tokened = BT / "tokened_clone"
+fresh_clone(bare, tokened)
+g(tokened, "remote", "set-url", "origin", GH_OLD)
+_mp.discard(GH_NEW, tokened)
+check(not tokened.exists(), "discard deletes its own broken clone when only the token in the URL changed")
 try:
-    _mp.discard(str(bare), nonclone)
-    check(False, "discard refuses to delete a clone of some other remote")
-except _mp.Permanent:
-    check(nonclone.is_dir(), "discard refuses to delete a clone of some other remote")
+    fresh_clone(bare, tokened)
+    g(tokened, "remote", "set-url", "origin", GH_OLD)
+    _mp.discard("https://x-access-token:NEWTOK@github.com/someone/else.git", tokened)
+    check(False, "discard still refuses a different repository behind a token URL")
+except _mp.Permanent as e:
+    check(tokened.is_dir() and "OLDTOK" not in str(e) and "NEWTOK" not in str(e) and "path /o/reg vs /someone/else" in str(e),
+          f"discard still refuses a different repository behind a token URL, tokens not shown: {e}")
+# A reused clone whose stored origin spells the same repository differently is synced and
+# takes the URL given now (so a stale token in it is not what fetch and push use).
+respelled = BT / "respelled_clone"
+fresh_clone(bare, respelled)
+g(respelled, "remote", "set-url", "origin", "file://" + str(bare) + "/")
+_mp.sync(str(bare), respelled)
+check(g(respelled, "config", "remote.origin.url").stdout.strip() == str(bare)
+      and g(respelled, "rev-parse", "HEAD").stdout.strip() == g(bare, "rev-parse", "main").stdout.strip(),
+      "sync reuses a clone of the same repository under another spelling and resets origin to the given URL")
+# A broken clone that can't be deleted (rmtree fails) ends as GaveUp, never a traceback.
+undeletable = BT / "undeletable_clone"
+fresh_clone(bare, undeletable)
+
+
+def _corrupt(_work):
+    raise _mp.GitFailed("git checkout failed: invalid object 1234 for 'x'")
+
+
+def _no_rmtree(path, *a, **k):
+    raise PermissionError(13, "Permission denied", str(path))
+
+
+_real_rmtree = _mp.shutil.rmtree
+_mp.shutil.rmtree = _no_rmtree
+try:
+    _mp.push_to_main(str(bare), undeletable, _corrupt, "never", attempts=3, base_delay=0.01, max_delay=0.02)
+    outcome = "returned"
+except _mp.GaveUp as e:
+    outcome = f"GaveUp: {e}"
+except Exception as e:  # noqa: BLE001
+    outcome = f"escaped: {type(e).__name__}: {e}"
+finally:
+    _mp.shutil.rmtree = _real_rmtree
+check(outcome.startswith("GaveUp") and "could not be deleted" in outcome and "PermissionError" in outcome,
+      f"a work clone that can't be deleted ends as GaveUp with the reason: {outcome}")
 
 import record_push as _rp  # noqa: E402
 

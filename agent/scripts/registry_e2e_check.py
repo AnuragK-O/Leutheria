@@ -8,8 +8,8 @@ sign -> serve -> install -> run, with the real components.
 The registry side is skill-registry/tools/ exactly as CI runs it
 (local_pipeline.py: check_submission -> screen.py -> decide -> record_review
 -> build_index -> sign_index -> verify_index), on a temp copy of the repo,
-with a key pair from keygen.py. The screener runs with --model-stub (a
-wrapper adds it), so no model is called; a submission whose stub verdict is
+with a key pair from keygen.py. The screener gets a canned answer
+(local_pipeline.py --model-stub), so no model is called; a submission whose stub verdict is
 "flag" must be held for review and stay out of the index. The repo is served
 by `python -m http.server` on a spare loopback port.
 
@@ -89,15 +89,6 @@ tts.set_player(lambda audio, rate: None)
 tts._synthesize_reply = lambda text: (np.zeros(2205, dtype=np.int16), 22050, "check-stub")
 from agent.core.server import main
 asyncio.run(main())
-"""
-
-# local_pipeline.py runs `<screen script> <skill> --catalog .. --out ..`;
-# this one is screen.py with --model-stub added (the stub file from the env).
-SCREEN_WRAPPER = """
-import os, sys
-sys.path.insert(0, {screen_dir!r})
-import screen
-sys.exit(screen.main(sys.argv[1:] + ["--model-stub", os.environ["E2E_SCREEN_STUB"]]))
 """
 
 APPROVE = {"verdict": "approve", "risk": "low", "description_matches_steps": True, "findings": [],
@@ -182,18 +173,16 @@ class Setup:
                               "--keys", str(self.keys / "public_keys.json")],
                              capture_output=True, text=True, timeout=60, check=True)
         self.key_entry = json.loads(out.stdout.strip().splitlines()[-1])
-        wrapper = self.tmp / "screen_stubbed.py"
-        wrapper.write_text(SCREEN_WRAPPER.format(screen_dir=str(REGISTRY / "screen")))
-        self.screen_wrapper = wrapper
         return self.key_entry
 
     def _pipeline(self, *args, stub=None):
-        env = dict(os.environ)
+        # local_pipeline.py never passes ANTHROPIC_API_KEY to its children without
+        # --real-model; it is dropped here as well so nothing in this run can hold it.
+        env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
         if stub is not None:
             path = self.tmp / f"stub_{uuid.uuid4().hex[:8]}.json"
             path.write_text(json.dumps(stub))
-            env["E2E_SCREEN_STUB"] = str(path)
-        env.pop("ANTHROPIC_API_KEY", None)
+            args = (*args, "--model-stub", str(path))
         out = subprocess.run([PY, str(TOOLS / "local_pipeline.py"), *args, "--work", str(self.work),
                               "--leutheria", str(ROOT), "--key-file", str(self.keys / "signing.pem"),
                               "--keys", str(self.keys / "public_keys.json")],
@@ -206,8 +195,7 @@ class Setup:
     def submit(self, definition, author, stub):
         path = self.tmp / f"submit_{definition['content_hash'][:12]}.json"
         path.write_text(json.dumps(definition, indent=2) + "\n")
-        return self._pipeline("submit", "--skill", str(path), "--author", author,
-                              "--screen-script", str(self.screen_wrapper), stub=stub)
+        return self._pipeline("submit", "--skill", str(path), "--author", author, stub=stub)
 
     def yank(self, definition):
         return self._pipeline("yank", "--name", definition["name"], "--content-hash", definition["content_hash"],
@@ -487,7 +475,7 @@ async def _full_loop(s: Setup):
         print("# the shared file goes back through the pipeline")
         shared = s.tmp / "shared_client_notes.json"
         shared.write_text(prev["json"])
-        r = s._pipeline("submit", "--skill", str(shared), "--author", "me", "--screen-script", str(s.screen_wrapper), stub=APPROVE)
+        r = s._pipeline("submit", "--skill", str(shared), "--author", "me", stub=APPROVE)
         check(r["decision"]["action"] == "merge" and r.get("verified"),
               "the exported file passes the registry pipeline and is published")
         await ws.close()

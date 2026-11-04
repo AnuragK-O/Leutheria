@@ -238,7 +238,11 @@ python tools/record_push.py --remote https://github.com/<owner>/<repo>.git --wor
 The verdict is the one in the PR's decision comment. Without `--screen` the record says risk
 `high`, no flags, screened by `none (not called)`, which is conservative and accurate. The
 tool re-checks the name's owner and assigns the version against main as it is now, and is
-safe to re-run (a record already there for this file and author counts as done). Your push
+safe to re-run (a record already there for this file and author counts as done). A `--work`
+left by an earlier run can be reused: it is accepted when its origin is the same repository
+(scheme, host and path; any token in either URL is ignored, so an expired one doesn't matter)
+and takes the `--remote` URL you pass now; a clone of a different repository is refused,
+naming the part that differed, before anything is fetched. Your push
 touches `reviews/`, which starts **publish**; run it by hand if it doesn't. Then remove the
 label.
 
@@ -252,9 +256,20 @@ stays on main unpublished; remove it with a commit, or leave it.
 
 ```bash
 python tools/keygen.py --private-out /tmp/k.pem --keys /tmp/keys.json
+echo '{"verdict": "approve", "risk": "low", "description_matches_steps": true, "findings": [], "summary": "ok"}' > /tmp/approve.json
 python tools/local_pipeline.py submit --work /tmp/reg --leutheria <Leutheria checkout> \
-  --skill my_skill.json --author me --key-file /tmp/k.pem --keys /tmp/keys.json
+  --skill my_skill.json --author me --key-file /tmp/k.pem --keys /tmp/keys.json \
+  --model-stub /tmp/approve.json
 ```
+
+It never calls the screener's model unless you ask: `ANTHROPIC_API_KEY` is removed from every
+child's environment even when it is exported, and the run says so on stderr. Without a model the
+screen comes back "flag" and the submission is held for review, which is what CI does when the
+model is unreachable. `--model-stub <canned.json>` gives `screen.py` a canned answer instead (the
+formats are in `screen.py`'s `StubClient`: an approve/flag/reject result, a refusal, malformed
+text, an API error), so every outcome can be tried offline. `--real-model` keeps the key for
+`screen.py` alone and makes one real, paid call per submission that passes the static analyser.
+The summary's `screener_model` field says which of `off` / `stub` / `real` ran.
 
 Leutheria's `agent/scripts/registry_pipeline_check.py` exercises all of it.
 
@@ -272,7 +287,7 @@ python tools/sim_testers.py local                      # ~1 min; exit 1 on any m
 ```
 
 `local` drives `local_pipeline.py` on a temp copy with a throwaway key, the real static analyser
-and a stubbed model (`screen.py --model-stub`; `ANTHROPIC_API_KEY` is removed, nothing is
+and a stubbed model (`local_pipeline.py --model-stub`; `ANTHROPIC_API_KEY` is removed, nothing is
 called), then runs `verify_index.py`, compares the index with the plan entry by entry, and has
 the real Leutheria client (`registry_client.py`, `LEUTHERIA_REGISTRY_TEST=1`, sandbox HOME)
 list the index over loopback and install, update and refuse a handful of skills. It prints

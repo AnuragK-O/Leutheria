@@ -3,10 +3,18 @@
     local_pipeline.py submit --work <dir> --leutheria <dir> --skill <file.json>
                              --author <login> --key-file <pem> --keys <keys.json>
                              [--path skills/<name>/<hash>.json] [--screen-script <screen.py>]
+                             [--model-stub <canned.json> | --real-model]
                              [--human-approve [--override-static-reject]]
                              [--catalog <path>] [--now <iso>]
     local_pipeline.py yank   --work <dir> --leutheria <dir> --name <n> --content-hash <h>
                              --key-file <pem> --keys <keys.json> [--catalog <path>]
+
+The screener's model is never called unless asked: by default every child runs
+without ANTHROPIC_API_KEY (an exported key would otherwise make screen.py spend
+money on each submission), so the screen comes back "flag" (model unavailable)
+and the submission goes to review. --model-stub <canned.json> hands screen.py a
+canned answer (screen.py --model-stub; see its StubClient) for every outcome,
+no network; --real-model keeps the key for screen.py alone and calls the model.
 
 <work>/repo is "main" of the registry: copied from this repository on first
 use and reused afterwards, so successive submissions build on each other.
@@ -24,6 +32,7 @@ pipeline ran (whatever it decided), 1 if a step that must not fail did.
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -33,11 +42,25 @@ from pathlib import Path
 import common
 
 TOOLS = Path(__file__).resolve().parent
+MODEL_KEY = "ANTHROPIC_API_KEY"
+
+
+def child_env(keep_model_key=False) -> dict:
+    """The environment for a child step: without the model's key unless --real-model
+    asked for it (and then only for screen.py)."""
+    return {k: v for k, v in os.environ.items() if keep_model_key or k != MODEL_KEY}
 
 
 def run(script: str, *args) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, str(TOOLS / script), *map(str, args)],
-                          capture_output=True, text=True, timeout=120)
+                          capture_output=True, text=True, timeout=120, env=child_env())
+
+
+def screener_mode(args) -> str:
+    """'stub', 'real' or 'off' (no key, so no call: the screen flags)."""
+    if args.model_stub:
+        return "stub"
+    return "real" if args.real_model else "off"
 
 
 def _repo(work: Path) -> Path:
@@ -95,10 +118,18 @@ def submit(args) -> dict:
     screen_path = work / "screen.json"
     screen_path.unlink(missing_ok=True)
     screen_script = Path(args.screen_script) if args.screen_script else common.REGISTRY_ROOT / "screen" / "screen.py"
+    summary["screener_model"] = mode = screener_mode(args)
     if structural.returncode == 0 and screen_script.is_file():
         catalog = args.catalog or common.default_catalog_path(args.leutheria)
-        subprocess.run([sys.executable, str(screen_script), str(target), "--catalog", str(catalog),
-                        "--out", str(screen_path)], capture_output=True, text=True, timeout=300)
+        cmd = [sys.executable, str(screen_script), str(target), "--catalog", str(catalog), "--out", str(screen_path)]
+        if mode == "stub":
+            cmd += ["--model-stub", str(Path(args.model_stub).resolve())]
+        if mode == "off":
+            print(f"local_pipeline: the screener's model is not called ({MODEL_KEY} "
+                  f"{'removed from' if os.environ.get(MODEL_KEY) else 'not set in'} screen.py's environment), "
+                  f"so the screen flags for review; pass --model-stub <canned.json>, or --real-model to call "
+                  f"the model and pay for it", file=sys.stderr)
+        subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=child_env(mode == "real"))
     decide_args = ["--structural", work / "structural.json", "--out", work / "decision.json"]
     if screen_path.exists():
         decide_args += ["--screen", screen_path]
@@ -155,6 +186,12 @@ def main() -> int:
     s.add_argument("--author", required=True)
     s.add_argument("--path")
     s.add_argument("--screen-script")
+    model = s.add_mutually_exclusive_group()
+    model.add_argument("--model-stub", metavar="CANNED_JSON",
+                       help="passed to screen.py --model-stub: a canned model answer, no network")
+    model.add_argument("--real-model", action="store_true",
+                       help=f"keep {MODEL_KEY} for screen.py and call the real model (costs money); "
+                            f"without this or --model-stub the key is removed and the screen flags")
     s.add_argument("--human-approve", action="store_true")
     s.add_argument("--override-static-reject", action="store_true")
     y = sub.choices["yank"]

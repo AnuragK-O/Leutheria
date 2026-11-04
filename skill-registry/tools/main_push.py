@@ -74,6 +74,60 @@ def display_remote(remote: str) -> str:
     return remote
 
 
+_SCP_RE = re.compile(r"^(?:[^@/:]+@)?([^/:]+):(?!//)(.*)$")  # git@github.com:o/r.git
+
+
+def remote_identity(remote: str) -> tuple:
+    """What makes two remote URLs the same repository: (scheme, host, port, path),
+    with any credentials dropped (the workflows' URLs carry a token, which expires and
+    differs between runs) and a trailing "/" or ".git" ignored. A local path, or a
+    file: URL, compares by its resolved path."""
+    def path_key(path: str) -> str:
+        path = path.rstrip("/")
+        return path[:-4] if path.endswith(".git") else path
+
+    parts = urllib.parse.urlsplit(remote)
+    if parts.scheme == "file":
+        return ("file", "", None, str(Path(urllib.parse.unquote(parts.path)).expanduser().resolve()))
+    if len(parts.scheme) > 1 and parts.netloc:  # len > 1: "C:" is a drive, not a scheme
+        return (parts.scheme.lower(), (parts.hostname or "").lower(), parts.port, path_key(parts.path))
+    m = _SCP_RE.match(remote)
+    if m and not remote.startswith(("/", ".", "~")):
+        return ("ssh", m.group(1).lower(), None, path_key("/" + m.group(2).lstrip("/")))
+    return ("file", "", None, str(Path(remote).expanduser().resolve()))
+
+
+def remote_difference(stored: str, remote: str) -> str | None:
+    """None when <stored> and <remote> name the same repository (credentials aside);
+    else which parts differ, built from remote_identity, so never a token."""
+    a, b = remote_identity(stored), remote_identity(remote)
+    if a == b:
+        return None
+    show = lambda v: "(none)" if v in ("", None) else str(v)  # noqa: E731
+    return "; ".join(f"{name} {show(x)} vs {show(y)}"
+                     for name, x, y in zip(("scheme", "host", "port", "path"), a, b) if x != y)
+
+
+def origin_url(work: Path) -> str | None:
+    r = subprocess.run(["git", "config", "--file", str(work / ".git" / "config"), "remote.origin.url"],
+                       capture_output=True, text=True, timeout=GIT_TIMEOUT)
+    return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
+
+
+def check_origin(remote: str, work: Path, consequence: str) -> str:
+    """<work>'s stored origin URL if it is a clone of <remote> (credentials aside);
+    otherwise Permanent, saying what differed -- with credentials stripped."""
+    url = origin_url(work)
+    if url is None:
+        raise Permanent(f"{work} has no origin remote, so it is not this tool's clone of "
+                        f"{display_remote(remote)}; {consequence}")
+    diff = remote_difference(url, remote)
+    if diff is not None:
+        raise Permanent(f"{work} is a clone of {display_remote(url)}, not of {display_remote(remote)} "
+                        f"({diff}; credentials are not compared); {consequence}")
+    return url
+
+
 def sync(remote: str, work: Path) -> None:
     if not (work / ".git").is_dir():
         if work.exists() and any(work.iterdir()):
@@ -84,6 +138,12 @@ def sync(remote: str, work: Path) -> None:
         if r.returncode != 0:
             raise GitFailed(f"git clone failed: {r.stderr.strip()[-300:]}")
         return
+    # A reused clone (a manual recovery run, say, with a fresh token): the same repository
+    # is fine, and origin takes the URL given now, so a stored expired token is not what
+    # fetch and push use. Some other repository is refused before anything is fetched.
+    url = check_origin(remote, work, "pass an empty or missing --work")
+    if url != remote:
+        git(work, "remote", "set-url", "origin", remote)
     git(work, "fetch", "--quiet", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main")
     git(work, "checkout", "--quiet", "--force", "-B", "main", "refs/remotes/origin/main")
     git(work, "reset", "--quiet", "--hard", "refs/remotes/origin/main")
@@ -92,15 +152,11 @@ def sync(remote: str, work: Path) -> None:
 
 def discard(remote: str, work: Path) -> None:
     """Delete <work> so the next attempt clones afresh -- only if it is a clone of
-    <remote> (its origin), never some other directory a caller passed by mistake."""
+    <remote> (its origin, credentials aside), never some other directory a caller
+    passed by mistake. May raise OSError / TimeoutExpired (push_to_main handles them)."""
     if not (work / ".git").is_dir():
         return  # nothing cloned (a failed clone cleans up after itself); next attempt clones
-    r = subprocess.run(["git", "config", "--file", str(work / ".git" / "config"), "remote.origin.url"],
-                       capture_output=True, text=True, timeout=GIT_TIMEOUT)
-    url = r.stdout.strip()
-    same = url == remote or (url and Path(url).expanduser().resolve() == Path(remote).expanduser().resolve())
-    if r.returncode != 0 or not same:
-        raise Permanent(f"{work} looks broken but is not this tool's clone of the remote; not deleting it")
+    check_origin(remote, work, "it looks broken, but it is not deleted")
     shutil.rmtree(work)
 
 
@@ -134,7 +190,15 @@ def push_to_main(remote: str, work: Path, apply, message: str, *, attempts=60, d
         if broken or odd_failures >= RECLONE_AFTER:
             # The work clone is this helper's own: throw it away and clone afresh next time.
             print(f"attempt {tries}: work clone looks broken ({last[:120]}); re-cloning", file=sys.stderr)
-            discard(remote, work)
+            try:
+                discard(remote, work)
+            except (subprocess.TimeoutExpired, OSError) as e:
+                # The clone can't be cleared (permissions, a hung git, a busy disk), and
+                # retrying inside it fails the same way: stop with the caller's recovery
+                # path rather than a traceback.
+                raise GaveUp(tries, time.monotonic() - started,
+                             f"{last}; then the broken work clone {work} could not be deleted: "
+                             f"{type(e).__name__}: {e}") from e
             odd_failures = 0
         elapsed = time.monotonic() - started
         delay = random.uniform(base_delay / 2, min(max_delay, base_delay * 2 ** (tries - 1)))
