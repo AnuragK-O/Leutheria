@@ -31,7 +31,7 @@ import re
 import unicodedata
 from urllib.parse import urlsplit
 
-ANALYZER_VERSION = 5  # 2: run_command auto-publish allowlist; 3: param_is_program exempt for a bare {param} text / display-only text; 4: param_receives_pipe, redirections and zsh modifiers before the program word; 5: set_clipboard text whose only dangerous finding is param_is_program is needs_review, not block
+ANALYZER_VERSION = 6  # 2: run_command auto-publish allowlist; 3: param_is_program exempt for a bare {param} text / display-only text; 4: param_receives_pipe, redirections and zsh modifiers before the program word; 5: set_clipboard text whose only dangerous finding is param_is_program is needs_review, not block; 6: that downgrade only for prose-shaped text, param_is_code (bash -c {x}), a backgrounded bare parameter ({x} & disown)
 
 BLOCK = "block"
 REVIEW = "needs_review"
@@ -434,6 +434,12 @@ def analyze_shell(raw: str, where: str, F: _Findings, *, depth: int = 0, ctx: di
                            r"\bosascript\b|\bawk\b[^|;]*\bsystem\s*\(", v) for v in allv)
     if inline:
         F.add(where, "inline_interpreter", REVIEW, "runs inline code through a shell or interpreter")
+    # "bash -c {x}", "python3 -c {x}": the parameter is the code that runs, which is
+    # param_is_program with an interpreter in front.
+    if re.search(r"(?:^|[\s;|&(/])(?:(?:sh|bash|zsh|dash|ksh|fish|csh|tcsh)\s+(?:-\S+\s+)*-[a-z]*c|"
+                 r"(?:python[0-9.]*|perl|ruby|node|php|lua|deno|bun|swift)\s+(?:-\S+\s+)*-[a-z]*[ecr])\s+"
+                 + PARAM_MARK.lower(), deq):
+        F.add(where, "param_is_code", BLOCK, "a parameter is the code a shell or interpreter runs")
     if {"source", "."} & set(raw_cmd_words) or re.search(r"(?:^|[;&|]\s*)(?:source|\.)\s+\S", deq):
         F.add(where, "source_file", REVIEW, "sources a file into the shell")
 
@@ -923,6 +929,60 @@ def _param_only_commands(text: str) -> bool:
     return True
 
 
+_OPERAND_RE = re.compile(r"^['\"(]*(?:/|~|\./|\.\./|\$)|://")  # a path, a URL or a variable
+
+
+def _param_led_prose(text: str) -> bool:
+    """True if the one parameter-led command in <text> reads as a sentence that
+    starts with the user's value ("{x}, thanks", "{x} is here", "{x} said hello to
+    {y}") rather than a command whose program is left blank. Prose here means: the
+    parameter is the very first word of its segment (no wrapper, assignment,
+    redirection or "-" before it), the segment is not reading a pipe, none of its
+    words is a flag (-x, --x), a redirection, a path, a URL or a variable, and no
+    other segment has a parameter as its program. "{x} -rf ~", "{x} < notes.txt",
+    "cat notes.txt | {x} -flag" and "{x}; {y} -rf ~" are not prose."""
+    view = shell_views(text)["dequoted"].replace("|&", "| ")
+    mark = PARAM_MARK.lower()
+    led, piped, pos = [], False, 0
+    for m in list(SEP_RE.finditer(view)) + [None]:
+        seg = view[pos: m.start()] if m else view[pos:]
+        toks = seg.split()
+        i = _program_index(toks)
+        if i < len(toks) and toks[i].startswith(mark):
+            led.append((toks, i, piped))
+        if m is None:
+            break
+        sep = m.group(0)
+        if sep in ("|", ">("):
+            piped = True
+        elif toks or sep not in ("\n", "(", "{", "`", "$("):
+            piped = False
+        pos = m.end()
+    if len(led) != 1:
+        return False
+    toks, i, piped = led[0]
+    if piped or i != 0 or re.search(r"[<>]", toks[0]):
+        return False
+    return not any(t.startswith("-") or REDIR_RE.match(t) or re.search(r"[<>]", t) or _OPERAND_RE.search(t)
+                   for t in toks[1:])
+
+
+def _bare_param_backgrounded(text: str) -> str | None:
+    """A bare parameter put in the background with a single "&" is a program being
+    started. "command" when nothing but "disown"/"wait" or the end of a line follows
+    the "&" ("{x} & disown", "{x} &"); "ambiguous" when words do ("{x} & {y}" reads
+    like "Tom & Jerry"); None when no bare parameter is backgrounded."""
+    view = shell_views(text)["dequoted"]
+    mark = PARAM_MARK.lower()
+    found = None
+    for m in re.finditer(r"(?:^|[;\n|(]|&&)\s*(?:-\s+)?(" + mark + r"\w*)\s*&(?![&>])([^;\n]*)", view):
+        rest = m.group(2).strip()
+        if rest in ("", "disown", "wait", "!") or re.fullmatch(r"(?:disown|wait)(?:\s+-\S+)*", rest):
+            return "command"
+        found = "ambiguous"
+    return found
+
+
 def analyze_step(i: int, step: dict, tool: dict, variants: list, F: _Findings, facts: dict):
     name = step.get("tool")
     args = step.get("args") if isinstance(step.get("args"), dict) else {}
@@ -1036,28 +1096,48 @@ def analyze_step(i: int, step: dict, tool: dict, variants: list, F: _Findings, f
             # parameter: "{text}" is the user's value, but "{tool} -rf ~" is an
             # author-written command whose program is left to fill in.
             exempt = name in DISPLAY_ONLY_TEXT or _param_only_commands(v)
+            # (param_is_code, "bash -c {x}", is the same rule about commands: it never
+            # applies to display-only text either.)
             serious = [f for f in sub.items if f["severity"] == BLOCK
-                       and not (f["rule"] == "param_is_program" and exempt)]
+                       and not (f["rule"] == "param_is_program" and exempt)
+                       and not (f["rule"] == "param_is_code" and name in DISPLAY_ONLY_TEXT)]
+            bg = _bare_param_backgrounded(v) if exempt and name not in DISPLAY_ONLY_TEXT else None
             if serious:
                 facts["staged_payload"] = True
                 sev = BLOCK if name in ("type_text", "set_clipboard") else REVIEW
-                # On the clipboard, a text led by a parameter ("{x}, thanks", "{x} is
-                # here") has the same shape as "{tool} -rf ~", and nothing tells them
-                # apart. A paste still needs the user, so that shape alone is held for a
-                # maintainer (never auto-published) rather than blocked. Any other
-                # dangerous finding still blocks; type_text, which types it itself, too.
-                if name == "set_clipboard" and {f["rule"] for f in serious} == {"param_is_program"}:
+                # On the clipboard, a sentence that starts with the user's value
+                # ("{x}, thanks", "{x} is here") trips param_is_program, but a paste
+                # still needs the user, so when that is the only finding and the text
+                # reads as prose (_param_led_prose: no flags, redirections, paths, pipe,
+                # or second parameter-led command) it is held for a maintainer (never
+                # auto-published) rather than blocked. "{x} -rf ~" and every other
+                # dangerous finding still block; type_text, which types it itself, too.
+                if name == "set_clipboard" and {f["rule"] for f in serious} == {"param_is_program"} \
+                        and _param_led_prose(v):
                     sev = REVIEW
                 F.add(where, "dangerous_text", sev,
                       "text this step writes, types or copies contains a dangerous shell command" +
                       (" (it would be typed or pasted, outside any confirmation)" if sev == BLOCK else ""))
                 facts["staged_rules"] |= {f["rule"] for f in serious}
-            elif exempt and name not in DISPLAY_ONLY_TEXT and _bare_param_receives_pipe(v):
+            elif bg == "command":
+                # "{x} & disown", "{x} &": the user's value started as a background
+                # program -- a command whose program is left blank, staged like any
+                # other (block where it is typed or pasted, review where it is written).
+                facts["staged_payload"] = True
+                sev = BLOCK if name in ("type_text", "set_clipboard") else REVIEW
+                F.add(where, "dangerous_text", sev,
+                      "text this step writes, types or copies starts a parameter as a background program" +
+                      (" (it would be typed or pasted, outside any confirmation)" if sev == BLOCK else ""))
+                facts["staged_rules"] |= {"param_is_program"}
+            elif exempt and name not in DISPLAY_ONLY_TEXT and (bg == "ambiguous" or _bare_param_receives_pipe(v)):
                 # A bare parameter is the user's value -- unless something is piped
-                # into it, when it is the program that reads the pipe. Review, not
-                # block: a markdown table row has the same shape.
-                F.add(where, "param_receives_pipe", REVIEW,
-                      "text this step writes, types or copies pipes into a command whose program a parameter names")
+                # into it, or it is backgrounded with "&" and more words follow: then
+                # it may be the program. Review, not block: a markdown table row and
+                # "Tom & Jerry" have the same shapes.
+                F.add(where, "param_receives_pipe" if bg != "ambiguous" else "param_backgrounded", REVIEW,
+                      "text this step writes, types or copies pipes into a command whose program a parameter names"
+                      if bg != "ambiguous" else
+                      "text this step writes, types or copies puts a parameter-named program in the background (&)")
             if name in ("show_notification", "set_timer") and re.search(
                     r"\b(?:say|answer|reply)\s+(?:yes|confirm)|\bconfirm\b|\bapprove\b|\bpassword\b|\benter your\b|\bclick (?:allow|ok)\b", v.lower()):
                 F.add(where, "fake_prompt", REVIEW, "a notification or reminder reads like a confirmation or password prompt")
