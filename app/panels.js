@@ -268,8 +268,29 @@ function createPanelManager({ rendererDir, preload, log, getSettings, updateSett
     const from = testHooks ? entry.win.getBounds() : null;
     entry.win.setBounds(bounds);
     note(entry, "bounds", { from });
-    entry.win.setOpacity(opacityOf(entry.id));
+    applyOpacity(entry);
     sendConfig(entry);
+  }
+
+  /** place(), for a panel that may be sliding out: the same rule as show()
+      -- a window still on screen mid-slide never moves, so if the bounds
+      would change the slide out ends first (hidden, then placed). */
+  function placeHidingFirst(entry) {
+    if (entry.hiding && alive(entry.win)) {
+      const next = placement(entry.id, entry.dockOverride).bounds;
+      if (JSON.stringify(next) !== JSON.stringify(entry.win.getBounds())) finishHide(entry, entry.motionSeq);
+    }
+    place(entry);
+  }
+
+  /** Every opacity write goes through here. While a transparent re-show is
+      waiting for its first good frame (revealTimer), the window stays at 0
+      whatever changed meanwhile -- a settings or appearance change inside
+      those 200 ms must not bring back the half-slid frame. reveal() is the
+      one place that ends it. */
+  function applyOpacity(entry) {
+    if (!alive(entry.win)) return;
+    entry.win.setOpacity(entry.revealTimer ? 0 : opacityOf(entry.id));
   }
 
   /** The end of a transparent re-show (show(), cut-short slide out). */
@@ -277,7 +298,8 @@ function createPanelManager({ rendererDir, preload, log, getSettings, updateSett
     if (!entry.revealTimer) return;
     clearTimeout(entry.revealTimer);
     entry.revealTimer = null;
-    if (alive(entry.win)) entry.win.setOpacity(opacityOf(entry.id));
+    applyOpacity(entry);
+    note(entry, "reveal", { opacity: alive(entry.win) ? entry.win.getOpacity() : null });
   }
 
   const isVisible = (entry) => Boolean(entry && alive(entry.win) && !entry.hiding && (entry.win.isVisible() || entry.showWhenReady));
@@ -345,12 +367,11 @@ function createPanelManager({ rendererDir, preload, log, getSettings, updateSett
     setMotion(entry, "in");
     // The real layout bounds, set while the window is hidden (or, reversing,
     // unchanged); the slide happens inside them (place() sends the "in").
-    place(entry);
     if (cutShort) {
-      entry.win.setOpacity(0);
       clearTimeout(entry.revealTimer);
       entry.revealTimer = setTimeout(() => reveal(entry), REVEAL_FALLBACK_MS);
     }
+    place(entry); // transparent from here if cutShort (applyOpacity)
     // showInactive: opened by voice or the hot edge while the user is in
     // another app -- appearing must never take their focus.
     if (reversing && entry.win.isVisible()) {
@@ -512,13 +533,13 @@ function createPanelManager({ rendererDir, preload, log, getSettings, updateSett
         }
         entry.dockOverride = null;
         const result = persist(id, patch);
-        place(entry);
+        placeHidingFirst(entry);
         return result;
       }
       case "orientation": {
         const next = data === "horizontal" || data === "vertical" ? data : layout.orientation === "vertical" ? "horizontal" : "vertical";
         const result = persist(id, { orientation: next });
-        place(entry);
+        placeHidingFirst(entry);
         return result;
       }
       case "opacity":
@@ -545,12 +566,12 @@ function createPanelManager({ rendererDir, preload, log, getSettings, updateSett
       const after = JSON.stringify(next.panels[entry.id]);
       if (isVisible(entry) && !entry.gesture && before !== after) place(entry);
       else if (isVisible(entry)) {
-        entry.win.setOpacity(opacityOf(entry.id));
+        applyOpacity(entry);
         sendConfig(entry);
       }
     }
     if (previous.appearance.panelOpacity !== next.appearance.panelOpacity) {
-      for (const entry of entries.values()) if (alive(entry.win)) entry.win.setOpacity(opacityOf(entry.id));
+      for (const entry of entries.values()) applyOpacity(entry);
     }
     syncPolling();
   }

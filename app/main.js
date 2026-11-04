@@ -1194,6 +1194,9 @@ function installTestHooks() {
     },
     show: (id, query, dock) => panels.show(id, { query, source: "test", dock }),
     trace: (id) => panels.trace(id),
+    // In the main process's own tick, so a check can land a settings change
+    // inside a 200 ms reveal window without racing IPC.
+    updateSettings: (patch) => updateSettings(patch).ok !== false,
     hideAll: () => panels.hideAll("test"),
     hide: (id) => panels.hide(id, "test"),
     toggle: (id) => panels.toggle(id, { source: "test" }),

@@ -1074,7 +1074,7 @@ async function runPanels(theme) {
       s.visible && s.windowVisible && !s.hiding && s.dock === "left" && s.bounds.x === area.x && s.bounds.height === area.height && Math.abs(s.opacity - chatOpacity) < 0.01,
       JSON.stringify(s)
     );
-    check(`${T} ...the window was hidden before it moved, never moved on screen`, movedOnScreen.length === 0 && trace.map((t) => t.op).join(",") === "hide,bounds,show", JSON.stringify(trace.map((t) => [t.op, t.visible, t.bounds.x])));
+    check(`${T} ...the window was hidden before it moved, never moved on screen, revealed last`, movedOnScreen.length === 0 && trace.map((t) => t.op).join(",") === "hide,bounds,show,reveal", JSON.stringify(trace.map((t) => [t.op, t.visible, t.bounds.x])));
     check(`${T} ...and came back transparent until the frame was off its new edge`, revealOpacity === 0, String(revealOpacity));
     check(`${T} ...from the left edge`, (await chatPage.eval(`document.body.dataset.slide`)) === "left");
     await hooks.eval(`__leutheriaTest.hide("chat")`);
@@ -1149,8 +1149,125 @@ async function runPanels(theme) {
     await film("timers", "film-in-bottom");
     await film("skills", "film-in-free");
 
+    // The reversal itself, filmed the same way (slowed live run): chat docked
+    // right starts sliding out, and is shown again mid-slide -- on the same
+    // side (a smooth reversal, never transparent) and from the hot edge on the
+    // other side (hidden, moved, shown transparent until the frame is off the
+    // new edge). Window opacity isn't in a page screenshot, so it is read from
+    // the main process at each frame and checked.
+    const reversalFilm = async (dock, name) => {
+      const page = chatPage;
+      await hooks.eval(`__leutheriaTest.hide("chat")`);
+      await hooks.waitFor(`!__leutheriaTest.panels().find((e) => e.id === "chat").windowVisible`, 2000);
+      await hooks.eval(`__leutheriaTest.show("chat")`);
+      await page.waitFor(`document.body.dataset.motion === "in"`, 3000);
+      await sleep(300);
+      await page.eval(`(document.documentElement.style.setProperty("--t-base", "1500ms"), document.documentElement.style.setProperty("--t-slow", "4000ms"), true)`);
+      await hooks.eval(`__leutheriaTest.trace("chat")`); // clear it
+      await hooks.eval(`__leutheriaTest.hide("chat")`);
+      await sleep(250);
+      await page.snap(file(`${name}-0-out`));
+      const opacity = (await panelState(hooks, "chat")).opacity;
+      const frames = [[0, await hooks.eval(`(__leutheriaTest.show("chat", null, ${JSON.stringify(dock)}), __leutheriaTest.panels().find((e) => e.id === "chat").opacity)`)]];
+      const t0 = Date.now();
+      for (const at of [120, 400, 900]) {
+        await sleep(Math.max(0, at - (Date.now() - t0)));
+        await page.snap(file(`${name}-${String(at).padStart(4, "0")}ms`));
+        frames.push([at, (await panelState(hooks, "chat")).opacity]);
+      }
+      await page.waitFor(`document.body.dataset.motion === "in"`, 6000);
+      await page.eval(`(document.documentElement.style.removeProperty("--t-base"), document.documentElement.style.removeProperty("--t-slow"), true)`);
+      await page.shot(file(`${name}-done`));
+      const trace = await hooks.eval(`__leutheriaTest.trace("chat")`);
+      const ops = trace.map((t) => t.op).join(",");
+      const moved = trace.filter((t) => t.op === "bounds" && JSON.stringify(t.from) !== JSON.stringify(t.bounds)).length;
+      return { opacity, frames, ops, moved, end: await panelState(hooks, "chat") };
+    };
+    let film1 = await reversalFilm(null, "film-reversal-right");
+    check(
+      `${T} reversal film, same side: the window never hid, moved or went transparent`,
+      film1.ops === "bounds" && film1.moved === 0 && film1.frames.every(([, o]) => Math.abs(o - film1.opacity) < 0.01) && film1.end.dock === "right",
+      JSON.stringify({ ops: film1.ops, frames: film1.frames })
+    );
+    film1 = await reversalFilm("left", "film-reversal-left");
+    check(
+      `${T} reversal film, other side: hidden, moved, shown transparent, then revealed`,
+      film1.ops === "hide,bounds,show,reveal" && film1.frames[0][1] === 0 && Math.abs(film1.frames[film1.frames.length - 1][1] - film1.opacity) < 0.01 && film1.end.dock === "left",
+      JSON.stringify({ ops: film1.ops, frames: film1.frames })
+    );
+
     const layoutAfter = JSON.stringify(JSON.parse(fs.readFileSync(layoutFile, "utf8")).panels);
     check(`${T} sliding never wrote to overlay-layout.json`, layoutAfter === layoutBefore);
+
+    // A settings change inside the 200 ms reveal window must not bring the
+    // half-slid frame back (PR #17 QA): the panel's own opacity (applySettings
+    // -> place) and the appearance opacity (every panel), in the main
+    // process's same tick as the show, so it is surely inside the window.
+    const hideChat = async () => {
+      await hooks.eval(`__leutheriaTest.hide("chat")`);
+      await hooks.waitFor(`!__leutheriaTest.panels().find((e) => e.id === "chat").windowVisible`, 2000);
+    };
+    const settleChat = async () => {
+      await hooks.eval(`__leutheriaTest.show("chat")`);
+      await chatPage.waitFor(`document.body.dataset.motion === "in"`, 3000);
+      await sleep(300);
+    };
+    await hideChat();
+    await settleChat();
+    await hooks.eval(`__leutheriaTest.hide("chat")`);
+    await sleep(60);
+    const during = await hooks.eval(`(() => {
+      const opacity = () => __leutheriaTest.panels().find((e) => e.id === "chat").opacity;
+      __leutheriaTest.show("chat", null, "left");
+      const out = [opacity()];
+      __leutheriaTest.updateSettings({ panels: { chat: { opacity: 0.9 } } });
+      out.push(opacity());
+      __leutheriaTest.updateSettings({ appearance: { panelOpacity: 0.93 } });
+      out.push(opacity());
+      return out;
+    })()`);
+    await chatPage.waitFor(`document.body.dataset.motion === "in"`, 3000);
+    await sleep(300);
+    s = await panelState(hooks, "chat");
+    check(`${T} reveal window: a panel or appearance opacity change keeps it transparent`, during.every((o) => o === 0), JSON.stringify(during));
+    check(`${T} ...and the reveal then lands on the new opacity`, Math.abs(s.opacity - 0.9) < 0.01, String(s.opacity));
+    await main.eval(`window.leutheria.setOverlaySettings({ panels: { chat: { opacity: null } }, appearance: { panelOpacity: ${chatOpacity} } })`);
+    await sleep(200);
+
+    // A dock / orientation change from the panel's own strip while it is
+    // sliding out: the window still on screen must not move (the same
+    // hide-first rule as show()). The slide out is held paused so the
+    // panel is surely mid-slide when the op arrives.
+    const opDuringSlideOut = async (op, value) => {
+      await hideChat();
+      await settleChat();
+      await hooks.eval(`__leutheriaTest.trace("chat")`); // clear it
+      const held = catchSlide(chatPage);
+      await hooks.eval(`__leutheriaTest.hide("chat")`);
+      const heldMs = await held;
+      const before = await panelState(hooks, "chat");
+      const result = await chatPage.eval(`window.leutheria.panelOp(${JSON.stringify(op)}${value === undefined ? "" : `, ${JSON.stringify(value)}`})`);
+      const after = await panelState(hooks, "chat");
+      const trace = await hooks.eval(`__leutheriaTest.trace("chat")`);
+      await release(chatPage);
+      return { heldMs, before, result, after, trace };
+    };
+    for (const [op, value] of [["dock", "bottom"], ["orientation", undefined]]) {
+      const r = await opDuringSlideOut(op, value);
+      const moved = r.trace.filter((t) => t.op === "bounds" && t.visible && JSON.stringify(t.from) !== JSON.stringify(t.bounds));
+      check(
+        `${T} ${op} op mid slide-out: hidden first, then moved; never moved on screen`,
+        r.heldMs && r.before.hiding && r.before.windowVisible && r.result && r.result.ok !== false && moved.length === 0 &&
+          r.trace.map((t) => t.op).join(",") === "hide,bounds" && !r.after.windowVisible,
+        JSON.stringify({ ops: r.trace.map((t) => [t.op, t.visible, t.bounds.x, t.bounds.y]), ok: r.result && r.result.ok })
+      );
+    }
+    await settleChat();
+    s = await panelState(hooks, "chat");
+    check(`${T} ...and it comes back at the new layout (bottom, horizontal)`, s.dock === "bottom" && s.orientation === "horizontal" && s.bounds.y + s.bounds.height === area.y + area.height, JSON.stringify(s));
+    await chatPage.shot(file("panel-op-after-slide-out"));
+    await main.eval(`window.leutheria.setOverlaySettings({ panels: { chat: { dock: "right", orientation: "vertical" } } })`);
+    await sleep(200);
     await hooks.eval(`__leutheriaTest.hideAll()`);
     await main.eval(`window.leutheria.setOverlaySettings({ hotEdge: { enabled: true } })`);
 
