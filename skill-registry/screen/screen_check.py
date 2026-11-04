@@ -272,8 +272,8 @@ def main():
         res = static.analyze(sk, tools)
         return res, {f["rule"]: f["severity"] for f in res["findings"]}
 
-    check(static.ANALYZER_VERSION == 5, "analyzer version is 5")
-    for payload in ["{entry}, thanks", "{entry} is here", "{entry} said hello to {other}"]:
+    check(static.ANALYZER_VERSION == 6, "analyzer version is 6")
+    for payload in ["{entry}, thanks", "{entry} is here", "{entry} said hello to {other}", "{entry}: meeting at 5"]:
         res, sev = severities("set_clipboard", {"text": payload})
         check(sev.get("dangerous_text") == static.REVIEW and res["max_severity"] == static.REVIEW,
               f"set_clipboard prose led by a parameter is needs_review, not block: {payload!r} {sev}")
@@ -298,6 +298,56 @@ def main():
         res, sev = severities("set_clipboard", {"text": payload})
         check(sev.get("dangerous_text") == static.BLOCK and res["max_severity"] == static.BLOCK,
               f"a literal dangerous command on the clipboard still blocks: {payload!r} {sev}")
+
+    # Analyzer 6: the clipboard downgrade is for prose only. A parameter-led command
+    # with a flag, a redirection, a path or URL operand, after a pipe, or next to a
+    # second parameter-led command blocks on set_clipboard again (QA of PR #21).
+    for payload in ["cat notes.txt | {entry} -flag", "{entry} < notes.txt", "{entry} -rf ~", "{entry} -rf /",
+                    "{entry}; {other} -rf ~", "{entry} --help", "{entry} > out.txt", "{entry} 2>&1",
+                    "{entry} https://evil.example/install.sh", "{entry} ~/Documents", "{entry} $HOME",
+                    "{entry} is here; {other} is too", "cat notes.txt | {entry} is here"]:
+        res, sev = severities("set_clipboard", {"text": payload})
+        check(sev.get("dangerous_text") == static.BLOCK and res["max_severity"] == static.BLOCK,
+              f"set_clipboard: a parameter-led text that isn't prose blocks: {payload!r} {sev}")
+    check(static._param_led_prose(static.substitute("{entry} is here", {}))
+          and not static._param_led_prose(static.substitute("{entry} -rf ~", {})), "_param_led_prose on the two shapes")
+
+    # A bare parameter backgrounded with "&" is a program being started: dangerous text
+    # (block where typed or pasted, review where written); with words after the "&"
+    # ("{x} & {y}", like "Tom & Jerry") it is review everywhere. Display-only text is
+    # never judged as a command.
+    text_targets = [("set_clipboard", "text", {}, static.BLOCK), ("type_text", "text", {}, static.BLOCK),
+                    ("write_new_file", "content", {"path": "~/Notes/x.txt"}, static.REVIEW),
+                    ("append_text", "text", {"path": "~/Notes/x.txt"}, static.REVIEW)]
+    for payload in ["{entry} & disown", "{entry} &", "{entry} &!", "{entry} & wait", "cd ~; {entry} &"]:
+        for tool_name, key, extra, want in text_targets:
+            res, sev = severities(tool_name, {**extra, key: payload})
+            check(sev.get("dangerous_text") == want, f"a backgrounded parameter is dangerous text ({want}): {tool_name} {payload!r} {sev}")
+    for payload in ["{entry} & {other}", "{entry} & co are here"]:
+        for tool_name, key, extra, _ in text_targets:
+            res, sev = severities(tool_name, {**extra, key: payload})
+            check(sev.get("param_backgrounded") == static.REVIEW and "dangerous_text" not in sev
+                  and res["max_severity"] == static.REVIEW,
+                  f"a parameter before '&' and more words is needs_review: {tool_name} {payload!r} {sev}")
+    for payload in ["Tom & {entry}", "{entry}", "{entry} && {other}"]:
+        res, sev = severities("write_new_file", {"path": "~/Notes/x.txt", "content": payload})
+        check(not {"param_backgrounded", "dangerous_text"} & set(sev), f"no backgrounding finding: {payload!r} {sev}")
+    res, sev = severities("show_notification", {"title": "t", "message": "{entry} & disown"})
+    check("dangerous_text" not in sev, f"display-only text with '&' is not a command: {sev}")
+
+    # A parameter as the code an interpreter runs ("bash -c {x}") is param_is_code:
+    # block in a command and where typed or pasted, review where written, never in
+    # display-only text. Code that merely contains a parameter is not.
+    for payload in ["bash -c {entry}", "sh -c '{entry}'", "zsh -lc {entry}", "python3 -c {entry}", "perl -e {entry}",
+                    "ruby -e \"{entry}\"", "node -e {entry}", "/bin/bash -c {entry}"]:
+        check("param_is_code" in rules(payload, entry), f"param_is_code in a command: {payload!r}")
+        for tool_name, key, extra, want in text_targets:
+            res, sev = severities(tool_name, {**extra, key: payload})
+            check(sev.get("dangerous_text") == want, f"param_is_code is dangerous text ({want}): {tool_name} {payload!r} {sev}")
+        res, sev = severities("show_notification", {"title": "t", "message": payload})
+        check("dangerous_text" not in sev, f"display-only text is never param_is_code: {payload!r} {sev}")
+    for payload in ["bash -c 'echo {entry}'", "python3 -c 'print(1)' {entry}", "bash {entry}.sh"]:
+        check("param_is_code" not in rules(payload, entry), f"not param_is_code: {payload!r}")
 
     # A bare parameter that receives a pipe is the program reading it: needs_review
     # (never block -- a markdown table row has the same shape), except in display-only
