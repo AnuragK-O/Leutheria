@@ -457,7 +457,7 @@ async function handleMessage(client, message) {
       fixtures.inventory.trusted = fixtures.inventory.trusted.filter((entry) => entry.key !== message.key);
       return controlResult(client, message, {});
     case "revoke_grant":
-      fixtures.inventory.grants = fixtures.inventory.grants.filter((entry) => entry.app !== message.app);
+      fixtures.inventory.grants = fixtures.inventory.grants.filter((entry) => entry.app !== message.app && entry.key !== message.app);
       return controlResult(client, message, {});
     case "confirm": {
       const ptt = pttConfirm;

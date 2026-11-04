@@ -20,6 +20,9 @@ What it is careful about, since someone is usually sitting at this Mac:
                 and port 8765 is never used.
   - state       the event log and preferences are redirected into a temp
                 dir. No speech, no banner, no microphone, no model call.
+  - desktop     gui_denied replaces NSWorkspace, NSRunningApplication and
+                the one function that posts keyboard events with fakes, so
+                no app is read, raised or typed into for real.
 
 Prints one line per check and exits non-zero on the first failure.
 """
@@ -56,7 +59,7 @@ from agent.core import preferences  # noqa: E402
 preferences.PREFS_FILE = TMP / "preferences.json"
 preferences._overrides.clear()
 
-from agent.core import dispatcher, tts  # noqa: E402
+from agent.core import dispatcher, session, tts  # noqa: E402
 from agent.core.dispatcher import dispatch  # noqa: E402
 from agent.tools import open_app as open_app_mod  # noqa: E402
 from agent.tools import open_file as open_file_mod  # noqa: E402
@@ -128,9 +131,26 @@ class FakeSocket:
             self.asked.append(message)
 
 
-async def through_dispatch(name, args):
-    sock = FakeSocket()
-    result = await dispatch(name, args, sock, {})
+class ApprovingSocket(FakeSocket):
+    """Approves every confirmation (once-only, nothing remembered)."""
+
+    def __init__(self, pending):
+        super().__init__()
+        self.pending = pending
+
+    async def send(self, raw):
+        await super().send(raw)
+        import json
+
+        message = json.loads(raw)
+        if message.get("type") == "confirmation_required":
+            self.pending[message["id"]].set_result({"approved": True, "remember": None})
+
+
+async def through_dispatch(name, args, approve=False):
+    pending = {}
+    sock = ApprovingSocket(pending) if approve else FakeSocket()
+    result = await dispatch(name, args, sock, pending)
     return result, sock.asked
 
 
@@ -818,22 +838,13 @@ async def check_gui_denied():
     # The denylist is judged on the app a name resolves to: resolve_app's prefix and
     # substring passes must not carry "Keych" to Keychain Access or "Ghost" to Ghostty
     # (QA round 2). Every AppKit/AX call is stubbed; nothing real is read or launched.
-    running = {"Keychain Access": 9101, "Ghostty": 9102, "TextEdit": 9103, "VirtualBox VM": 9104}
-    saved = {k: getattr(ui_access, k) for k in ("running_apps", "ensure_trusted", "subprocess")}
-    launched = []
-
-    class _NoLaunch:
-        TimeoutExpired = subprocess.TimeoutExpired
-
-        @staticmethod
-        def run(argv, **kw):
-            launched.append(argv)
-            return subprocess.CompletedProcess(argv, 1, "", "stubbed")
-
-    ui_access.running_apps = lambda: dict(running)
-    ui_access.ensure_trusted = lambda: None
-    ui_access.subprocess = _NoLaunch
-    try:
+    desktop = FakeDesktop([
+        ("Keychain Access", 9101, ""),  # no bundle ID: the name fallback must hold
+        ("Ghostty", 9102, "com.mitchellh.ghostty"),
+        ("TextEdit", 9103, "com.apple.TextEdit"),
+        ("VirtualBox VM", 9104, "org.virtualbox.app.VirtualBoxVM"),
+    ])
+    with desktop:
         check(ui_access.resolve_app("Text") == ("TextEdit", 9103), "a partial name still resolves an ordinary app")
         for partial in ("Keych", "chain", "Ghost", "VirtualBox"):
             try:
@@ -845,11 +856,237 @@ async def check_gui_denied():
         result = tool("describe_ui", app="Keych")
         check(result["ok"] is False and "never" in result["error"], f"describe_ui 'Keych' reads nothing: {result.get('error', '')[:60]}")
         result = tool("focus_app", name="Ghost")
-        check(result["ok"] is False and "never" in result["error"] and not launched,
+        check(result["ok"] is False and "never" in result["error"] and not desktop.launched,
               f"focus_app 'Ghost' is refused and launches nothing: {result.get('error', '')[:60]}")
-    finally:
-        for k, v in saved.items():
-            setattr(ui_access, k, v)
+        # The grant prompt came before the refusal (NOTES, QA round 2): the dispatcher
+        # judged the raw string, "Ghost" isn't denied, so it asked "control Ghost?".
+        result, asked = await through_dispatch("focus_app", {"name": "Ghost"})
+        check(result["ok"] is False and "never be controlled" in result["error"] and not asked
+              and not desktop.launched and not desktop.activated,
+              f"focus_app 'Ghost' through dispatch: refused with no prompt: {result['error'][:70]}")
+
+    # Display names are localised; the denylist goes by bundle ID first (QA round 2,
+    # F19-3). A German Mac's System Settings and Keychain Access, VS Code ("Code").
+    german = [
+        ("Systemeinstellungen", 9201, "com.apple.systempreferences"),
+        ("Schlüsselbundverwaltung", 9202, "com.apple.keychainaccess"),
+        ("1Password", 9203, "com.1password.1password"),
+        ("Code", 9204, "com.microsoft.VSCode"),
+        ("Notizen", 9205, "com.apple.Notes"),
+        ("TextEdit", 9206, "com.apple.TextEdit"),
+        ("Terminal", 9207, "com.example.not-a-terminal"),  # an unlisted ID: the name still denies
+    ]
+    desktop = FakeDesktop(german, front=9201)
+    with desktop:
+        refs = {ref.name: ref for ref in ui_access.running_refs()}
+        check(not ui_access.is_denied("Systemeinstellungen") and ui_access.is_denied_app(refs["Systemeinstellungen"]),
+              "the German name is on no name list, and the app is denied by its bundle ID")
+        check(ui_access.is_denied_app(refs["1Password"]) and ui_access.is_denied_bundle("COM.1PASSWORD.whatever"),
+              "a prefix entry (com.1password.*) denies, case-insensitively")
+        check(ui_access.is_denied_app(refs["Terminal"]), "an unlisted bundle ID still falls back to the name")
+        check(not ui_access.is_denied_app(refs["Code"]) and not ui_access.is_denied_app(refs["Notizen"]),
+              "ordinary apps (VS Code as 'Code', Notes as 'Notizen') are not denied")
+        check(ui_access.frontmost() == refs["Systemeinstellungen"], "frontmost() carries the bundle ID")
+        for name in ("Systemeinstellungen", "system", "Schlüssel", "bund", "1Pass"):
+            result, asked = await through_dispatch("focus_app", {"name": name})
+            check(result["ok"] is False and "never be controlled" in result["error"] and not asked
+                  and not desktop.activated and not desktop.launched,
+                  f"focus_app {name!r} refused by bundle ID, no prompt, nothing raised")
+        for name in ("Systemeinstellungen", "Schlüssel"):
+            result = tool("describe_ui", app=name)
+            check(result["ok"] is False and "never" in result["error"], f"describe_ui {name!r} reads nothing")
+        session.clear_focus()
+        result = tool("describe_ui")
+        check(result["ok"] is False and "never" in result["error"],
+              "describe_ui with no app, System Settings frontmost under its German name: reads nothing")
+        # Even a grant for it (keyed by its bundle ID, or by its name) changes nothing.
+        session.grant("com.apple.systempreferences", name="Systemeinstellungen")
+        session.grant("Systemeinstellungen")
+        for name, args in (("type_text", {"text": "sudo rm"}), ("press_keys", {"keys": "cmd+q"})):
+            result, asked = await through_dispatch(name, args)
+            check(result["ok"] is False and "never" in result["error"] and not asked and not desktop.posted,
+                  f"{name} into the German System Settings refused, grant or no grant; nothing posted")
+            result = tool(name, **args)
+            check(result["ok"] is False and "never" in result["error"] and not desktop.posted,
+                  f"{name} called directly: refused by bundle ID too")
+        session.revoke("com.apple.systempreferences")
+        session.revoke("Systemeinstellungen")
+
+        # Grants are keyed by the resolved app, not by the spelling (NOTES, QA round 2).
+        desktop.front = 9206
+        result, asked = await through_dispatch("focus_app", {"name": "notizen"}, approve=True)
+        check(result["ok"] and result["app"] == "Notizen" and len(asked) == 1 and asked[0]["args"]["app"] == "Notizen",
+              "focus_app 'notizen' asks once, naming the resolved app, and focuses Notizen")
+        grants = session.active_grants()
+        check([(g["key"], g["app"]) for g in grants] == [("com.apple.Notes", "Notizen")],
+              f"the grant is keyed by the bundle ID, shown by name: {grants}")
+        result, asked = await through_dispatch("focus_app", {"name": "Notizen"})
+        check(result["ok"] and not asked, "the same app spelled differently uses the same grant: no second prompt")
+        desktop.rename(9205, "Notes")  # the system language changed; same bundle
+        result, asked = await through_dispatch("type_text", {"text": "milk"})
+        check(result["ok"] and not asked and desktop.typed() == "milk",
+              "type_text into the same bundle under its English name: no prompt, typed into the fake")
+        desktop.posted.clear()
+        result, asked = await through_dispatch("press_keys", {"keys": "cmd+n"})
+        check(result["ok"] and not asked and len(desktop.posted) == 2, "press_keys likewise")
+        desktop.posted.clear()
+
+        # The re-check before every chunk goes by process and by bundle ID: focus moving
+        # to a denied app, or to another process with the same name, stops the typing.
+        desktop.after_posts(2, lambda: setattr(desktop, "front", 9201))
+        outcome = ui_access.type_text("x" * 60, expected_app=ui_access.frontmost())
+        check(outcome == {"app": "Notes", "typed": 20, "complete": False},
+              f"focus moving to the German System Settings stops typing after one chunk: {outcome}")
+        desktop.posted.clear()
+        desktop.apps.append(FakeApp("Notes", 9299, "com.example.lookalike"))
+        desktop.front = 9205
+        desktop.after_posts(2, lambda: setattr(desktop, "front", 9299))
+        outcome = ui_access.type_text("y" * 60, expected_app=ui_access.frontmost())
+        check(outcome["typed"] == 20 and outcome["complete"] is False,
+              "another process with the same name is not the app being typed into")
+        desktop.posted.clear()
+
+        check(session.revoke("Notizen") and not session.has_grant("com.apple.Notes"),
+              "revoking by the shown name removes the bundle-keyed grant")
+        desktop.front = 9206
+
+    # An app that isn't running is resolved through the installed-app resolver: a
+    # denied one is refused before a prompt and never launched; a partial name that
+    # matches nothing installed is refused with no prompt.
+    desktop = FakeDesktop([("TextEdit", 9301, "com.apple.TextEdit")], front=9301, installed={
+        "ghostty": ("Ghostty", "com.mitchellh.ghostty", "/Applications/Ghostty.app"),
+        "systemeinstellungen": ("Systemeinstellungen", "com.apple.systempreferences", "/System/Applications/System Settings.app"),
+    })
+    with desktop:
+        for name in ("ghostty", "Systemeinstellungen"):
+            result, asked = await through_dispatch("focus_app", {"name": name})
+            check(result["ok"] is False and "never be controlled" in result["error"] and not asked and not desktop.launched,
+                  f"focus_app {name!r}, installed but not running: refused, no prompt, not launched")
+        result, asked = await through_dispatch("focus_app", {"name": "Ghost"})
+        check(result["ok"] is False and not asked and not desktop.launched,
+              f"focus_app 'Ghost', nothing running or installed by that name: no prompt: {result['error'][:70]}")
+    check(not session.active_grants(), "no grant is left behind")
+
+
+class FakeApp:
+    """Stands in for an NSRunningApplication."""
+
+    def __init__(self, name, pid, bundle_id):
+        self.name, self.pid, self.bundle_id = name, pid, bundle_id
+        self.desktop = None
+
+    def localizedName(self):
+        return self.name
+
+    def processIdentifier(self):
+        return self.pid
+
+    def bundleIdentifier(self):
+        return self.bundle_id or None
+
+    def activationPolicy(self):
+        return 0
+
+    def activateWithOptions_(self, options):
+        self.desktop.activated.append(self.pid)
+        self.desktop.front = self.pid
+        return True
+
+
+class FakeDesktop:
+    """Replaces every AppKit/Quartz entry point ui_access uses for the
+    duration of a `with`: the running apps, the frontmost app, activation,
+    launching, the installed-app lookup and the event post. Nothing real is
+    read, raised, launched or typed into."""
+
+    def __init__(self, apps, front=None, installed=None):
+        self.apps = [FakeApp(*app) for app in apps]
+        self.front = front
+        self.installed = installed or {}
+        self.launched, self.activated, self.posted = [], [], []
+        self._trigger = None
+
+    def rename(self, pid, name):
+        next(app for app in self.apps if app.pid == pid).name = name
+
+    def after_posts(self, count, action):
+        self._trigger = (len(self.posted) + count, action)
+
+    def typed(self):
+        return self._typed
+
+    def __enter__(self):
+        from agent.core import ui_access
+        desktop = self
+        for app in self.apps:
+            app.desktop = self
+        self._typed = ""
+
+        class Workspace:
+            def runningApplications(self):
+                for app in desktop.apps:
+                    app.desktop = desktop
+                return list(desktop.apps)
+
+            def frontmostApplication(self):
+                return next((app for app in desktop.apps if app.pid == desktop.front), None)
+
+        class NSWorkspace:
+            @staticmethod
+            def sharedWorkspace():
+                return Workspace()
+
+        class NSRunningApplication:
+            @staticmethod
+            def runningApplicationWithProcessIdentifier_(pid):
+                return next((app for app in desktop.apps if app.pid == pid), None)
+
+        class NoLaunch:
+            TimeoutExpired = subprocess.TimeoutExpired
+
+            @staticmethod
+            def run(argv, **kw):
+                desktop.launched.append(argv)
+                return subprocess.CompletedProcess(argv, 1, "", "stubbed")
+
+        def installed(name):
+            hit = desktop.installed.get(name.strip().lower())
+            return ui_access.AppRef(hit[0], 0, hit[1], hit[2]) if hit else None
+
+        def post(event):
+            desktop.posted.append(event)
+            if desktop._trigger and len(desktop.posted) >= desktop._trigger[0]:
+                _, action = desktop._trigger
+                desktop._trigger = None
+                action()
+
+        def post_unicode(chunk):
+            desktop._typed += chunk
+            post(("down", chunk))
+            post(("up", chunk))
+
+        def post_return():
+            post(("down", "\n"))
+            post(("up", "\n"))
+
+        replacements = {
+            "NSWorkspace": NSWorkspace, "NSRunningApplication": NSRunningApplication,
+            "_pump": lambda: None, "ensure_trusted": lambda: None, "subprocess": NoLaunch,
+            "_installed_app": installed, "_post": post, "_post_unicode": post_unicode, "_post_return": post_return,
+            "CGEventCreateKeyboardEvent": lambda source, keycode, down: ("key", keycode, down),
+            "CGEventSetFlags": lambda event, flags: None,
+            "focused_context": lambda: {"app": "", "window": None, "role": None, "dialog": False},
+        }
+        self._saved = {name: getattr(ui_access, name) for name in replacements}
+        for name, value in replacements.items():
+            setattr(ui_access, name, value)
+        return self
+
+    def __exit__(self, *exc):
+        from agent.core import ui_access
+        for name, value in self._saved.items():
+            setattr(ui_access, name, value)
+        return False
 
 
 SECTIONS = {

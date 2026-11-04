@@ -37,7 +37,7 @@ MAX_HISTORY_TURNS = 12  # plain turns kept (user + assistant counted separately)
 MAX_ACTION_RECORDS = 6  # recent requests whose tool calls are listed in the prompt
 
 _focus: dict = {}
-_grants: dict = {}  # canonical app name -> unix expiry
+_grants: dict = {}  # app key (bundle ID, or name if it has none) -> {"expires", "name"}
 _history: list = []
 _actions: list = []  # [{"request", "steps": [str], "at"}], oldest first
 _last_activity: float = 0.0
@@ -46,40 +46,49 @@ _last_activity: float = 0.0
 # --- app grants -------------------------------------------------------------
 
 
-def grant(app_name: str, duration: float = GRANT_DURATION) -> float:
-    """Allow the scoped tools to drive an app. `duration` of None means "until
-    the agent restarts" -- the longest a grant can ever last, since none of
-    them are written to disk. That's what the confirmation card's "always"
-    maps to: it can't mean permanently, so it means for this session, and the
+def grant(app_key: str, duration: float = GRANT_DURATION, name: str = None) -> float:
+    """Allow the scoped tools to drive an app. `app_key` is the resolved
+    app's ui_access.AppRef.key -- its bundle ID -- so "notes" and "Notes",
+    or a German and an English name, are one grant; `name` is what the
+    Permissions view shows. `duration` of None means "until the agent
+    restarts" -- the longest a grant can ever last, since none of them are
+    written to disk. That's what the confirmation card's "always" maps to:
+    it can't mean permanently, so it means for this session, and the
     Permissions view says so rather than implying more."""
     expires = None if duration is None else time.time() + duration
-    _grants[app_name] = expires
+    _grants[app_key] = {"expires": expires, "name": name or app_key}
     return expires
 
 
-def has_grant(app_name: str) -> bool:
-    if app_name not in _grants:
+def has_grant(app_key: str) -> bool:
+    if app_key not in _grants:
         return False
-    expiry = _grants[app_name]
+    expiry = _grants[app_key]["expires"]
     if expiry is None:
         return True
     if expiry < time.time():
-        del _grants[app_name]
+        del _grants[app_key]
         return False
     return True
 
 
-def revoke(app_name: str) -> bool:
-    return _grants.pop(app_name, None) is not None
+def revoke(app: str) -> bool:
+    """Revoke by key or by the shown name (the Permissions view sends the
+    name it was given)."""
+    keys = [key for key, entry in _grants.items() if app in (key, entry["name"])]
+    for key in keys:
+        del _grants[key]
+    return bool(keys)
 
 
 def active_grants() -> list:
     now = time.time()
-    for name in [n for n, expiry in _grants.items() if expiry is not None and expiry < now]:
-        del _grants[name]
+    for key in [k for k, entry in _grants.items() if entry["expires"] is not None and entry["expires"] < now]:
+        del _grants[key]
     return [
-        {"app": name, "expires_in": None if expiry is None else int(expiry - now)}
-        for name, expiry in sorted(_grants.items())
+        {"app": entry["name"], "key": key,
+         "expires_in": None if entry["expires"] is None else int(entry["expires"] - now)}
+        for key, entry in sorted(_grants.items(), key=lambda item: (item[1]["name"].lower(), item[0]))
     ]
 
 

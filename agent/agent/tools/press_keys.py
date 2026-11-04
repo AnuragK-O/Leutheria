@@ -10,18 +10,22 @@ def press_keys(keys: str) -> dict:
     osascript to do things a keystroke does (observed in testing), which is
     both clumsier and a much wider grant than it needs.
     """
-    front = ui_access.frontmost_app()
+    app = ui_access.frontmost()
+    front = app.name if app else ""
     if not front:
         return {"ok": False, "error": "nothing is frontmost to send keys to"}
 
-    if not session.has_grant(front):
-        return {"ok": False, "error": f"no live permission to control {front}"}
-
-    if ui_access.is_denied(front):
+    # Bundle ID first, name as the fallback: a localised name
+    # ("Systemeinstellungen") is not on the name list. The grant is keyed the same way
+    # the dispatcher keyed it -- by the app, not by how it was spelled.
+    if ui_access.is_denied_app(app):
         return {"ok": False, "error": f"{front} can never be controlled"}
 
+    if not session.has_grant(app.key):
+        return {"ok": False, "error": f"no live permission to control {front}"}
+
     try:
-        ui_access.press_keys(keys, expected_app=front)
+        ui_access.press_keys(keys, expected_app=app)
     except ui_access.UIAccessError as e:
         return {"ok": False, "error": str(e)}
 

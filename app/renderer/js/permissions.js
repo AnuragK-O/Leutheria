@@ -108,7 +108,7 @@
           el("button.btn.btn-sm.btn-danger", {
             text: "Revoke",
             onclick: async () => {
-              const result = await window.leutheria.revokeGrant(entry.app);
+              const result = await window.leutheria.revokeGrant(entry.key || entry.app);
               if (result.ok) toast(`Revoked — ${entry.app} is no longer controllable`);
               else toast(result.error || "Couldn't revoke that", "error");
             },

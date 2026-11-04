@@ -1711,14 +1711,20 @@ arguments; `type_text` goes wherever the cursor is. So:
 - **Approval is per app, not per call, and time-boxed.** Nobody clicks Approve two hundred
   times for two hundred keystrokes. The first time Leutheria reaches for an app you get one
   prompt; approving grants that app for 15 minutes, and the typing that follows doesn't ask
-  again. Grants live in memory only — they die with the agent process, unlike a
+  again. The name is resolved before anything is asked — the running app it matches, else the
+  installed one in the Applications folders — so the prompt names the real app, a denied match
+  is refused without one, and the grant is keyed by the app's bundle ID ("notes", "Notes" and
+  a German "Notizen" are one grant). Grants live in memory only — they die with the agent process, unlike a
   `remember: always` trust — and the Permissions view lists every live one with a Revoke
   button.
 - **Some apps can never be driven or read at all**, grant or no grant: every terminal
   (Terminal, iTerm, Warp, Ghostty, kitty, Alacritty, WezTerm, ...), script runners and
   launchers (Script Editor, Automator, Shortcuts, Alfred, Raycast), virtual machines,
-  Keychain Access, System Settings, password managers (`DENIED_APPS` in
-  `agent/core/ui_access.py`). The terminals are on that list specifically because typing into
+  Keychain Access, System Settings, password managers (`DENIED_BUNDLE_IDS` and `DENIED_APPS` in
+  `agent/core/ui_access.py`). The list is judged on the app a request *resolves* to, by bundle
+  identifier first and display name as the fallback: display names are localised (a German Mac
+  calls System Settings "Systemeinstellungen") and aren't always the bundle's name (VS Code is
+  "Code"). The terminals are on that list specifically because typing into
   a shell would turn `type_text` into `run_command` with no confirmation — the denylist is
   what stops the GUI tier from being a hole straight through the safety model.
 - **`describe_ui` stays unprompted**, because looking before acting is what makes the loop
@@ -1726,7 +1732,7 @@ arguments; `type_text` goes wherever the cursor is. So:
   policy: `AXSecureTextField` values are never returned, and the denylist applies to reads
   too.
 - **Focus is re-checked before every chunk of typing**, and typing aborts mid-stream if it
-  moves. The whole point is a session where you keep using your computer, so focus changing
+  moves (to another process, even one with the same name, or to a denied app). The whole point is a session where you keep using your computer, so focus changing
   mid-sentence isn't an edge case. Without this, approving a note app and then clicking to
   Slack would send the rest of the sentence into a chat box. A partial write is reported as
   a failure with the character count, never rounded up to success.
