@@ -238,10 +238,16 @@ class AppRef(NamedTuple):
 
     @property
     def key(self) -> str:
-        """What a grant is keyed by: the bundle ID, which doesn't change with
-        the system language or with how the app was asked for ("notes",
-        "Notes"), or the name for an app that has none."""
-        return self.bundle_id or self.name
+        """What a grant is keyed by: "bundle:<id>" -- the bundle ID, which
+        doesn't change with the system language or with how the app was
+        asked for ("notes", "Notes"); lower-cased, as Launch Services
+        compares them -- or "name:<name>" for an app that has none. Two
+        namespaces, never one: an app with no bundle ID can call itself
+        "com.apple.Notes", and must not inherit (or hand out) Notes' grant."""
+        bundle_id = (self.bundle_id or "").strip()
+        if bundle_id:
+            return "bundle:" + bundle_id.lower()
+        return "name:" + self.name
 
 
 def is_denied(app_name: str) -> bool:

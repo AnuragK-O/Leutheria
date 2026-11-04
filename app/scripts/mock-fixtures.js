@@ -135,7 +135,7 @@ const inventory = {
     { key: "t1", tool: "run_command", args: { cmd: "git status", cwd: "~/Projects/demo" }, scope: "always" },
     { key: "t2", tool: "run_command", args: { cmd: "npm test" }, scope: "session" },
   ],
-  grants: [{ app: "Notes", expires_in: 412 }],
+  grants: [{ app: "Notes", key: "bundle:com.apple.notes", expires_in: 412 }],
 };
 
 const EMPTY_INVENTORY = { tools: [], skills: [], history: [], trusted: [], grants: [] };

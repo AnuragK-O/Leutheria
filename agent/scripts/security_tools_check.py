@@ -147,9 +147,21 @@ class ApprovingSocket(FakeSocket):
             self.pending[message["id"]].set_result({"approved": True, "remember": None})
 
 
-async def through_dispatch(name, args, approve=False):
+class DecliningSocket(ApprovingSocket):
+    """Declines every confirmation at once."""
+
+    async def send(self, raw):
+        await FakeSocket.send(self, raw)
+        import json
+
+        message = json.loads(raw)
+        if message.get("type") == "confirmation_required":
+            self.pending[message["id"]].set_result({"approved": False, "remember": None})
+
+
+async def through_dispatch(name, args, approve=False, decline=False):
     pending = {}
-    sock = ApprovingSocket(pending) if approve else FakeSocket()
+    sock = ApprovingSocket(pending) if approve else DecliningSocket(pending) if decline else FakeSocket()
     result = await dispatch(name, args, sock, pending)
     return result, sock.asked
 
@@ -900,8 +912,8 @@ async def check_gui_denied():
         check(result["ok"] is False and "never" in result["error"],
               "describe_ui with no app, System Settings frontmost under its German name: reads nothing")
         # Even a grant for it (keyed by its bundle ID, or by its name) changes nothing.
-        session.grant("com.apple.systempreferences", name="Systemeinstellungen")
-        session.grant("Systemeinstellungen")
+        session.grant("bundle:com.apple.systempreferences", name="Systemeinstellungen")
+        session.grant("name:Systemeinstellungen")
         for name, args in (("type_text", {"text": "sudo rm"}), ("press_keys", {"keys": "cmd+q"})):
             result, asked = await through_dispatch(name, args)
             check(result["ok"] is False and "never" in result["error"] and not asked and not desktop.posted,
@@ -909,8 +921,8 @@ async def check_gui_denied():
             result = tool(name, **args)
             check(result["ok"] is False and "never" in result["error"] and not desktop.posted,
                   f"{name} called directly: refused by bundle ID too")
-        session.revoke("com.apple.systempreferences")
-        session.revoke("Systemeinstellungen")
+        session.revoke("bundle:com.apple.systempreferences")
+        session.revoke("name:Systemeinstellungen")
 
         # Grants are keyed by the resolved app, not by the spelling (NOTES, QA round 2).
         desktop.front = 9206
@@ -918,7 +930,7 @@ async def check_gui_denied():
         check(result["ok"] and result["app"] == "Notizen" and len(asked) == 1 and asked[0]["args"]["app"] == "Notizen",
               "focus_app 'notizen' asks once, naming the resolved app, and focuses Notizen")
         grants = session.active_grants()
-        check([(g["key"], g["app"]) for g in grants] == [("com.apple.Notes", "Notizen")],
+        check([(g["key"], g["app"]) for g in grants] == [("bundle:com.apple.notes", "Notizen")],
               f"the grant is keyed by the bundle ID, shown by name: {grants}")
         result, asked = await through_dispatch("focus_app", {"name": "Notizen"})
         check(result["ok"] and not asked, "the same app spelled differently uses the same grant: no second prompt")
@@ -946,8 +958,46 @@ async def check_gui_denied():
               "another process with the same name is not the app being typed into")
         desktop.posted.clear()
 
-        check(session.revoke("Notizen") and not session.has_grant("com.apple.Notes"),
+        check(session.revoke("Notizen") and not session.has_grant("bundle:com.apple.notes"),
               "revoking by the shown name removes the bundle-keyed grant")
+
+        # Bundle IDs and names are separate key namespaces (QA, PR #22): an app with no
+        # bundle ID can call itself "com.apple.Notes" and must not inherit Notes' grant,
+        # nor hand its own grant to Notes.
+        desktop.apps = [app for app in desktop.apps if app.pid != 9299]
+        desktop.apps.append(FakeApp("com.apple.Notes", 9298, ""))
+        refs = {ref.pid: ref for ref in ui_access.running_refs()}
+        notes, impostor = refs[9205], refs[9298]
+        check(notes.key == "bundle:com.apple.notes" and impostor.key == "name:com.apple.Notes",
+              f"a bundle ID and a name never share a key: {notes.key} / {impostor.key}")
+        blank = [ui_access.AppRef(n, 0, " ") for n in ("Blank One", "Blank Two")]
+        check([b.key for b in blank] == ["name:Blank One", "name:Blank Two"],
+              f"a whitespace-only bundle ID is no bundle ID, not a shared 'bundle:' key (QA of #24): {[b.key for b in blank]}")
+        desktop.front = 9205
+        result, asked = await through_dispatch("type_text", {"text": "a"}, approve=True)
+        check(result["ok"] and len(asked) == 1, "Notes is granted (one prompt)")
+        desktop.posted.clear()
+        desktop.front = 9298
+        check(not session.has_grant(impostor.key), "the nameless 'com.apple.Notes' does not inherit Notes' grant")
+        result = tool("type_text", text="x")
+        check(result["ok"] is False and "no live permission" in result["error"] and not desktop.posted,
+              "type_text into it, called directly: refused, nothing posted")
+        result, asked = await through_dispatch("type_text", {"text": "x"}, decline=True)
+        check(result["ok"] is False and len(asked) == 1 and asked[0]["args"]["app"] == "com.apple.Notes" and not desktop.posted,
+              "through dispatch it asks for itself (declined here), nothing posted")
+        check(session.revoke("bundle:com.apple.notes") and not session.active_grants(),
+              "revoking by key (what the Permissions view sends) removes the grant")
+        # And the other direction.
+        result, asked = await through_dispatch("press_keys", {"keys": "cmd+n"}, approve=True)
+        check(result["ok"] and len(asked) == 1 and [g["key"] for g in session.active_grants()] == ["name:com.apple.Notes"],
+              "the nameless app is granted under its name key")
+        desktop.posted.clear()
+        desktop.front = 9205
+        check(not session.has_grant(notes.key), "Notes does not inherit the nameless app's grant")
+        result = tool("press_keys", keys="cmd+n")
+        check(result["ok"] is False and "no live permission" in result["error"] and not desktop.posted,
+              "press_keys into Notes, called directly: refused, nothing posted")
+        check(session.revoke("name:com.apple.Notes") and not session.active_grants(), "revoked by key")
         desktop.front = 9206
 
     # An app that isn't running is resolved through the installed-app resolver: a

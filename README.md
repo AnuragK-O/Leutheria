@@ -1714,7 +1714,9 @@ arguments; `type_text` goes wherever the cursor is. So:
   again. The name is resolved before anything is asked — the running app it matches, else the
   installed one in the Applications folders — so the prompt names the real app, a denied match
   is refused without one, and the grant is keyed by the app's bundle ID ("notes", "Notes" and
-  a German "Notizen" are one grant). Grants live in memory only — they die with the agent process, unlike a
+  a German "Notizen" are one grant). The key is `bundle:<id>`, or `name:<name>` for an app with
+  no bundle ID — separate namespaces, so an app that merely calls itself "com.apple.Notes" never
+  shares Notes' grant; `revoke_grant` takes the key or the shown name. Grants live in memory only — they die with the agent process, unlike a
   `remember: always` trust — and the Permissions view lists every live one with a Revoke
   button.
 - **Some apps can never be driven or read at all**, grant or no grant: every terminal
