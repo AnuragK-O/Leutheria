@@ -970,6 +970,9 @@ async def check_gui_denied():
         notes, impostor = refs[9205], refs[9298]
         check(notes.key == "bundle:com.apple.notes" and impostor.key == "name:com.apple.Notes",
               f"a bundle ID and a name never share a key: {notes.key} / {impostor.key}")
+        blank = [ui_access.AppRef(n, 0, " ") for n in ("Blank One", "Blank Two")]
+        check([b.key for b in blank] == ["name:Blank One", "name:Blank Two"],
+              f"a whitespace-only bundle ID is no bundle ID, not a shared 'bundle:' key (QA of #24): {[b.key for b in blank]}")
         desktop.front = 9205
         result, asked = await through_dispatch("type_text", {"text": "a"}, approve=True)
         check(result["ok"] and len(asked) == 1, "Notes is granted (one prompt)")

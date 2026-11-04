@@ -244,8 +244,9 @@ class AppRef(NamedTuple):
         compares them -- or "name:<name>" for an app that has none. Two
         namespaces, never one: an app with no bundle ID can call itself
         "com.apple.Notes", and must not inherit (or hand out) Notes' grant."""
-        if self.bundle_id:
-            return "bundle:" + self.bundle_id.strip().lower()
+        bundle_id = (self.bundle_id or "").strip()
+        if bundle_id:
+            return "bundle:" + bundle_id.lower()
         return "name:" + self.name
 
 

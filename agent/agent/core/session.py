@@ -37,7 +37,7 @@ MAX_HISTORY_TURNS = 12  # plain turns kept (user + assistant counted separately)
 MAX_ACTION_RECORDS = 6  # recent requests whose tool calls are listed in the prompt
 
 _focus: dict = {}
-_grants: dict = {}  # app key (bundle ID, or name if it has none) -> {"expires", "name"}
+_grants: dict = {}  # AppRef.key ("bundle:<id>" or "name:<name>") -> {"expires", "name"}
 _history: list = []
 _actions: list = []  # [{"request", "steps": [str], "at"}], oldest first
 _last_activity: float = 0.0
