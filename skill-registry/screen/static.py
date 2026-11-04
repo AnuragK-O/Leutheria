@@ -31,7 +31,7 @@ import re
 import unicodedata
 from urllib.parse import urlsplit
 
-ANALYZER_VERSION = 3  # 2: run_command auto-publish allowlist; 3: param_is_program exempt for a bare {param} text / display-only text; 4: param_receives_pipe, redirections and zsh modifiers before the program word
+ANALYZER_VERSION = 5  # 2: run_command auto-publish allowlist; 3: param_is_program exempt for a bare {param} text / display-only text; 4: param_receives_pipe, redirections and zsh modifiers before the program word; 5: set_clipboard text whose only dangerous finding is param_is_program is needs_review, not block
 
 BLOCK = "block"
 REVIEW = "needs_review"
@@ -1041,6 +1041,13 @@ def analyze_step(i: int, step: dict, tool: dict, variants: list, F: _Findings, f
             if serious:
                 facts["staged_payload"] = True
                 sev = BLOCK if name in ("type_text", "set_clipboard") else REVIEW
+                # On the clipboard, a text led by a parameter ("{x}, thanks", "{x} is
+                # here") has the same shape as "{tool} -rf ~", and nothing tells them
+                # apart. A paste still needs the user, so that shape alone is held for a
+                # maintainer (never auto-published) rather than blocked. Any other
+                # dangerous finding still blocks; type_text, which types it itself, too.
+                if name == "set_clipboard" and {f["rule"] for f in serious} == {"param_is_program"}:
+                    sev = REVIEW
                 F.add(where, "dangerous_text", sev,
                       "text this step writes, types or copies contains a dangerous shell command" +
                       (" (it would be typed or pasted, outside any confirmation)" if sev == BLOCK else ""))
