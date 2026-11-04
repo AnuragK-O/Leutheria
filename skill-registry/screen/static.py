@@ -1061,6 +1061,8 @@ def _code_argument(toks: list, start: int, prog: str) -> str | None:
         if t.startswith("--"):
             key, eq, val = t.partition("=")
             if key in code_long:
+                if mode == "shell" and eq:
+                    return val  # "fish --command=CODE": the value is the code
                 if mode == "shell":
                     seen_code = True
                     i += 1

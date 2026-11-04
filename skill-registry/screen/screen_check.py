@@ -379,7 +379,7 @@ def main():
             "bun -e {x}", "bun --eval {x}", "swift -e {x}", "pwsh -c {x}", "pwsh -Command {x}", "expect -c {x}",
             "Rscript -e {x}", "bash -c {x}_suffix", "python3 -W ignore -c {x}", "perl -I lib -e {x}",
             "bash -c -x {x}", "python3 -X dev -c {x}", "command bash -c {x}", "nohup sh -c {x} &", "bash -c {x} &",
-            "sh -c \"$({x})\"", "bash -c \"`{x}`\"", "xargs -I% sh -c {x}", "perl -e{x}", "ruby -I lib -e {x}"]
+            "sh -c \"$({x})\"", "bash -c \"`{x}`\"", "xargs -I% sh -c {x}", "perl -e{x}", "ruby -I lib -e {x}", "fish --command={x}"]
     for payload in code:
         worst, found = sev7("run_command", payload)
         check(found.get("param_is_code") == static.BLOCK, f"run_command: param_is_code: {payload!r} {found}")
