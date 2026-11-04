@@ -740,6 +740,19 @@ for bad, why in (("https://x-access-token:BADTOK@github.com:99999/o/reg.git", "p
               f"{what}: an unparseable URL is Permanent, says why, shows no token: {outcome}")
 check("BADTOK" not in _mp.display_remote("https://x-access-token:BADTOK@github.com:99999/o/reg.git"),
       "display_remote strips the token even from a URL with a bad port")
+# The same --remote with no clone yet (the workflows' path: a fresh --work) is Permanent
+# on the first attempt, not a git clone failure retried until the deadline (QA of #23).
+_unborn = BT / "unborn_clone"
+try:
+    _mp.push_to_main("https://x-access-token:BADTOK@github.com:99999/o/reg.git", _unborn, lambda w: _mp.ALREADY,
+                     "m", attempts=3, base_delay=0.0, max_delay=0.0)
+    outcome = "returned"
+except _mp.Permanent as e:
+    outcome = f"Permanent: {e}"
+except Exception as e:  # noqa: BLE001
+    outcome = f"escaped: {type(e).__name__}: {e}"
+check(outcome.startswith("Permanent") and "can't be parsed" in outcome and "BADTOK" not in outcome
+      and not _unborn.exists(), f"a fresh --work with an unparseable --remote is Permanent at once: {outcome}")
 # A reused clone whose stored origin spells the same repository differently is synced and
 # takes the URL given now (so a stale token in it is not what fetch and push use).
 respelled = BT / "respelled_clone"

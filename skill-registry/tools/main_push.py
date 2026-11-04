@@ -152,6 +152,11 @@ def check_origin(remote: str, work: Path, consequence: str) -> str:
 
 
 def sync(remote: str, work: Path) -> None:
+    # Before a fresh clone too: git would refuse the URL the same way on every attempt,
+    # so retrying it until the deadline only delays the caller's recovery path.
+    why = _unparseable(remote)
+    if why is not None:
+        raise Permanent(f"the --remote URL can't be parsed ({why}); pass a valid --remote")
     if not (work / ".git").is_dir():
         if work.exists() and any(work.iterdir()):
             raise Permanent(f"{work} exists and is not this tool's clone; pass an empty or missing --work")
