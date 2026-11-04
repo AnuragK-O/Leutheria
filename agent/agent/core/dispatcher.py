@@ -76,12 +76,7 @@ async def dispatch(
     # A "scoped" tool drives the GUI, so it's gated per target app for a
     # stretch of time rather than per call -- see _check_scope.
     if tool is not None and tool["safety"] == "scoped":
-        if imported_reasons:
-            approved, _ = await _confirm(tool_name, args, websocket, pending, intro_text, imported_reasons)
-            if not approved:
-                log_event("tool_declined", tool=tool_name, args=args, imported=imported.name)
-                return {"ok": False, "error": f"{tool_name} was declined by the user (or the confirmation prompt timed out)"}
-        allowed, error = await _check_scope(tool_name, tool, args, websocket, pending, intro_text)
+        allowed, error = await _check_scope(tool_name, tool, args, websocket, pending, intro_text, imported, imported_reasons)
         if not allowed:
             return {"ok": False, "error": error}
         return await _run_tool(tool_name, tool, args)
@@ -243,61 +238,86 @@ async def _run_tool(tool_name: str, tool: dict, args: dict) -> dict:
     return result
 
 
-def _scope_target(tool: dict, args: dict) -> str:
-    """Which app a scoped call would actually act on.
+def _scope_target(tool: dict, args: dict):
+    """Which app a scoped call would actually act on, resolved: a
+    ui_access.AppRef, or None. Raises ui_access.DeniedAppError when it lands
+    on a denied app, UIAccessError when a named app matches nothing.
 
     Declared per tool in the registry: "frontmost" means the call lands on
     whatever is in front at this instant (type_text), otherwise it names the
-    argument holding the app name (focus_app's "name"). Resolving it here
-    rather than inside the tool is what stops a tool from being able to act
-    on an app other than the one it was checked against.
+    argument holding the app name (focus_app's "name"), which is resolved
+    here the way focus_app will resolve it -- the running app it matches,
+    else the installed one. Resolving it here rather than inside the tool is
+    what stops a tool from being able to act on an app other than the one it
+    was checked against, and resolving before the prompt is what lets a
+    denied match be refused without asking and a grant be keyed by the app
+    rather than by how it was spelled. (Scoped tools are flagged "main", so
+    this NSWorkspace read is on the loop thread, where it is live.)
     """
     if tool.get("target") == "frontmost":
-        return ui_access.frontmost_app()
-    return (args.get(tool.get("target", ""), "") or "").strip()
+        return ui_access.frontmost()
+    name = (args.get(tool.get("target", ""), "") or "").strip()
+    return ui_access.target_app(name) if name else None
 
 
 async def _check_scope(
-    tool_name: str, tool: dict, args: dict, websocket, pending: dict, intro_text: str
+    tool_name: str, tool: dict, args: dict, websocket, pending: dict, intro_text: str,
+    imported=None, imported_reasons=(),
 ) -> tuple:
     """Gate a GUI tool on a live grant for its target app.
 
     Per-call confirmation is the wrong shape here -- nobody approves two
     hundred keystrokes -- so approval is per app and time-boxed: one prompt
     when the agent first reaches for an app, then it can drive that app
-    freely until the grant lapses. The denylist is checked first and is not
-    overridable by any grant or preference; everything else about a spoken
-    "yes" here reuses the existing confirmation round-trip.
+    freely until the grant lapses. The denylist is checked first, on the
+    resolved app (bundle ID, then name), and is not overridable by any grant
+    or preference; everything else about a spoken "yes" here reuses the
+    existing confirmation round-trip.
     """
-    app = _scope_target(tool, args)
-    if not app:
+    try:
+        app = _scope_target(tool, args)
+    except ui_access.DeniedAppError as e:
+        log_event("scope_denied", tool=tool_name, app=e.app)
+        return False, f"{e.app} can never be controlled by Leutheria"
+    except ui_access.UIAccessError as e:
+        return False, str(e)
+    if app is None:
         return False, f"{tool_name} could not determine which app it would act on"
 
-    if ui_access.is_denied(app):
-        log_event("scope_denied", tool=tool_name, app=app)
-        return False, f"{app} can never be controlled by Leutheria"
+    if ui_access.is_denied_app(app):
+        log_event("scope_denied", tool=tool_name, app=app.name, bundle_id=app.bundle_id)
+        return False, f"{app.name} can never be controlled by Leutheria"
 
-    if session.has_grant(app):
+    # A shared skill's step asks on its own (first run, withdrawn) -- after
+    # the denylist, so a step aimed at a denied app is refused without a
+    # card, and before the grant, which it can't skip.
+    if imported_reasons:
+        approved, _ = await _confirm(tool_name, args, websocket, pending, intro_text, list(imported_reasons))
+        if not approved:
+            log_event("tool_declined", tool=tool_name, args=args, imported=imported.name)
+            return False, f"{tool_name} was declined by the user (or the confirmation prompt timed out)"
+
+    if session.has_grant(app.key):
         return True, None
 
     # An explicit "don't ask about this one" from the Library turns the grant
     # requirement off, the same way it can for run_command. The denylist
     # above still stands.
     if not preferences.requires_confirmation(tool_name, True):
-        session.grant(app)
+        session.grant(app.key, name=app.name)
         return True, None
 
-    spoken = intro_text.strip() or f"Do you want to let me control {app}?"
-    approved, remember = await _confirm(tool_name, {**args, "app": app}, websocket, pending, spoken)
+    spoken = intro_text.strip() or f"Do you want to let me control {app.name}?"
+    approved, remember = await _confirm(tool_name, {**args, "app": app.name}, websocket, pending, spoken)
     if not approved:
-        log_event("scope_declined", tool=tool_name, app=app)
-        return False, f"permission to control {app} was declined by the user"
+        log_event("scope_declined", tool=tool_name, app=app.name)
+        return False, f"permission to control {app.name} was declined by the user"
 
     # The card offers "this session" / "always"; for an app grant both mean
     # "until the agent restarts", since no grant is ever written to disk.
     # A plain approval is the time-boxed default.
-    expires = session.grant(app, duration=None if remember else session.GRANT_DURATION)
-    log_event("scope_granted", tool=tool_name, app=app, expires=expires)
+    expires = session.grant(app.key, duration=None if remember else session.GRANT_DURATION, name=app.name)
+    log_event("scope_granted", tool=tool_name, app=app.name, bundle_id=app.bundle_id, expires=expires)
     return True, None
 
 

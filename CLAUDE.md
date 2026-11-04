@@ -180,8 +180,11 @@ task because they wait on the network. README "Shared skills (the public registr
 window rather than per call, because nobody approves 200 keystrokes. `core/ui_access.py`
 holds the two structural mitigations — `DENIED_APPS` (never drivable or readable, grant
 or no grant; Terminal is on it because typing into a shell would bypass the whole
-confirmation model) and secure-text-field redaction. `core/session.py` holds the grants;
-they are in-memory only and die with the process, unlike `trust.py`'s "always" scope.
+confirmation model) and secure-text-field redaction. The denylist is judged on the app a
+request *resolves* to, never the asked-for string, by bundle ID (`DENIED_BUNDLE_IDS`)
+first and display name as the fallback — names are localised. `core/session.py` holds
+the grants, keyed by the resolved app's bundle ID (`dispatcher._scope_target` resolves
+before it prompts); they are in-memory only and die with the process, unlike `trust.py`'s "always" scope.
 `type_text`/`press_keys` re-check focus before every chunk and abort mid-stream if it
 moves — the premise of a long session is that the user keeps using their machine, so
 that's a live TOCTOU hole, not an edge case.

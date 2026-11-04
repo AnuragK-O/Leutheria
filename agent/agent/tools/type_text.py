@@ -9,23 +9,27 @@ def type_text(text: str) -> dict:
     front at the moment of typing, so if the user switches to an ungranted
     app mid-session the text can't follow them there.
     """
-    front = ui_access.frontmost_app()
+    app = ui_access.frontmost()
+    front = app.name if app else ""
     if not front:
         return {"ok": False, "error": "nothing is frontmost to type into"}
 
     # The dispatcher already checked this a moment ago; checking again here is
     # the same belt-and-braces as dispatch() re-checking preferences, and it
     # closes the gap between that check and the first keystroke.
-    if not session.has_grant(front):
-        return {"ok": False, "error": f"no live permission to control {front}"}
-
-    if ui_access.is_denied(front):
+    # Bundle ID first, name as the fallback: a localised name
+    # ("Systemeinstellungen") is not on the name list. The grant is keyed the same way
+    # the dispatcher keyed it -- by the app, not by how it was spelled.
+    if ui_access.is_denied_app(app):
         return {"ok": False, "error": f"{front} can never be typed into"}
+
+    if not session.has_grant(app.key):
+        return {"ok": False, "error": f"no live permission to control {front}"}
 
     where = ui_access.focused_context()
 
     try:
-        outcome = ui_access.type_text(text, expected_app=front)
+        outcome = ui_access.type_text(text, expected_app=app)
     except ui_access.UIAccessError as e:
         return {"ok": False, "error": str(e)}
 
