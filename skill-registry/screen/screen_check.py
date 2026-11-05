@@ -283,7 +283,7 @@ def main():
         return res["max_severity"], {f["rule"]: f["severity"] for f in res["findings"]}
 
     R = static._RANK
-    check(static.ANALYZER_VERSION == 8, "analyzer version is 8")
+    check(static.ANALYZER_VERSION == 9, "analyzer version is 9")
     check(not hasattr(static, "_param_led_prose"), "the prose test is gone")
 
     # F1/F5/F6: forms that hid a command from the segment parser (QA r4: subst, brace,
@@ -556,6 +556,36 @@ def main():
     dt = _time.perf_counter() - t0
     check(dt < static.ANALYSIS_HARD_BUDGET_S + 3 and any(f["rule"] == "analysis_limit" for f in res["findings"]),
           f"the largest skill the format allows stops at the budget with analysis_limit: {dt:.1f}s")
+
+    # Analyzer 9: every shell rule stays linear. Feed analyze_shell a 40,000-character
+    # flood of each trigger word (alone, "-"-glued and "|"-glued) and require < 0.5 s,
+    # so the next quadratic WORD[^|;&]*X rule fails here instead of shipping.
+    triggers = ["awk", "xxd", "openssl", "base64", "printf", "chmod", "xattr", "networksetup",
+                "curl", "g" + "it config", "g" + "it push", "pkill", "killall", "cat", "dd", "sh", "bash",
+                "zsh", "python", "python3", "perl", "ruby", "node", "php", "lua", "deno", "bun",
+                "swift", "osascript", "source", "find", "nc", "wget", "sudo", "env", "xargs",
+                "f()", "a()", ":", "eval", "ssh", "scp", "tar", "sed", "tr", "rev"]
+    slow = []
+    for w in triggers:
+        for sep in (" ", " -", "|", " -r ", "\n"):
+            flood = ((w + sep) * (40000 // (len(w) + len(sep)) + 1))[:40000]
+            t0 = _time.perf_counter()
+            static.analyze_shell(flood, "w", static._Findings())
+            dt = _time.perf_counter() - t0
+            if dt >= 0.5:
+                slow.append(f"{w + sep!r}={dt:.2f}s")
+    check(not slow, f"every shell rule analyses a 40k trigger-word flood in < 0.5 s; slow: {slow}")
+
+    # Fork bombs across two functions, and hyphenated / non-ASCII function names.
+    fork_yes = [":(){ :|:&};:", "bomb() { bomb | bomb & }; bomb",
+                "a(){ b|b&; }; b(){ a|a&; }; a", "a-b(){ a-b|a-b& }; a-b",
+                "日(){ 日|日& }; 日"]
+    fork_no = ["xf() { f|f& }; xf", "f() { echo hi; }; f | cat", "echo hi | echo hi &",
+               "g(){ h|h&; }; h(){ echo ok; }; g"]
+    for src in fork_yes:
+        check(static._has_fork_bomb(src), f"fork bomb detected: {src!r}")
+    for src in fork_no:
+        check(not static._has_fork_bomb(src), f"not a fork bomb: {src!r}")
 
     # A bare parameter that receives a pipe is the program reading it: needs_review
     # (never block -- a markdown table row has the same shape), except in display-only

@@ -32,7 +32,7 @@ import time
 import unicodedata
 from urllib.parse import urlsplit
 
-ANALYZER_VERSION = 8  # 2: run_command auto-publish allowlist; 3: param_is_program exempt for a bare {param} text / display-only text; 4: param_receives_pipe, redirections and zsh modifiers before the program word; 5: set_clipboard text whose only dangerous finding is param_is_program is needs_review, not block; 6: that downgrade only for prose-shaped text, param_is_code (bash -c {x}), a backgrounded bare parameter ({x} & disown); 7: review floor for a parameter in pasted/typed text (param_in_pasted_text), the prose test removed, param_is_code finds the code argument per interpreter, backgrounding past redirections and groups; 8: bare means spaces only on the paste sinks, a backgrounded pipeline or &&/|| list led by a parameter, linear brace-expansion and fork-bomb rules, an analysis budget in characters, shortest variants first (analysis_limit)
+ANALYZER_VERSION = 9  # 2: run_command auto-publish allowlist; 3: param_is_program exempt for a bare {param} text / display-only text; 4: param_receives_pipe, redirections and zsh modifiers before the program word; 5: set_clipboard text whose only dangerous finding is param_is_program is needs_review, not block; 6: that downgrade only for prose-shaped text, param_is_code (bash -c {x}), a backgrounded bare parameter ({x} & disown); 7: review floor for a parameter in pasted/typed text (param_in_pasted_text), the prose test removed, param_is_code finds the code argument per interpreter, backgrounding past redirections and groups; 8: bare means spaces only on the paste sinks, a backgrounded pipeline or &&/|| list led by a parameter, linear brace-expansion and fork-bomb rules, an analysis budget in characters, shortest variants first (analysis_limit)
 
 BLOCK = "block"
 REVIEW = "needs_review"
@@ -172,7 +172,7 @@ def hidden_chars(text: str) -> tuple:
         o = ord(ch)
         if ch in BIDI or 0xE0000 <= o <= 0xE007F:
             return BLOCK, "bidirectional-override or Unicode tag characters (text that displays differently from what it is)"
-        if ch in ZERO_WIDTH or (o < 32 and ch not in "\n\t") or o == 0x7F or 0x80 <= o < 0xA0:
+        if ch in ZERO_WIDTH or (o < 32 and ch not in "; 9: linear word-then-tail rules (chmod/xattr/pkill/curl/dd/decode/awk/reads_local/git), fork bombs across two functions and hyphenated/non-ASCII names\n\t") or o == 0x7F or 0x80 <= o < 0xA0:
             sev, label = REVIEW, "zero-width or control characters"
         elif 0xFE00 <= o <= 0xFE0F or 0xE0100 <= o <= 0xE01EF:
             sev, label = REVIEW, "variation selectors (can carry hidden data)"
@@ -274,42 +274,125 @@ _BRACE_GROUP_RE = re.compile(r"\{([^{}\s,]*,[^{}\s]*)\}")
 
 
 def _has_fork_bomb(s: str) -> bool:
-    """name() { ... name | name ... }: the old single regex
-    `([a-z_:]\\w*|:)\\s*\\(\\)\\s*\\{[^}]*\\1\\s*\\|\\s*\\1` restarted its greedy name at
-    every character of a long word (quadratic; 4 s on 30,000 characters). Now each
-    "() {" is found first, then the name before it: the whole word (any length, as
-    the old regex allowed), and the last 64 characters' name as analyzer 8 had it,
-    then "name | name" anywhere before the body's first "}" (no length cap: a padded
-    body is still a fork bomb -- QA, analyzer 8). The old regex also matched a
-    suffix of the word ("xf() { f|f }"), which is not a fork bomb in any shell."""
-    checked = set()
-    for m in re.finditer(r"\(\)\s*\{", s):
-        end = m.start()
-        while end > 0 and s[end - 1].isspace():
-            end -= 1
-        start = end
-        while start > 0 and end - start < 4096 and (s[start - 1] == ":" or _WORD_CHAR_RE.match(s[start - 1])):
-            start -= 1
-        word = s[start:end]
-        names = set()
-        lead = re.search(r"[a-z_:]", word)
-        if lead:
-            names.add(word[lead.start():])
-        nm = re.search(r"(?:[a-z_:]\w{0,63}|:)\Z", word[-80:])
-        if nm:
-            names.add(nm.group(0))
+    """A function that forks without bound by duplicating a defined function (`F|F`)
+    in the background, where following the duplications loops back: the self form
+    `:(){ :|:&};:` and the two-function form `a(){ b|b&; }; b(){ a|a&; }; a`. The
+    name may be hyphenated or non-ASCII, and a word ending in ":" also defines ":"
+    (the shell no-op, so `x:(){ :|:& };:` is still a bomb, as analyzer 8 had it).
+    Linear: the definitions are found once; an edge primary(F)->owner(G) is added when
+    F's body duplicates a defined G; a cycle (a self-loop included) is a fork bomb.
+    A `G|G` whose G is not a defined function, or a one-way call with no loop back,
+    is not flagged (`xf(){ f|f }`, `g(){ h|h&; }; h(){ echo ok; }`)."""
+    owner, bodies = {}, {}
+    for m in re.finditer(r"(?:^|[\s;&|){}(])([^\s;&|(){}<>=]+)\(\)\s*\{", s):
+        word = m.group(1)
+        if word in bodies:
+            continue
         close = s.find("}", m.end())
-        close = len(s) if close < 0 else close
-        for name in names:
-            if (name, close) in checked:
-                continue
-            checked.add((name, close))
-            if re.compile(re.escape(name) + r"\s*\|\s*" + re.escape(name)).search(s, m.end(), close):
+        bodies[word] = s[m.end(): (close if close >= 0 else len(s))]
+        owner.setdefault(word, word)
+        if word.endswith(":"):
+            owner.setdefault(":", word)
+    if not owner:
+        return False
+    dup = re.compile(r"([^\s;&|(){}<>=]+)[ \t]*\|[ \t]*\1(?![^\s;&|(){}<>=])")
+    edges = {}
+    for word, body in bodies.items():
+        if "|" not in body:
+            continue
+        tgt = {owner[pm.group(1)] for pm in dup.finditer(body) if pm.group(1) in owner}
+        if tgt:
+            edges[word] = tgt
+    WHITE, GREY, BLACK = 0, 1, 2
+    color = {}
+
+    def cyclic(node):
+        color[node] = GREY
+        for nxt in edges.get(node, ()):  # noqa
+            c = color.get(nxt, WHITE)
+            if c == GREY or (c == WHITE and cyclic(nxt)):
                 return True
+        color[node] = BLACK
+        return False
+
+    return any(color.get(n, WHITE) == WHITE and cyclic(n) for n in edges)
+
+
+
+_SH_TOK = re.compile(r"(?:^|[;|&(/])(?:sh|bash|zsh|dash|ksh|fish|csh)$")
+_PY_TOK = re.compile(r"(?:python[0-9.]*|perl|ruby|node|php|lua|deno|bun|swift)$")
+_SH_FLAG = re.compile(r"-[a-z]*c\b")
+_PY_FLAG = re.compile(r"-[a-z]*[ecr]\b")
+
+
+def _has_inline_exec(view):
+    """`INTERP (-opt )* -c/-e/-r` -- a shell or interpreter run with inline code,
+    the two interpreter-anchored branches of the old `inline` regex, one left-to-right
+    pass over whitespace tokens. Linear: the old py branch had no left boundary, so on
+    a flood like "lua -lua -lua" it re-anchored at every "lua" (O(n^2)); here the
+    interpreter sets `active` and the following option tokens are checked in place.
+    sh-family wants an anchored name (start, a metacharacter or "/"); the py-family
+    name may be any suffix of a token, as the old branch allowed ("xpython -e")."""
+    active = None
+    for tok in view.split():
+        opt = len(tok) >= 2 and tok[0] == "-"   # a lone "-" is a word, not a -\S+ option
+        if opt and ((active == "sh" and _SH_FLAG.match(tok)) or (active == "py" and _PY_FLAG.match(tok))):
+            return True
+        na = "py" if _PY_TOK.search(tok) else "sh" if _SH_TOK.search(tok) else None
+        if na is not None:
+            active = na          # this token ends in an interpreter name
+        elif not opt:
+            active = None        # a plain word ends the option run; an option keeps it
     return False
 
 
-_WORD_CHAR_RE = re.compile(r"\w")
+def _seg_word_then(text, word, tail, splitter):
+    """Linear equivalent of `WORD[^SEP]*TAIL`: some maximal run of `text` with no
+    SEP char holds a `word` match and a `tail` match at or after its end. One split
+    pass and one search for each per segment -- no backtracking over a long word, so
+    O(n) where `WORD[^SEP]*TAIL` backtracked O(n^2) on a flood of WORD (analyzer 9)."""
+    for seg in splitter.split(text):
+        m = word.search(seg)
+        if m is not None and tail.search(seg, m.end()) is not None:
+            return True
+    return False
+
+
+def _reader_piped_to_net(text, reader, netprog):
+    r"""Linear equivalent of `READER[^|;&]*\|\s*(?:\S*/)?NET`: a segment holding a
+    READER, ended by a `|` (not `;`/`&`), whose next segment starts with an optional
+    path then NET. Splits once keeping separators."""
+    parts = _SPLIT_KEEP.split(text)
+    for idx in range(0, len(parts) - 2, 2):
+        if parts[idx + 1] == "|" and reader.search(parts[idx]) is not None \
+                and netprog.match(parts[idx + 2]) is not None:
+            return True
+    return False
+
+
+_SPLIT_PS_AMP = re.compile(r"[;|&]")
+_SPLIT_PIPE_SEMI = re.compile(r"[|;]")
+_SPLIT_KEEP = re.compile(r"([|;&])")
+_RE_AWK = re.compile(r"\bawk\b"); _RE_SYSTEM = re.compile(r"\bsystem\s*\(")
+_RE_XXD = re.compile(r"\bxxd\b"); _RE_XXD_T = re.compile(r"-r")
+_RE_OPENSSL = re.compile(r"\bopenssl\b"); _RE_OPENSSL_T = re.compile(r"-d\b|base64|enc")
+_RE_B64 = re.compile(r"\bbase64\b"); _RE_B64_T = re.compile(r"-d|-D|--decode")
+_RE_PRINTF = re.compile(r"\bprintf\b"); _RE_PRINTF_T = re.compile(r"%b|\\x")
+_RE_CHMOD = re.compile(r"\bchmod\b"); _RE_CHMOD_T = re.compile(r"\+[rwx]*x|[0-7]?[1357][0-7]{2}\b|a\+x|u\+x")
+_RE_XATTR = re.compile(r"\bxattr\b"); _RE_XATTR_T = re.compile(r"-[a-z]*[dcr]|quarantine")
+_RE_NETSETUP = re.compile(r"\bnetworksetup\b")
+_RE_NETSETUP_T = re.compile(r"-set(?:web|secureweb|socksfirewall|autoproxy|dns|proxy)")
+_RE_CURL = re.compile(r"\bcurl\b"); _RE_CURL_O_T = re.compile(r"\s-[a-z]*o")
+_RE_GITCONFIG = re.compile(r"\bgit\s+config\b")
+_RE_GITCONFIG_T = re.compile(r"--global|--system|core\.|alias\.|credential|url\.|include\.|filter\.")
+_RE_PKILL = re.compile(r"\b(?:pkill|killall)\b"); _RE_PKILL_T = re.compile(r"python|electron|leutheria|-f\s")
+_RE_DD = re.compile(r"\bdd\b"); _RE_DD_T = re.compile(r"of=/dev/")
+_RE_GITPUSH = re.compile(r"\bgit\s+push\b"); _RE_GITPUSH_T = re.compile(r"--force|-f\b")
+_RE_READER = re.compile(
+    r"\b(?:cat|pbpaste|env|printenv|security|screencapture|ls|find|tar|zip|head|tail|defaults|"
+    r"sqlite3|ditto|base64|history|ps|ifconfig|whoami|hostname|system_profiler)\b")
+_RE_NETPROG = re.compile(
+    r"\s*(?:\S*/)?(?:curl|wget|nc|ncat|netcat|socat|telnet|mail|mailx|sendmail|ssh|scp|openssl|xargs)")
 
 
 _ASSIGN_RE = re.compile(
@@ -546,9 +629,8 @@ def analyze_shell(raw: str, where: str, F: _Findings, *, depth: int = 0, ctx: di
         F.add(where, "heredoc_exec", BLOCK, "feeds an inline script to an interpreter on stdin")
     if "eval" in progs:
         F.add(where, "eval", BLOCK, "uses eval to run text as code")
-    inline = any(re.search(r"(?:^|[\s;|&(/])(?:sh|bash|zsh|dash|ksh|fish|csh)\s+(?:-\S+\s+)*-[a-z]*c\b|"
-                           r"(?:python[0-9.]*|perl|ruby|node|php|lua|deno|bun|swift)\s+(?:-\S+\s+)*-[a-z]*[ecr]\b|"
-                           r"\bosascript\b|\bawk\b[^|;]*\bsystem\s*\(", v) for v in allv)
+    inline = any(_has_inline_exec(v) or re.search(r"\bosascript\b", v)
+                 or _seg_word_then(v, _RE_AWK, _RE_SYSTEM, _SPLIT_PIPE_SEMI) for v in allv)
     if inline:
         F.add(where, "inline_interpreter", REVIEW, "runs inline code through a shell or interpreter")
     # "bash -c {x}", "python3 -W ignore -c {x}", "node --eval={x}": the parameter is
@@ -559,9 +641,13 @@ def analyze_shell(raw: str, where: str, F: _Findings, *, depth: int = 0, ctx: di
     if {"source", "."} & set(raw_cmd_words) or re.search(r"(?:^|[;&|]\s*)(?:source|\.)\s+\S", deq):
         F.add(where, "source_file", REVIEW, "sources a file into the shell")
 
-    decoder = bool(progs & {"base64", "base32", "uudecode", "basenc"}) or bool(
-        re.search(r"\bxxd\b[^|;]*-r|\bopenssl\b[^|;]*(?:-d\b|base64|enc)|\bbase64\b[^|;]*(?:-d|-D|--decode)|\bprintf\b[^|;]*(?:%b|\\x)|\becho\s+-e\b|\bb64decode|frombase64|\bcodecs\.decode|\bbytes\.fromhex|\bunhexlify|\bchr\s*\(", lit + " " + deob)
-    )
+    _dec_text = lit + " " + deob
+    decoder = bool(progs & {"base64", "base32", "uudecode", "basenc"}) \
+        or _seg_word_then(_dec_text, _RE_XXD, _RE_XXD_T, _SPLIT_PIPE_SEMI) \
+        or _seg_word_then(_dec_text, _RE_OPENSSL, _RE_OPENSSL_T, _SPLIT_PIPE_SEMI) \
+        or _seg_word_then(_dec_text, _RE_B64, _RE_B64_T, _SPLIT_PIPE_SEMI) \
+        or _seg_word_then(_dec_text, _RE_PRINTF, _RE_PRINTF_T, _SPLIT_PIPE_SEMI) \
+        or bool(re.search(r"\becho\s+-e\b|\bb64decode|frombase64|\bcodecs\.decode|\bbytes\.fromhex|\bunhexlify|\bchr\s*\(", _dec_text))
     if decoder:
         F.add(where, "decoder", REVIEW, "decodes encoded data at run time")
         if inline or "eval" in progs or any(pipe_interp.search(v) for v in allv) or re.search(
@@ -599,8 +685,8 @@ def analyze_shell(raw: str, where: str, F: _Findings, *, depth: int = 0, ctx: di
         F.add(where, "remote_package_exec", BLOCK, "downloads and runs a package in one step")
 
     # -- execution of files (staging) --
-    chmod_x = bool(re.search(r"\bchmod\b[^;|&]*(?:\+[rwx]*x|[0-7]?[1357][0-7]{2}\b|a\+x|u\+x)", deob))
-    quarantine = bool(re.search(r"\bxattr\b[^;|&]*(?:-[a-z]*[dcr]|quarantine)", deob)) or "lsquarantine" in deob
+    chmod_x = _seg_word_then(deob, _RE_CHMOD, _RE_CHMOD_T, _SPLIT_PS_AMP)
+    quarantine = _seg_word_then(deob, _RE_XATTR, _RE_XATTR_T, _SPLIT_PS_AMP) or "lsquarantine" in deob
     exec_path = any(re.match(r"(?:\./|/tmp/|/private/|/var/folders/|/users/shared/|~/|\$\{?home\}?/|/volumes/)", w)
                     and not re.match(r"(?:~|\$\{?home\}?)/(?:\.local/bin|bin)/", w) for w in command_words(deob))
     runs_script = any(re.search(r"(?:^|[\s;|&(/])(?:sh|bash|zsh|python[0-9.]*|perl|ruby|node|osascript|php)\s+(?:-\S+\s+)*[~./$a-z]", v) for v in (deq, deob))
@@ -619,7 +705,7 @@ def analyze_shell(raw: str, where: str, F: _Findings, *, depth: int = 0, ctx: di
     subst = bool(re.search(r"\$\(|`|<\(", lit + deq))
     env_ref = bool(ENV_VAR_RE.search(deq))
     upload = bool(re.search(r"(?:\s-d\s*@|--data(?:-binary|-raw|-urlencode)?\s*[=\s]?@|\s-f\s+\S*=@|\s-t\s+\S|--upload-file|--form\s+\S*@|-x\s*(?:post|put)|--request\s+(?:post|put)|\s-d\s|--data\b|--post-(?:file|data))", deob))
-    reads_local = bool(re.search(r"\b(?:cat|pbpaste|env|printenv|security|screencapture|ls|find|tar|zip|head|tail|defaults|sqlite3|ditto|base64|history|ps|ifconfig|whoami|hostname|system_profiler)\b[^|;&]*\|\s*(?:\S*/)?(?:curl|wget|nc|ncat|netcat|socat|telnet|mail|mailx|sendmail|ssh|scp|openssl|xargs)", deob))
+    reads_local = _reader_piped_to_net(deob, _RE_READER, _RE_NETPROG)
     if (fetch or raw_net or progs & DNS_PING or progs & MAILERS) and (subst or env_ref or upload or reads_local):
         F.add(where, "exfiltration", BLOCK, "sends local data (command output, environment, files) to the network")
     if progs & MAILERS:
@@ -656,7 +742,8 @@ def analyze_shell(raw: str, where: str, F: _Findings, *, depth: int = 0, ctx: di
     # -- persistence --
     writes = bool(progs & WRITER_PROGS) or bool(re.search(r">|\bsed\s+-i|\bperl\s+-[a-z]*i|\bdefaults\s+write", deq))
     strong_writes = bool(progs & {"tee", "cp", "mv", "ln", "install", "ditto", "rsync", "touch", "mkdir", "unzip", "plutil"}) or bool(
-        re.search(r">|\bsed\s+-i|\bdefaults\s+write|\btar\s+-?[a-z]*x|\bcurl\b[^;|&]*\s-[a-z]*o|\bwget\b|\bgit\s+(?:clone|pull|init|commit|checkout|merge)", deq))
+        re.search(r">|\bsed\s+-i|\bdefaults\s+write|\btar\s+-?[a-z]*x|\bwget\b|\bgit\s+(?:clone|pull|init|commit|checkout|merge)", deq)) \
+        or _seg_word_then(deq, _RE_CURL, _RE_CURL_O_T, _SPLIT_PS_AMP)
     facts["writes"] = facts["writes"] or strong_writes
     if progs & PERSIST_PROGS - {"at", "batch"} or re.search(r"(?:^|[;&|]\s*)at\s+(?:now|\d|-f|midnight|noon|teatime)", deob):
         F.add(where, "persistence", BLOCK, "schedules code to run later (launchctl, cron, at, periodic)")
@@ -669,7 +756,7 @@ def analyze_shell(raw: str, where: str, F: _Findings, *, depth: int = 0, ctx: di
         F.add(where, "home_dotfile", BLOCK if writes else REVIEW, "touches a hidden file or folder in the home directory")
     if re.search(r"\bdefaults\s+write\b", deob):
         F.add(where, "defaults_write", REVIEW, "changes an app's preferences")
-    if re.search(r"\bgit\s+config\b[^;|&]*(?:--global|--system|core\.|alias\.|credential|url\.|include\.|filter\.)", deob):
+    if _seg_word_then(deob, _RE_GITCONFIG, _RE_GITCONFIG_T, _SPLIT_PS_AMP):
         F.add(where, "git_config", BLOCK, "changes git configuration that can run commands later")
 
     # -- the agent itself --
@@ -677,7 +764,7 @@ def analyze_shell(raw: str, where: str, F: _Findings, *, depth: int = 0, ctx: di
         F.add(where, "agent_tamper", BLOCK, "touches Leutheria's own state, settings, token or socket")
     elif "leutheria" in deob:
         F.add(where, "agent_mention", REVIEW, "mentions Leutheria's install")
-    if re.search(r"\b(?:pkill|killall)\b[^;|&]*(?:python|electron|leutheria|-f\s)", deob):
+    if _seg_word_then(deob, _RE_PKILL, _RE_PKILL_T, _SPLIT_PS_AMP):
         F.add(where, "kills_agent", REVIEW, "kills processes by pattern")
 
     # -- destruction --
@@ -710,14 +797,15 @@ def analyze_shell(raw: str, where: str, F: _Findings, *, depth: int = 0, ctx: di
         deletes = True
         F.add(where, "delete", REVIEW, "deletes files")
     facts["deletes"] = facts["deletes"] or deletes
-    if progs & DISK or re.search(r"\bdd\b[^;|&]*of=/dev/|>\s*/dev/(?:r?disk|sd)", deob):
+    if progs & DISK or _seg_word_then(deob, _RE_DD, _RE_DD_T, _SPLIT_PS_AMP) or re.search(r">\s*/dev/(?:r?disk|sd)", deob):
         F.add(where, "disk_destroy", BLOCK, "erases or overwrites disks or securely shreds data")
     if _has_fork_bomb(deob):
         F.add(where, "fork_bomb", BLOCK, "defines a fork bomb")
     if re.search(r"\b(?:chmod|chown|chflags)\s+-[a-z]*r[a-z]*\s+\S+\s+(\S+)", deob):
         tgt = re.search(r"\b(?:chmod|chown|chflags)\s+-[a-z]*r[a-z]*\s+\S+\s+(\S+)", deob).group(1)
         F.add(where, "recursive_permissions", BLOCK if _is_broad(tgt) else REVIEW, "changes ownership/permissions recursively")
-    if re.search(r"\bgit\s+(?:reset\s+--hard|clean\s+-[a-z]*f|push\s+[^;|&]*(?:--force|-f\b)|checkout\s+--\s+\.|branch\s+-d)", deob):
+    if re.search(r"\bgit\s+(?:reset\s+--hard|clean\s+-[a-z]*f|checkout\s+--\s+\.|branch\s+-d)", deob) \
+            or _seg_word_then(deob, _RE_GITPUSH, _RE_GITPUSH_T, _SPLIT_PS_AMP):
         F.add(where, "git_destructive", REVIEW, "discards or overwrites git history or working-tree changes")
     if re.search(r"\b(?:shutdown|reboot|halt)\b", deob):
         F.add(where, "power", REVIEW, "shuts down or restarts the Mac")
