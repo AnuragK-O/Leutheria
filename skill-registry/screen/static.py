@@ -32,7 +32,7 @@ import time
 import unicodedata
 from urllib.parse import urlsplit
 
-ANALYZER_VERSION = 8  # 2: run_command auto-publish allowlist; 3: param_is_program exempt for a bare {param} text / display-only text; 4: param_receives_pipe, redirections and zsh modifiers before the program word; 5: set_clipboard text whose only dangerous finding is param_is_program is needs_review, not block; 6: that downgrade only for prose-shaped text, param_is_code (bash -c {x}), a backgrounded bare parameter ({x} & disown); 7: review floor for a parameter in pasted/typed text (param_in_pasted_text), the prose test removed, param_is_code finds the code argument per interpreter, backgrounding past redirections and groups; 8: bare means spaces only on the paste sinks, a backgrounded pipeline or &&/|| list led by a parameter, linear brace-expansion and fork-bomb rules, an analysis budget (analysis_limit)
+ANALYZER_VERSION = 8  # 2: run_command auto-publish allowlist; 3: param_is_program exempt for a bare {param} text / display-only text; 4: param_receives_pipe, redirections and zsh modifiers before the program word; 5: set_clipboard text whose only dangerous finding is param_is_program is needs_review, not block; 6: that downgrade only for prose-shaped text, param_is_code (bash -c {x}), a backgrounded bare parameter ({x} & disown); 7: review floor for a parameter in pasted/typed text (param_in_pasted_text), the prose test removed, param_is_code finds the code argument per interpreter, backgrounding past redirections and groups; 8: bare means spaces only on the paste sinks, a backgrounded pipeline or &&/|| list led by a parameter, linear brace-expansion and fork-bomb rules, an analysis budget in characters, shortest variants first (analysis_limit)
 
 BLOCK = "block"
 REVIEW = "needs_review"
@@ -42,11 +42,60 @@ _RANK = {INFO: 0, REVIEW: 1, BLOCK: 2}
 # The analysis budget (analyzer 8). Every rule is meant to be linear, but a skill
 # can still be big: 50 steps x up to 60 parameter variants x 10,000 characters. Past
 # these limits the rest is not analysed and an analysis_limit finding (needs_review)
-# says so -- a person looks instead of CI spending minutes.
-MAX_STRING = 10_000            # validate.MAX_STRING: the skill format's longest string
-ANALYSIS_MAX_CHARS = 40_000    # one text with its parameter values filled in
-ANALYSIS_SOFT_BUDGET_S = 1.5   # after this, only the all-unknown variant of each value
-ANALYSIS_HARD_BUDGET_S = 5.0   # after this, nothing more
+# names the argument that was cut -- a person looks instead of CI spending minutes.
+#
+# The budget is counted in characters, not seconds, so the verdict never depends on
+# how fast or busy the CI machine is (QA, analyzer 8): the all-unknown variant of
+# every value is always analysed, and the other variants (defaults, enum values) are
+# chosen before analysis starts, shortest first across the whole skill, while their
+# total stays within ANALYSIS_BUDGET_CHARS. Shortest first, not step order, so long
+# decoy steps can't use the budget up before a short "ls {mode}" whose enum value is
+# the dangerous one. The wall-clock deadline is only a safety net for a slow rule
+# nobody has found yet; on a correct analyzer it never fires.
+MAX_STRING = 10_000                # validate.MAX_STRING: the skill format's longest string
+ANALYSIS_MAX_CHARS = 40_000        # one text with its parameter values filled in
+ANALYSIS_BUDGET_CHARS = 1_500_000  # extra variants, shortest first
+ANALYSIS_VALUE_COST = 200          # what one analysed value costs on top of its length
+ANALYSIS_HARD_BUDGET_S = 20.0      # safety net only (nondeterministic), see above
+
+
+def _plan_variants(steps, variants) -> tuple:
+    """Which extra variants (index > 0) of which (step, argument) are analysed: a
+    deterministic function of the skill alone. Returns (allowed, skipped), sets of
+    (step index, argument, variant index); a variant in neither gives the same text
+    as an earlier one of that argument. Lengths are computed, not substituted."""
+    cands, allowed, skipped = [], set(), set()
+    for i, step in enumerate(steps if isinstance(steps, list) else []):
+        args = step.get("args") if isinstance(step, dict) else None
+        if not isinstance(args, dict):
+            continue
+        for arg, raw in args.items():
+            if not isinstance(raw, str) or len(raw) > MAX_STRING:
+                continue
+            counts = {}
+            for m in TOKEN_RE.finditer(raw):
+                if m.group(1):
+                    counts[m.group(1)] = counts.get(m.group(1), 0) + 1
+            if not counts:
+                continue
+            base_len = len(substitute(raw, {}))
+            seen = {tuple((n, False, None) for n in sorted(counts))}
+            for k, values in enumerate(variants):
+                key = tuple((n, n in values, str(values[n]) if n in values else None) for n in sorted(counts))
+                if k == 0 or key in seen:
+                    continue
+                seen.add(key)
+                length = base_len + sum(c * (len(str(values[n])) - len(f"{PARAM_MARK}_{n}"))
+                                        for n, c in counts.items() if n in values)
+                if length > ANALYSIS_MAX_CHARS:
+                    allowed.add((i, arg, k))  # not analysed either way; each_value says so
+                else:
+                    cands.append((length, i, arg, k))
+    spent = 0
+    for length, i, arg, k in sorted(cands):
+        spent += length + ANALYSIS_VALUE_COST
+        (allowed if spent <= ANALYSIS_BUDGET_CHARS else skipped).add((i, arg, k))
+    return allowed, skipped
 
 
 def worst(severities) -> str | None:
@@ -228,19 +277,39 @@ def _has_fork_bomb(s: str) -> bool:
     """name() { ... name | name ... }: the old single regex
     `([a-z_:]\\w*|:)\\s*\\(\\)\\s*\\{[^}]*\\1\\s*\\|\\s*\\1` restarted its greedy name at
     every character of a long word (quadratic; 4 s on 30,000 characters). Now each
-    "() {" is found first, then the name just before it (at most 64 characters) and
-    the "name | name" before the body's first "}"."""
+    "() {" is found first, then the name before it: the whole word (any length, as
+    the old regex allowed), and the last 64 characters' name as analyzer 8 had it,
+    then "name | name" anywhere before the body's first "}" (no length cap: a padded
+    body is still a fork bomb -- QA, analyzer 8). The old regex also matched a
+    suffix of the word ("xf() { f|f }"), which is not a fork bomb in any shell."""
+    checked = set()
     for m in re.finditer(r"\(\)\s*\{", s):
-        before = s[max(0, m.start() - 80): m.start()].rstrip()
-        nm = re.search(r"(?:[a-z_:]\w{0,63}|:)\Z", before)
-        if not nm:
-            continue
-        name = re.escape(nm.group(0))
+        end = m.start()
+        while end > 0 and s[end - 1].isspace():
+            end -= 1
+        start = end
+        while start > 0 and end - start < 4096 and (s[start - 1] == ":" or _WORD_CHAR_RE.match(s[start - 1])):
+            start -= 1
+        word = s[start:end]
+        names = set()
+        lead = re.search(r"[a-z_:]", word)
+        if lead:
+            names.add(word[lead.start():])
+        nm = re.search(r"(?:[a-z_:]\w{0,63}|:)\Z", word[-80:])
+        if nm:
+            names.add(nm.group(0))
         close = s.find("}", m.end())
-        body = s[m.end(): min(close if close >= 0 else len(s), m.end() + 4096)]  # a fork bomb is short
-        if re.search(name + r"\s*\|\s*" + name, body):
-            return True
+        close = len(s) if close < 0 else close
+        for name in names:
+            if (name, close) in checked:
+                continue
+            checked.add((name, close))
+            if re.compile(re.escape(name) + r"\s*\|\s*" + re.escape(name)).search(s, m.end(), close):
+                return True
     return False
+
+
+_WORD_CHAR_RE = re.compile(r"\w")
 
 
 _ASSIGN_RE = re.compile(
@@ -466,7 +535,7 @@ def analyze_shell(raw: str, where: str, F: _Findings, *, depth: int = 0, ctx: di
 
     # -- execution of strings --
     pipe_interp = re.compile(
-        r"\|\s*(?:(?:sudo|env|exec|command|nohup|time|xargs(?:\s+-\S+)*)\s+)*(?:\S*/)?"
+        r"\|\s*(?:(?:sudo|env|exec|command|nohup|time|xargs(?:\s+-[^\s|]+)*)\s+)*(?:[^\s|]*/)?"
         r"(?:sh|bash|zsh|dash|ksh|fish|csh|tcsh|python[0-9.]*|perl|ruby|node|php|lua|osascript|swift|tclsh|source|eval|\.)(?:\s|$|;|\))(?!\s*-m\s+json\.tool\b)"
     )
     if any(pipe_interp.search(v) for v in allv):
@@ -991,9 +1060,12 @@ def _param_backgrounded(text: str) -> str | None:
     one; groups and substitutions are opened up, since "( {x} ) &" backgrounds {x}."""
     mark = PARAM_MARK.lower()
     view = shell_views(text)["dequoted"].replace("\r", "").replace("|&", "|")
-    view = re.sub(r"\d*&>>?\s*\S+|\d*[<>]&\d*-?|\d*(?:>>?|<)\s*\S+", " ", view)  # redirections
+    # redirections; the leading fd number only from the start of a digit run, or a
+    # flood of digits is quadratic (each position rescans the run)
+    view = re.sub(r"(?:(?<!\d)\d+)?(?:&>>?\s*\S+|[<>]&\d*-?|(?:>>?|<)\s*\S+)", " ", view)
     view = re.sub(r"\$\(|[`(){}]", " ", view)                                   # groups, substitutions
     view = re.sub(r";\s*&(?![&>])", " &", view)                                  # "{ x; } &" -> "x &"
+    view = re.sub(r"(\|\||&&|\|)(?:[ \t]*\n)+", r"\1 ", view)  # a line break after | && || continues the list
     found, pos = None, 0
     # "&" backgrounds the whole pipeline or && / || list before it, so a parameter
     # leading any command of that list counts ("{x} | cat &", "{x} && echo ok &",
@@ -1213,9 +1285,10 @@ def analyze_step(i: int, step: dict, tool: dict, variants: list, F: _Findings, f
     def each_value(arg):
         """The argument's text under each parameter variant, within the analysis
         budget (analyzer 8): a template longer than the skill format allows, or a
-        substituted text past ANALYSIS_MAX_CHARS, is not analysed; past the soft
-        deadline only the all-unknown variant is; past the hard one nothing more is.
-        Each cut is an analysis_limit finding (needs_review), never a silent skip."""
+        substituted text past ANALYSIS_MAX_CHARS, is not analysed; an extra variant
+        _plan_variants left out of the character budget is not analysed; past the
+        safety-net deadline nothing more is. Each cut is an analysis_limit finding
+        (needs_review) on this argument, never a silent skip."""
         raw = args.get(arg)
         if not isinstance(raw, str):
             if raw is not None:
@@ -1226,15 +1299,18 @@ def analyze_step(i: int, step: dict, tool: dict, variants: list, F: _Findings, f
             F.add(where, "analysis_limit", REVIEW,
                   f"text longer than the skill format's {MAX_STRING} characters was not analysed")
             return
-        seen = set()
-        for values in variants:
+        seen, cut = set(), 0
+        allowed, skipped = facts.get("plan", (None, set()))
+        for k, values in enumerate(variants):
+            if k and allowed is not None and (i, arg, k) not in allowed:
+                cut += (i, arg, k) in skipped  # else: the same text as an earlier variant
+                continue
             v = substitute(raw, values)
             if v in seen:
                 continue
-            now = time.monotonic()
-            if now > facts.get("hard_deadline", now + 1) or (seen and now > facts.get("soft_deadline", now + 1)):
-                F.add("steps", "analysis_limit", REVIEW,
-                      "the skill took too long to analyse, so some steps or parameter values were not checked")
+            if time.monotonic() > facts.get("hard_deadline", float("inf")):
+                F.add(where, "analysis_limit", REVIEW,
+                      "the skill took too long to analyse, so this step was not fully checked")
                 return
             seen.add(v)
             if len(v) > ANALYSIS_MAX_CHARS:
@@ -1242,6 +1318,10 @@ def analyze_step(i: int, step: dict, tool: dict, variants: list, F: _Findings, f
                       "text with its parameter values filled in is too long to analyse")
                 continue
             yield v
+        if cut:
+            F.add(where, "analysis_limit", REVIEW,
+                  f"{cut} of this text's parameter values (defaults or enum values) were not analysed: "
+                  "the skill is past the analysis budget, so check them by hand")
 
     if name == "run_command":
         for v in each_value("cmd"):
@@ -1485,9 +1565,7 @@ def analyze(skill, catalog: dict) -> dict:
         "staged_payload": False, "has_run_command": False, "hosts": set(), "cmd_programs": set(), "cmd_words": set(),
         "staged_rules": set(),
     }
-    started = time.monotonic()
-    facts["soft_deadline"] = started + ANALYSIS_SOFT_BUDGET_S
-    facts["hard_deadline"] = started + ANALYSIS_HARD_BUDGET_S
+    facts["hard_deadline"] = time.monotonic() + ANALYSIS_HARD_BUDGET_S
 
     if not isinstance(skill, dict):
         F.add("skill", "structure", BLOCK, "skill file is not a JSON object")
@@ -1505,6 +1583,7 @@ def analyze(skill, catalog: dict) -> dict:
         F.add("source", "structure", BLOCK, "registry files must not carry a source field")
     schema = skill.get("input_schema") if isinstance(skill.get("input_schema"), dict) else {}
     variants = param_variants(schema)
+    facts["plan"] = _plan_variants(steps, variants)
 
     used = []
     for i, step in enumerate(steps):
