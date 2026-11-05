@@ -32,7 +32,7 @@ import time
 import unicodedata
 from urllib.parse import urlsplit
 
-ANALYZER_VERSION = 9  # 2: run_command auto-publish allowlist; 3: param_is_program exempt for a bare {param} text / display-only text; 4: param_receives_pipe, redirections and zsh modifiers before the program word; 5: set_clipboard text whose only dangerous finding is param_is_program is needs_review, not block; 6: that downgrade only for prose-shaped text, param_is_code (bash -c {x}), a backgrounded bare parameter ({x} & disown); 7: review floor for a parameter in pasted/typed text (param_in_pasted_text), the prose test removed, param_is_code finds the code argument per interpreter, backgrounding past redirections and groups; 8: bare means spaces only on the paste sinks, a backgrounded pipeline or &&/|| list led by a parameter, linear brace-expansion and fork-bomb rules, an analysis budget in characters, shortest variants first (analysis_limit)
+ANALYZER_VERSION = 9  # 2: run_command auto-publish allowlist; 3: param_is_program exempt for a bare {param} text / display-only text; 4: param_receives_pipe, redirections and zsh modifiers before the program word; 5: set_clipboard text whose only dangerous finding is param_is_program is needs_review, not block; 6: that downgrade only for prose-shaped text, param_is_code (bash -c {x}), a backgrounded bare parameter ({x} & disown); 7: review floor for a parameter in pasted/typed text (param_in_pasted_text), the prose test removed, param_is_code finds the code argument per interpreter, backgrounding past redirections and groups; 8: bare means spaces only on the paste sinks, a backgrounded pipeline or &&/|| list led by a parameter, linear brace-expansion and fork-bomb rules, an analysis budget in characters, shortest variants first (analysis_limit); 9: linear word-then-tail rules (chmod/xattr/pkill/curl/dd/decode/awk/reads_local/git), fork bombs across two functions and hyphenated/non-ASCII names
 
 BLOCK = "block"
 REVIEW = "needs_review"
@@ -172,7 +172,7 @@ def hidden_chars(text: str) -> tuple:
         o = ord(ch)
         if ch in BIDI or 0xE0000 <= o <= 0xE007F:
             return BLOCK, "bidirectional-override or Unicode tag characters (text that displays differently from what it is)"
-        if ch in ZERO_WIDTH or (o < 32 and ch not in "; 9: linear word-then-tail rules (chmod/xattr/pkill/curl/dd/decode/awk/reads_local/git), fork bombs across two functions and hyphenated/non-ASCII names\n\t") or o == 0x7F or 0x80 <= o < 0xA0:
+        if ch in ZERO_WIDTH or (o < 32 and ch not in "\n\t") or o == 0x7F or 0x80 <= o < 0xA0:
             sev, label = REVIEW, "zero-width or control characters"
         elif 0xFE00 <= o <= 0xFE0F or 0xE0100 <= o <= 0xE01EF:
             sev, label = REVIEW, "variation selectors (can carry hidden data)"
@@ -284,7 +284,7 @@ def _has_fork_bomb(s: str) -> bool:
     A `G|G` whose G is not a defined function, or a one-way call with no loop back,
     is not flagged (`xf(){ f|f }`, `g(){ h|h&; }; h(){ echo ok; }`)."""
     owner, bodies = {}, {}
-    for m in re.finditer(r"(?:^|[\s;&|){}(])([^\s;&|(){}<>=]+)\(\)\s*\{", s):
+    for m in re.finditer(r"(?:^|[\s;&|){}(])([^\s;&|(){}<>=]+)\s*\(\)\s*\{", s):
         word = m.group(1)
         if word in bodies:
             continue
@@ -330,19 +330,18 @@ def _has_inline_exec(view):
     the two interpreter-anchored branches of the old `inline` regex, one left-to-right
     pass over whitespace tokens. Linear: the old py branch had no left boundary, so on
     a flood like "lua -lua -lua" it re-anchored at every "lua" (O(n^2)); here the
-    interpreter sets `active` and the following option tokens are checked in place.
+    interpreter sets its family's flag and the following option tokens are checked in place.
     sh-family wants an anchored name (start, a metacharacter or "/"); the py-family
     name may be any suffix of a token, as the old branch allowed ("xpython -e")."""
-    active = None
+    sh = py = False
     for tok in view.split():
         opt = len(tok) >= 2 and tok[0] == "-"   # a lone "-" is a word, not a -\S+ option
-        if opt and ((active == "sh" and _SH_FLAG.match(tok)) or (active == "py" and _PY_FLAG.match(tok))):
+        if opt and ((sh and _SH_FLAG.match(tok)) or (py and _PY_FLAG.match(tok))):
             return True
-        na = "py" if _PY_TOK.search(tok) else "sh" if _SH_TOK.search(tok) else None
-        if na is not None:
-            active = na          # this token ends in an interpreter name
-        elif not opt:
-            active = None        # a plain word ends the option run; an option keeps it
+        # An option keeps both runs going and may start one ("perl -x/sh -e": the
+        # perl run survives "-x/sh" -- QA, analyzer 9); a plain word starts afresh.
+        tsh, tpy = bool(_SH_TOK.search(tok)), bool(_PY_TOK.search(tok))
+        sh, py = (sh or tsh, py or tpy) if opt else (tsh, tpy)
     return False
 
 

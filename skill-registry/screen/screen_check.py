@@ -579,13 +579,19 @@ def main():
     # Fork bombs across two functions, and hyphenated / non-ASCII function names.
     fork_yes = [":(){ :|:&};:", "bomb() { bomb | bomb & }; bomb",
                 "a(){ b|b&; }; b(){ a|a&; }; a", "a-b(){ a-b|a-b& }; a-b",
-                "日(){ 日|日& }; 日"]
+                "日(){ 日|日& }; 日",
+                "f () { f|f& }; f", ": () { :|:& };:"]  # space before () -- analyzer 8 had it (QA, analyzer 9)
     fork_no = ["xf() { f|f& }; xf", "f() { echo hi; }; f | cat", "echo hi | echo hi &",
                "g(){ h|h&; }; h(){ echo ok; }; g"]
     for src in fork_yes:
         check(static._has_fork_bomb(src), f"fork bomb detected: {src!r}")
     for src in fork_no:
         check(not static._has_fork_bomb(src), f"not a fork bomb: {src!r}")
+
+    # An interpreter-named option ("-x/sh") keeps the perl run going (QA, analyzer 9:
+    # the one-token scanner switched families and missed what the old regex caught).
+    for src in ("perl -x/sh -e 1", "python3 -i/bin/sh -c 1"):
+        check(static._has_inline_exec(src), f"inline exec past an interpreter-named option: {src!r}")
 
     # A bare parameter that receives a pipe is the program reading it: needs_review
     # (never block -- a markdown table row has the same shape), except in display-only
